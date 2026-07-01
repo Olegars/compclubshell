@@ -323,7 +323,7 @@ Item {
                             anchors.rightMargin: 12
                             spacing: 12
 
-                            // 1. НАДЁЖНЫЙ КАСТОМНЫЙ ПОЛЗУНОК ГРОМКОСТИ (БЕЗ ИСПОЛЬЗОВАНИЯ QT СТИЛЕЙ)
+                            // 1. НАДЁЖНЫЙ КАСТОМНЫЙ ПОЛЗУНОК ГРОМКОСТИ
                             RowLayout {
                                 spacing: 6
                                 Text { text: "🔊"; font.pixelSize: 12 }
@@ -443,7 +443,7 @@ Item {
                 id: filterRow
                 Layout.fillWidth: true
                 spacing: 30
-                property string activeTab: "ВСSE ИГРЫ"
+                property string activeTab: "ВСЕ ИГРЫ"
 
                 Repeater {
                     model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "БРАУЗЕРЫ", "УТИЛИТЫ"]
@@ -532,8 +532,6 @@ Item {
         radius: 4
 
         color: bMouse.pressed ? baseColor : (bMouse.containsMouse ? Qt.rgba(1,1,1,0.06) : "transparent")
-
-        // Гарантированная перерисовка контура
         border.color: bMouse.containsMouse ? baseColor : Qt.rgba(1,1,1,0.15)
         border.width: 1
 
@@ -585,7 +583,7 @@ Item {
     }
 
     // ==========================================
-    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА
+    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА (ПОЛНОСТЬЮ ВОССТАНОВЛЕНО)
     // ==========================================
     Popup {
         id: storePopup
@@ -636,7 +634,8 @@ Item {
                     ColumnLayout {
                         anchors.fill: parent; anchors.margins: 20
                         Rectangle {
-                            Layout.fillWidth: true; Layout.preferredHeight: 140; color: "#111"; radius: 8; clip: true
+                            Layout.fillWidth: true; Layout.preferredHeight: 140
+                            color: "#111"; radius: 8; clip: true
                             Image {
                                 anchors.fill: parent; anchors.margins: 10
                                 source: {
