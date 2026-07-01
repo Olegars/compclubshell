@@ -12,15 +12,21 @@ class NetworkManager : public QObject
 public:
     explicit NetworkManager(GameModel *gModel, StoreModel *sModel, QObject *parent = nullptr);
 
+    // Метод для инициализации терминала по HWID серийнику
+    Q_INVOKABLE void fetchTerminalConfig(const QString &hwid);
+
     Q_INVOKABLE void fetchGames();
     Q_INVOKABLE void fetchProducts();
-    Q_INVOKABLE void buyItem(int itemId, const QString &terminalId);
-    Q_INVOKABLE void callAdmin(const QString &terminalId);
+    Q_INVOKABLE void buyItem(int itemId, int terminalId);
+    Q_INVOKABLE void callAdmin(int terminalId);
 
     // Метод для пинга
     Q_INVOKABLE int getLatency(const QString &host);
+    // Добавить в src/core/networkmanager.h
+    Q_INVOKABLE QString getCachedVideoPath(const QString &remoteUrl);
 
 private slots:
+    void onTerminalConfigFetched();
     void onGamesFetched();
     void onProductsFetched();
 

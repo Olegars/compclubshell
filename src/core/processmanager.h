@@ -1,9 +1,11 @@
+// Путь: src/core/processmanager.h
 #pragma once
 
 #include <QObject>
 #include <QProcess>
 #include <QWindow>
 #include <QString>
+
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -13,6 +15,9 @@ class ProcessManager : public QObject
 {
     Q_OBJECT
 public:
+    Q_INVOKABLE void setSystemVolume(int level);
+    Q_INVOKABLE void toggleSystemLanguage();
+
     explicit ProcessManager(QObject *parent = nullptr);
     ~ProcessManager();
 
@@ -22,10 +27,10 @@ public:
     void enableKioskMode();
     void disableKioskMode();
 
-    // ENTERPRISE / LTSC ФУНКЦИИ
     void applyEnterprisePolicies(bool enable);
-    void optimizeSystemServices(); // ЭТА СТРОКА ДОЛЖНА БЫТЬ ТУТ
-    void purgeUserGarbage();       // Оставь для гибкости, если решишь не ребутать ПК
+    void optimizeSystemServices();
+    void purgeUserGarbage();
+
 
 signals:
     void gameStarted();

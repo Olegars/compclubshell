@@ -1,3 +1,4 @@
+// Путь: Main.qml
 import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
@@ -13,54 +14,71 @@ Window {
     visible: true
     title: "REACTOR SHELL | Sector 0451"
     color: "#020202"
-    // visibility: Window.FullScreen // Для релиза в клубе раскомментируй
+    // visibility: Window.FullScreen // Для деплоя в клубе раскомментируй
 
-    // Загрузка шрифта
-    FontLoader { id: bomberFont; source: "qrc:/qt/qml/sector0451/fonts/bomber.otf" }
-
-    // Константы терминала
-    readonly property int blockWidth: 524
-    readonly property int blockHeight: 295
-    readonly property int sideMargin: 50
-    property string terminalId: "PC-045"
-
-    // ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ СЕССИИ (Сюда пишем при логине, Дашборд их читает)
+    // ==========================================
+    // ГЛОБАЛЬНЫЕ СВОЙСТВА
+    // ==========================================
+    property int terminalId: 0
     property string sessionUser: "GUEST"
     property real sessionBalance: 0.0
     property string sessionTime: "00:00:00"
+    property alias authScreen: loginScreen
+    property string temporaryPausePin: "----"
 
-    // Глобальный фон
-    Rectangle { anchors.fill: parent; z: -1; color: "#050505" }
+    property string pcTypeFromDatabase: "standard"
+    property bool isHardwareAdmin: false
 
-    // ==========================================
-    // 1. ОВЕРЛЕИ (ВИДНЫ ТОЛЬКО НА ЭКРАНЕ БЛОКИРОВКИ)
-    // ==========================================
-    Column {
-        id: leftColumn
-        anchors.left: parent.left
-        anchors.leftMargin: sideMargin
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 20
-        z: 50
-        visible: loginScreen.visible // Исчезнут при входе
+    readonly property int blockWidth: 524
+    readonly property int blockHeight: 295
+    readonly property int sideMargin: 50
 
-        OverlayBlock { id: b1; title: "CAM_01 / TOP_LEFT"; width: root.blockWidth; height: root.blockHeight }
-        OverlayBlock { id: b3; title: "DAT_02 / MID_LEFT"; width: root.blockWidth; height: root.blockHeight }
-        OverlayBlock { id: b4; title: "INF_03 / BOTTOM_LEFT"; width: root.blockWidth; height: root.blockHeight }
+    Component.onCompleted: {
+        isHardwareAdmin = (typeof ADMIN_SECRET !== 'undefined' && ADMIN_SECRET === "0451");
+        console.log("ШЕЛЛ CORE: Запрос букинга для HW...");
     }
 
-    Column {
-        id: rightColumn
-        anchors.right: parent.right
-        anchors.rightMargin: sideMargin
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 20
+    // ==========================================
+    // 1. ОВЕРЛЕИ (ДИНАМИЧЕСКИЙ LOADER — УБИВАЕТ ДЕКОДЕР ПРИ ВХОДЕ)
+    // ==========================================
+    Loader {
+        id: overlaysContainer
+        anchors.fill: parent
         z: 50
-        visible: loginScreen.visible // Исчезнут при входе
+        // Активен ТОЛЬКО на экране блокировки. При входе в дашборд Loader удаляет все видео из памяти!
+        active: (root.sessionUser === "GUEST" || root.sessionUser === "")
 
-        OverlayBlock { id: b2; title: "CAM_04 / TOP_RIGHT"; width: root.blockWidth; height: root.blockHeight }
-        OverlayBlock { id: b5; title: "DAT_05 / MID_RIGHT"; width: root.blockWidth; height: root.blockHeight }
-        OverlayBlock { id: b6; title: "INF_06 / BOTTOM_RIGHT"; width: root.blockWidth; height: root.blockHeight }
+        sourceComponent: Component {
+            Item {
+                anchors.fill: parent
+
+                // Левая колонка блоков
+                Column {
+                    id: leftColumn
+                    anchors.left: parent.left
+                    anchors.leftMargin: root.sideMargin
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 20
+
+                    OverlayBlock { id: b1; title: "CAM_01 / TOP_LEFT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: b3; title: "DAT_02 / MID_LEFT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: b4; title: "INF_03 / BOTTOM_LEFT"; width: root.blockWidth; height: root.blockHeight }
+                }
+
+                // Правая колонка блоков
+                Column {
+                    id: rightColumn
+                    anchors.right: parent.right
+                    anchors.rightMargin: root.sideMargin
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 20
+
+                    OverlayBlock { id: b2; title: "CAM_04 / TOP_RIGHT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: b5; title: "DAT_05 / MID_RIGHT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: b6; title: "INF_06 / BOTTOM_RIGHT"; width: root.blockWidth; height: root.blockHeight }
+                }
+            }
+        }
     }
 
     // ==========================================
@@ -73,27 +91,45 @@ Window {
         visible: dashboardLoader.status === Loader.Ready
         z: 10
 
-        // АСИНХРОННАЯ ПЕРЕДАЧА ДАННЫХ
         onLoaded: {
             if (item) {
                 item.userName = root.sessionUser;
                 item.userBalance = root.sessionBalance;
                 item.timeRemaining = root.sessionTime;
-                console.log("Дашборд успешно загружен и получил данные");
+
+                // ЖЕСТКИЙ СТОП СЕТИ: глушим фоновый плеер экрана блокировки при входе игрока
+                bgPlayer.stop();
+                console.log("Дашборд успешно загружен. Фоновые медиа-потоки остановлены.");
             }
         }
     }
 
     // ==========================================
-    // 3. ЭКРАН БЛОКИРОВКИ
+    // 3. ЭКРАН БЛОКИРОВКИ + ФОНОВОЕ ВИДЕО
     // ==========================================
     Item {
         id: loginScreen
         anchors.fill: parent
-        visible: true
+        visible: root.sessionUser === "GUEST" || root.sessionUser === ""
         z: 20
 
-        // Логотип
+        MediaPlayer {
+            id: bgPlayer
+            source: "file:///C:/ShellVideo/background.mp4"
+            videoOutput: vOutBg
+            audioOutput: AudioOutput { muted: true }
+            loops: MediaPlayer.Infinite
+            Component.onCompleted: {
+                if (loginScreen.visible) bgPlayer.play();
+            }
+        }
+        VideoOutput {
+            id: vOutBg
+            anchors.fill: parent
+            fillMode: VideoOutput.PreserveAspectCrop
+        }
+
+        // Логотип REACTOR 0451
         Item {
             id: logoArea
             width: 800; height: 120
@@ -101,12 +137,12 @@ Window {
             anchors.topMargin: 40
             Row {
                 anchors.centerIn: parent; spacing: 20
-                Text { text: "REACTOR"; color: "#000"; font.family: bomberFont.name; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
+                Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
                 Text { text: "0 4 5 1"; color: "#22c55e"; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
             }
         }
 
-        // Окно ввода
+        // Центрированное окно авторизации
         Rectangle {
             id: authCenter
             width: 420; height: 500; anchors.centerIn: parent
@@ -119,12 +155,11 @@ Window {
                 Column {
                     anchors.horizontalCenter: parent.horizontalCenter
                     Text { text: "TERMINAL_ID"; color: "#22c55e"; font.pixelSize: 12; opacity: 0.6; anchors.horizontalCenter: parent.horizontalCenter }
-                    Text { text: root.terminalId; color: "white"; font.pixelSize: 54; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                    Text { text: "PC-" + root.terminalId; color: "white"; font.pixelSize: 54; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
                 }
 
                 Rectangle { width: parent.width; height: 1; color: "#22c55e"; opacity: 0.3 }
 
-                // Поля
                 Item {
                     width: parent.width; height: 100
                     Column {
@@ -156,7 +191,7 @@ Window {
     // ==========================================
     function loginToServer(phone, pin) {
         var xhr = new XMLHttpRequest();
-        xhr.open("POST", "http://127.0.0.1:22222/api/shell/login");
+        xhr.open("POST", "http://192.168.222.2:22222/api/shell/login");
         xhr.setRequestHeader("Content-Type", "application/json");
 
         xhr.onreadystatechange = function() {
@@ -164,33 +199,21 @@ Window {
                 if (xhr.status === 200) {
                     var response = JSON.parse(xhr.responseText);
                     if (response.status === "success") {
-                        // 1. Сначала пишем данные в корень
                         root.sessionUser = response.user.name || "GUEST";
                         root.sessionBalance = parseFloat(response.user.balance) || 0;
-                        root.sessionTime = response.user.ends_at || "00:00";
+                        root.sessionTime = response.user.time_remaining || "00:00:00";
 
-                        // 2. Скрываем логин (это автоматически скроет оверлеи)
                         loginScreen.visible = false;
-
-                        // 3. Запускаем загрузку Дашборда
                         dashboardLoader.source = "Dashboard.qml";
+                        if (typeof NetManager !== "undefined" && NetManager !== null) {
+                            NetManager.fetchGames();
+                        }
                     }
                 } else {
                     console.log("Ошибка авторизации: " + xhr.status);
                     authCenter.authStep = 1;
                     pinInput.text = "";
                 }
-            }
-            // Внутри Main.qml в функции loginToServer
-            if (response.status === "success") {
-                root.sessionUser = response.user.name || "GUEST";
-                // ... сохранение других данных ...
-
-                loginScreen.visible = false;
-                dashboardLoader.source = "Dashboard.qml";
-
-                // ДЕРГАЕМ C++ МЕТОД ИЗ QML СЮДА:
-                NetManager.fetchGames();
             }
         }
         xhr.send(JSON.stringify({
@@ -200,12 +223,11 @@ Window {
         }));
     }
 
-    // Загрузка оверлеев
     Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: true; onTriggered: fetchOverlays() }
 
     function fetchOverlays() {
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", "http://127.0.0.1:22222/api/shell/overlays?t=" + new Date().getTime());
+        xhr.open("GET", "http://192.168.222.2:22222/api/shell/overlays?t=" + new Date().getTime());
         xhr.onreadystatechange = function() {
             if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
                 updateOverlaysToScreen(JSON.parse(xhr.responseText));
@@ -215,43 +237,20 @@ Window {
     }
 
     function updateOverlaysToScreen(response) {
-        if (!response.data) return;
-        var map = {"top_left": b1, "top_right": b2, "mid_left": b3, "mid_right": b5, "bottom_left": b4, "bottom_right": b6};
+        if (!response.data || overlaysContainer.status !== Loader.Ready) return;
+        var item = overlaysContainer.item;
+        if (!item) return;
+
+        var map = {"top_left": item.b1, "top_right": item.b2, "mid_left": item.b3, "mid_right": item.b5, "bottom_left": item.b4, "bottom_right": item.b6};
         for (var key in map) {
-            if (response.data[key]) {
+            if (response.data[key] && map[key]) {
                 map[key].content = response.data[key].content;
                 map[key].isActive = response.data[key].is_active;
             }
         }
     }
 
-    // WebSocket (Pusher)
-    WebSocket {
-        id: terminalSocket
-            url: "ws://127.0.0.1:8080/app/reactor_shell_key_2026?protocol=7&client=js&version=8.3.0"
-            active: true
-            onStatusChanged: {
-                // Явно указываем terminalSocket.status
-                if (terminalSocket.status === WebSocket.Open) {
-                    terminalSocket.sendTextMessage(JSON.stringify({"event": "pusher:subscribe", "data": {"channel": "terminals.all"}}));
-                }
-        }
-        onTextMessageReceived: {
-            var response = JSON.parse(message);
-            if (response.event === "overlay.changed") {
-                var payload = JSON.parse(response.data);
-                var map = {"top_left": b1, "top_right": b2, "mid_left": b3, "mid_right": b5, "bottom_left": b4, "bottom_right": b6};
-                if (map[payload.block_position]) {
-                    map[payload.block_position].content = payload.data.content;
-                    map[payload.block_position].isActive = payload.data.is_active;
-                }
-            }
-        }
-    }
-
-    // ==========================================
-    // 5. КОМПОНЕНТ ОВЕРЛЕЯ (ФИКС ВИДЕО И ФОРМАТОВ)
-    // ==========================================
+    // Компонент макета блока оверлея (с поддержкой С++ кэширования диска)
     component OverlayBlock : Rectangle {
         property string title: "BLOCK"
         property bool isActive: true
@@ -271,7 +270,6 @@ Window {
             delegate: Item {
                 anchors.fill: parent
 
-                // 1. ТЕКСТ
                 Text {
                     visible: modelData.type === "text"
                     text: modelData.value || ""
@@ -281,7 +279,6 @@ Window {
                     anchors.centerIn: parent
                 }
 
-                // 2. ИЗОБРАЖЕНИЕ (С защитой от попытки загрузить видео)
                 Image {
                     visible: modelData.type === "image"
                     source: modelData.type === "image" ? (modelData.value || "") : ""
@@ -290,7 +287,6 @@ Window {
                     asynchronous: true
                 }
 
-                // 3. ВИДЕО (Безопасная загрузка через MediaPlayer для Qt 6)
                 Loader {
                     active: modelData.type === "video"
                     anchors.fill: parent
@@ -299,7 +295,8 @@ Window {
                             anchors.fill: parent
                             MediaPlayer {
                                 id: mPlayer
-                                source: modelData.value || ""
+                                // ФИКС СЕТИ: пропускаем через С++ кэшер сетевой URL
+                                source: (typeof NetManager !== "undefined") ? NetManager.getCachedVideoPath(modelData.value) : modelData.value
                                 videoOutput: vOut
                                 audioOutput: AudioOutput { muted: true }
                                 loops: MediaPlayer.Infinite
@@ -308,7 +305,7 @@ Window {
                             VideoOutput {
                                 id: vOut
                                 anchors.fill: parent
-                                fillMode: VideoOutput.PreserveAspectCrop
+                                fillMode: Image.PreserveAspectCrop
                             }
                         }
                     }
