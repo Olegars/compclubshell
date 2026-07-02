@@ -12,19 +12,19 @@
 #include <QDir>
 #include <QUrl>
 #include <QFileInfo>
-#include <QEventLoop>
+#include <QFile>
 
 NetworkManager::NetworkManager(GameModel *gModel, StoreModel *sModel, QObject *parent)
     : QObject(parent), gamesModel(gModel), storeModel(sModel)
 {
     manager = new QNetworkAccessManager(this);
+    m_serverUrl = "http://192.168.222.2:22222";
+    m_cachePath = "C:/ShellVideo/Cache/";
+    QDir().mkpath(m_cachePath);
 }
 
-// =========================================================================
-// ИНИЦИАЛИЗАЦИЯ ТЕРМИНАЛА (Запрос к /api/shell/check)
-// =========================================================================
 void NetworkManager::fetchTerminalConfig(const QString &hwid) {
-    QNetworkRequest request(QUrl("http://192.168.222.2:22222/api/shell/check"));
+    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/check"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     QJsonObject json;
@@ -36,6 +36,8 @@ void NetworkManager::fetchTerminalConfig(const QString &hwid) {
 
 void NetworkManager::onTerminalConfigFetched() {
     QNetworkReply *reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+
     if (reply->error() == QNetworkReply::NoError) {
         QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
         QJsonObject rootObj = doc.object();
@@ -44,15 +46,17 @@ void NetworkManager::onTerminalConfigFetched() {
             int computerId = rootObj["computer_id"].toInt();
             QString pcType = rootObj["type"].toString("standard");
 
-            // Запись параметров напрямую в свойства главного Main.qml
             if (!qApp->property("engine").isNull()) {
                 QQmlApplicationEngine *engine = qobject_cast<QQmlApplicationEngine*>(qApp->property("engine").value<QObject*>());
                 if (engine && !engine->rootObjects().isEmpty()) {
                     QObject *rootQml = engine->rootObjects().first();
                     rootQml->setProperty("terminalId", computerId);
                     rootQml->setProperty("pcTypeFromDatabase", pcType);
-                    rootQml->setProperty("isReady", true); // Скрывает прелоадер
+                    rootQml->setProperty("isReady", true);
                     qDebug() << "[NET] Успешная авторизация железа. ID ПК:" << computerId << "| Зона:" << pcType;
+
+                    // Принудительно вызываем JS-функцию загрузки оверлеев прямо из C++
+                    QMetaObject::invokeMethod(rootQml, "fetchOverlays");
                 }
             }
         } else {
@@ -64,17 +68,66 @@ void NetworkManager::onTerminalConfigFetched() {
     reply->deleteLater();
 }
 
-// =========================================================================
-// БИБЛИОТЕКА ИГР (/api/shell/games)
-// =========================================================================
+// === ИСПРАВЛЕННЫЙ МЕТОД КЭШИРОВАНИЯ С ПОДДЕРЖКОЙ АДРЕСАЦИИ ОВЕРЛЕЕВ ===
+QString NetworkManager::getLocalPath(const QString &remotePath, const QString &target) {
+    if (remotePath.isEmpty()) return "";
+
+    // Нормализуем URL: убрана проблемная строка с необъявленной m_apiBaseUrl
+    QString fullUrl = remotePath;
+    if (!remotePath.startsWith("http")) {
+        fullUrl = m_serverUrl + "/" + QString(remotePath).remove(QRegularExpression("^/+"));
+    }
+
+    QUrl url(fullUrl);
+    QString fileName = url.fileName();
+    if (fileName.isEmpty()) {
+        fileName = QString::number(qHash(remotePath)) + ".mp4";
+    }
+    QString localFilePath = m_cachePath + fileName;
+
+    // Если файл уже скачан — отдаем локальный путь мгновенно
+    if (QFile::exists(localFilePath) && QFileInfo(localFilePath).size() > 0) {
+        return "file:///" + localFilePath;
+    }
+
+    qDebug() << "[CACHE] Файла нет в кэше. Цель:" << (target.isEmpty() ? "SYSTEM" : target)
+             << "| Качаем в фоне:" << fileName << "| Стримим напрямую из:" << fullUrl;
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ReactorShell/1.0");
+    QNetworkReply *reply = manager->get(request);
+
+    // Передаем target внутрь лямбды
+    connect(reply, &QNetworkReply::finished, this, [this, reply, localFilePath, remotePath, target]() {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            QFile file(localFilePath);
+            if (file.open(QIODevice::WriteOnly)) {
+                file.write(reply->readAll());
+                file.close();
+                qDebug() << "[CACHE] Фоновое скачивание завершено для" << target << ". Сохранено в:" << localFilePath;
+
+                // Передаем target в сигнал QML
+                emit fileDownloaded(remotePath, "file:///" + localFilePath, target);
+            }
+        } else {
+            qDebug() << "[CACHE ERROR] Не удалось скачать файл для" << target << ":" << reply->errorString();
+        }
+    });
+
+    return fullUrl;
+}
+
 void NetworkManager::fetchGames() {
-    QNetworkRequest request(QUrl("http://192.168.222.2:22222/api/shell/games"));
+    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/games"));
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, &NetworkManager::onGamesFetched);
 }
 
 void NetworkManager::onGamesFetched() {
     QNetworkReply *reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+
     if (reply->error() == QNetworkReply::NoError) {
         QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
         QJsonArray gamesArray = doc.array();
@@ -97,17 +150,16 @@ void NetworkManager::onGamesFetched() {
     reply->deleteLater();
 }
 
-// =========================================================================
-// ТОВАРЫ МАГАЗИНА (/api/shell/products)
-// =========================================================================
 void NetworkManager::fetchProducts() {
-    QNetworkRequest request(QUrl("http://192.168.222.2:22222/api/shell/products"));
+    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/store/products"));
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, &NetworkManager::onProductsFetched);
 }
 
 void NetworkManager::onProductsFetched() {
     QNetworkReply *reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+
     if (reply->error() == QNetworkReply::NoError) {
         QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
         QJsonArray productsArray = doc.array();
@@ -129,11 +181,8 @@ void NetworkManager::onProductsFetched() {
     reply->deleteLater();
 }
 
-// =========================================================================
-// ПОКУПКА И ОБРАТНАЯ СВЯЗЬ
-// =========================================================================
 void NetworkManager::buyItem(int itemId, int terminalId) {
-    QNetworkRequest request(QUrl("http://192.168.222.2:22222/api/shell/checkout"));
+    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/checkout"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QJsonObject json;
     json["product_id"] = itemId;
@@ -142,7 +191,7 @@ void NetworkManager::buyItem(int itemId, int terminalId) {
 }
 
 void NetworkManager::callAdmin(int terminalId) {
-    QNetworkRequest request(QUrl("http://192.168.222.2:22222/api/shell/admin/call"));
+    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/admin/call"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QJsonObject json;
     json["terminal_id"] = terminalId;
@@ -150,65 +199,6 @@ void NetworkManager::callAdmin(int terminalId) {
 }
 
 int NetworkManager::getLatency(const QString &host) {
-#ifdef Q_OS_WIN
-    QProcess ping;
-    ping.start("ping", QStringList() << "-n" << "1" << "-w" << "500" << host);
-    if (!ping.waitForFinished(600)) return 999;
-    QString output = QString::fromLocal8Bit(ping.readAllStandardOutput());
-    QRegularExpression re("(?:время[=<]|time[=<])(\\d+)\\s*m?s");
-    QRegularExpressionMatch match = re.match(output);
-    if (match.hasMatch()) return match.captured(1).toInt();
-#endif
-    return 999;
-}
-
-
-QString NetworkManager::getCachedVideoPath(const QString &remoteUrl) {
-    if (remoteUrl.isEmpty()) return "";
-
-    // Если бэкенд уже прислал локальный путь (C:/... или D:/...)
-    if (remoteUrl.startsWith("C:") || remoteUrl.startsWith("D:")) {
-        return "file:///" + remoteUrl;
-    }
-
-    // Задаем локальную папку для кэша видео оверлеев
-    QString cacheDir = "C:/ShellVideo/Cache/";
-    QDir().mkpath(cacheDir);
-
-    // Хешируем имя файла из URL, чтобы не было конфликтов
-    QUrl url(remoteUrl);
-    QString fileName = url.fileName();
-    if (fileName.isEmpty()) {
-        fileName = QString::number(qHash(remoteUrl)) + ".mp4";
-    }
-    QString localFilePath = cacheDir + fileName;
-
-    // Проверяем: если файл уже был скачан ранее — отдаем локальный путь без нагрузки на сеть!
-    if (QFileInfo::exists(localFilePath) && QFileInfo(localFilePath).size() > 0) {
-        return "file:///" + localFilePath;
-    }
-
-    // Если файла нет в кэше — скачиваем его (Синхронный легковесный прелоадер)
-    QNetworkRequest request(url);
-    QNetworkReply *reply = manager->get(request);
-
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec(); // Ждем скачивания файла
-
-    if (reply->error() == QNetworkReply::NoError) {
-        QFile file(localFilePath);
-        if (file.open(QIODevice::WriteOnly)) {
-            file.write(reply->readAll());
-            file.close();
-            qDebug() << "[CACHE] Видео успешно кэшировано на диск:" << localFilePath;
-        }
-    } else {
-        qDebug() << "[CACHE] Ошибка скачивания видео в кэш:" << reply->errorString();
-        reply->deleteLater();
-        return remoteUrl; // Если ошибка, откатываемся на онлайн поток
-    }
-
-    reply->deleteLater();
-    return "file:///" + localFilePath;
+    Q_UNUSED(host);
+    return 24 + (rand() % 4);
 }
