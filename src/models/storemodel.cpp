@@ -13,10 +13,15 @@ int StoreModel::rowCount(const QModelIndex &parent) const
 
 QVariant StoreModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || index.row() >= m_displayProducts.size())
+    if (!index.isValid() || index.row() >= static_cast<int>(m_displayProducts.size()))
         return QVariant();
 
     const StoreItem &item = m_displayProducts.at(index.row());
+
+    // ТРАССИРОВКА: Логируем, что C++ отдает в QML при обращении к цене
+    if (role == PriceRole) {
+        qDebug() << "[CPP-MODEL-TRACE] Товар:" << item.name << "| Запрос цены. Значение double:" << item.price;
+    }
 
     switch (role) {
     case IdRole:       return item.id;
@@ -51,7 +56,7 @@ void StoreModel::setProducts(const std::vector<StoreItem> &products)
 
 void StoreModel::setFilter(const QString &filter)
 {
-    QString target = filter.trimmed(); // Убираем лишние пробелы из кнопки
+    QString target = filter.trimmed();
     qDebug() << "[STORE] Фильтр запрошен:" << target;
 
     beginResetModel();
@@ -63,14 +68,7 @@ void StoreModel::setFilter(const QString &filter)
         QString lowerTarget = target.toLower();
 
         for (const auto &item : m_allProducts) {
-            // Убираем пробелы у категории товара и переводим в нижний регистр
             QString lowerCategory = item.category.trimmed().toLower();
-
-            // Выводим в лог для отладки, что мы сравниваем (увидишь в консоли при клике)
-            qDebug() << "   -> Проверяем товар:" << item.name << " | Категория в БД:" << lowerCategory << " | Ищем:" << lowerTarget;
-
-            // Гибкая проверка: либо полное совпадение,
-            // либо фильтр содержится в категории, либо категория в фильтре
             if (lowerCategory.contains(lowerTarget) || lowerTarget.contains(lowerCategory)) {
                 m_displayProducts.push_back(item);
             }

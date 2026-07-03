@@ -55,7 +55,6 @@ void NetworkManager::onTerminalConfigFetched() {
                     rootQml->setProperty("isReady", true);
                     qDebug() << "[NET] Успешная авторизация железа. ID ПК:" << computerId << "| Зона:" << pcType;
 
-                    // Принудительно вызываем JS-функцию загрузки оверлеев прямо из C++
                     QMetaObject::invokeMethod(rootQml, "fetchOverlays");
                 }
             }
@@ -84,8 +83,6 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
     QString localFilePath = m_cachePath + fileName;
 
     if (QFile::exists(localFilePath) && QFileInfo(localFilePath).size() > 0) {
-        // Вместо возврата "file:///" попробуйте вернуть обычный QUrl от локального файла.
-        // Qt сам преобразует его в оптимальный для системного плеера вид.
         return QUrl::fromLocalFile(localFilePath).toString();
     }
 
@@ -168,7 +165,14 @@ void NetworkManager::onProductsFetched() {
             item.id = obj["id"].toInt();
             item.name = obj["name"].toString();
             item.category = obj["category"].toString();
-            item.price = obj["price"].toDouble();
+
+            // Безопасно перевариваем как чистые double, так и строковые numeric(10,2) из базы
+            if (obj["price"].isString()) {
+                item.price = obj["price"].toString().toDouble();
+            } else {
+                item.price = obj["price"].toDouble();
+            }
+
             item.image = obj["image"].toString();
             item.stock = obj["stock"].toInt();
             products.push_back(item);
