@@ -68,11 +68,9 @@ void NetworkManager::onTerminalConfigFetched() {
     reply->deleteLater();
 }
 
-// === ИСПРАВЛЕННЫЙ МЕТОД КЭШИРОВАНИЯ С ПОДДЕРЖКОЙ АДРЕСАЦИИ ОВЕРЛЕЕВ ===
 QString NetworkManager::getLocalPath(const QString &remotePath, const QString &target) {
     if (remotePath.isEmpty()) return "";
 
-    // Нормализуем URL: убрана проблемная строка с необъявленной m_apiBaseUrl
     QString fullUrl = remotePath;
     if (!remotePath.startsWith("http")) {
         fullUrl = m_serverUrl + "/" + QString(remotePath).remove(QRegularExpression("^/+"));
@@ -85,9 +83,10 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
     }
     QString localFilePath = m_cachePath + fileName;
 
-    // Если файл уже скачан — отдаем локальный путь мгновенно
     if (QFile::exists(localFilePath) && QFileInfo(localFilePath).size() > 0) {
-        return "file:///" + localFilePath;
+        // Вместо возврата "file:///" попробуйте вернуть обычный QUrl от локального файла.
+        // Qt сам преобразует его в оптимальный для системного плеера вид.
+        return QUrl::fromLocalFile(localFilePath).toString();
     }
 
     qDebug() << "[CACHE] Файла нет в кэше. Цель:" << (target.isEmpty() ? "SYSTEM" : target)
@@ -97,7 +96,6 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
     request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ReactorShell/1.0");
     QNetworkReply *reply = manager->get(request);
 
-    // Передаем target внутрь лямбды
     connect(reply, &QNetworkReply::finished, this, [this, reply, localFilePath, remotePath, target]() {
         reply->deleteLater();
         if (reply->error() == QNetworkReply::NoError) {
@@ -107,7 +105,6 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
                 file.close();
                 qDebug() << "[CACHE] Фоновое скачивание завершено для" << target << ". Сохранено в:" << localFilePath;
 
-                // Передаем target в сигнал QML
                 emit fileDownloaded(remotePath, "file:///" + localFilePath, target);
             }
         } else {
@@ -196,6 +193,45 @@ void NetworkManager::callAdmin(int terminalId) {
     QJsonObject json;
     json["terminal_id"] = terminalId;
     manager->post(request, QJsonDocument(json).toJson());
+}
+
+void NetworkManager::requestPausePin(int terminalId) {
+    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/games/pause"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QJsonObject json;
+    json["computer_id"] = terminalId;
+
+    QNetworkReply *reply = manager->post(request, QJsonDocument(json).toJson());
+    connect(reply, &QNetworkReply::finished, this, &NetworkManager::onPausePinFetched);
+}
+
+void NetworkManager::onPausePinFetched() {
+    QNetworkReply *reply = qobject_cast<QNetworkReply*>(sender());
+    if (!reply) return;
+
+    if (reply->error() == QNetworkReply::NoError) {
+        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        QJsonObject rootObj = doc.object();
+
+        if (rootObj["status"].toString() == "success") {
+            QString pin = rootObj["pin_code"].toString();
+            if (pin.isEmpty() && rootObj.contains("pin")) {
+                pin = rootObj["pin"].toString();
+            }
+
+            if (!qApp->property("engine").isNull()) {
+                QQmlApplicationEngine *engine = qobject_cast<QQmlApplicationEngine*>(qApp->property("engine").value<QObject*>());
+                if (engine && !engine->rootObjects().isEmpty()) {
+                    QObject *rootQml = engine->rootObjects().first();
+                    rootQml->setProperty("temporaryPausePin", pin);
+                    qDebug() << "[NET] Успешно получен PIN паузы из базы:" << pin;
+                }
+            }
+        }
+    } else {
+        qDebug() << "[NET] Ошибка получения PIN паузы:" << reply->errorString();
+    }
+    reply->deleteLater();
 }
 
 int NetworkManager::getLatency(const QString &host) {

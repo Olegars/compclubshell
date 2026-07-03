@@ -281,7 +281,8 @@ Item {
                                         if (res.status === "success") {
                                             if (typeof root !== 'undefined') {
                                                 root.temporaryPausePin = res.pin_code;
-                                                root.sessionUser = "";
+                                                root.sessionUser = "PAUSE"; // Выставляем статус паузы
+                                                root.authScreen.visible = true; // Открываем экран блокировки
                                                 dashboardRoot.visible = false;
                                             }
                                         }
@@ -364,7 +365,6 @@ Item {
                                         function updateVolume(mx) {
                                             var pct = Math.max(0, Math.min(1, mx / width));
                                             customSlider.value = Math.round(pct * 100);
-                                            // Вызов нативного C++ метода управления звуком через Launcher
                                             Launcher.setSystemVolume(customSlider.value);
                                         }
 
@@ -396,7 +396,6 @@ Item {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
                                         dashboardRoot.currentLanguage = (dashboardRoot.currentLanguage === "RU") ? "EN" : "RU";
-                                        // Вызов нативного C++ метода смены языка в системе
                                         Launcher.toggleSystemLanguage();
                                     }
                                 }
@@ -520,7 +519,6 @@ Item {
     // СТИЛИЗОВАННЫЕ КОМПОНЕНТЫ КНОПОК
     // ==========================================
 
-    // 1. Длинная кнопка действий (Исправлено залипание контуров)
     component ActionBtn : Rectangle {
         property string text: "BUTTON"
         property string icon: ""
@@ -553,7 +551,6 @@ Item {
         MouseArea { id: bMouse; anchors.fill: parent; hoverEnabled: true; onClicked: parent.clicked() }
     }
 
-    // 2. Квадратная кнопка платформы (Исправлено залипание контуров)
     component PlatformSquareBtn : Rectangle {
         property string btnText: "LAUNCH"
         property string iconText: "🎮"
@@ -583,7 +580,7 @@ Item {
     }
 
     // ==========================================
-    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА (ПОЛНОСТЬЮ ВОССТАНОВЛЕНО)
+    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА
     // ==========================================
     Popup {
         id: storePopup
@@ -669,7 +666,6 @@ Item {
         }
     }
 
-    // Окно подтверждения покупки
     Popup {
         id: confirmPopup; width: 400; height: 350; anchors.centerIn: parent; modal: true; focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside

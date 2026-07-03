@@ -1,3 +1,4 @@
+// Путь: Main.qml
 import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
@@ -37,24 +38,30 @@ Window {
         }
     }
 
+    // Мгновенный пинок бэкенда при уходе на паузу или выходе из неё (убирает лаг таймера)
+    onSessionUserChanged: {
+        if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
+            console.log("[SHELL-STATUS] Сессия изменилась на:", root.sessionUser, ". Срочно запрашиваем оверлеи...");
+            root.fetchOverlays();
+        }
+    }
+
     Component.onCompleted: {
         console.log("[START-TRACE] [STEP QML-A] Корневой Window загрузился. Ожидаем авторизации от REACTOR CONTROL...")
     }
 
     // ==========================================
-    // 1. ОВЕРЛЕИ (КАЖДЫЙ СЛОТ ПОЛУЧАЕТ СВОЙ URL)
+    // 1. ОВЕРЛЕИ
     // ==========================================
     Loader {
         id: overlaysContainer
         anchors.fill: parent
         z: 50
-        active: (root.sessionUser === "GUEST" || root.sessionUser === "")
+        active: (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE")
 
         sourceComponent: Component {
             Item {
                 anchors.fill: parent
-                Component.onCompleted: console.log("[START-TRACE] [STEP QML-B] Loader контейнера оверлеев активирован")
-
                 property alias b1: blockTopLeft
                 property alias b2: blockTopRight
                 property alias b3: blockMidLeft
@@ -68,7 +75,6 @@ Window {
                     anchors.leftMargin: root.sideMargin
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 20
-
                     OverlayBlock { id: blockTopLeft; blockUniqueId: "b1"; title: "CAM_01 / TOP_LEFT"; width: root.blockWidth; height: root.blockHeight }
                     OverlayBlock { id: blockMidLeft; blockUniqueId: "b3"; title: "DAT_02 / MID_LEFT"; width: root.blockWidth; height: root.blockHeight }
                     OverlayBlock { id: blockBottomLeft; blockUniqueId: "b4"; title: "INF_03 / BOTTOM_LEFT"; width: root.blockWidth; height: root.blockHeight }
@@ -80,7 +86,6 @@ Window {
                     anchors.rightMargin: root.sideMargin
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 20
-
                     OverlayBlock { id: blockTopRight; blockUniqueId: "b2"; title: "CAM_04 / TOP_RIGHT"; width: root.blockWidth; height: root.blockHeight }
                     OverlayBlock { id: blockMidRight; blockUniqueId: "b5"; title: "DAT_05 / MID_RIGHT"; width: root.blockWidth; height: root.blockHeight }
                     OverlayBlock { id: blockBottomRight; blockUniqueId: "b6"; title: "INF_06 / BOTTOM_RIGHT"; width: root.blockWidth; height: root.blockHeight }
@@ -101,25 +106,18 @@ Window {
     }
 
     // ==========================================
-    // 3. ЭКРАН БЛОКИРОВКИ (СТАТИКА БЕЗ ВИДЕО)
+    // 3. ЭКРАН БЛОКИРОВКИ И ПАУЗЫ
     // ==========================================
     Item {
         id: loginScreen
         anchors.fill: parent
-        visible: root.sessionUser === "GUEST" || root.sessionUser === ""
+        visible: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
         z: 20
 
         Rectangle {
             anchors.fill: parent
             color: "#020202"
-
-            Image {
-                anchors.fill: parent
-                source: "images/hex_bg.png"
-                fillMode: Image.Tile
-                opacity: 0.15
-            }
-
+            Image { anchors.fill: parent; source: "images/hex_bg.png"; fillMode: Image.Tile; opacity: 0.15 }
             Shape {
                 anchors.fill: parent
                 layer.enabled: true
@@ -139,10 +137,14 @@ Window {
 
         Item {
             id: logoArea
-            width: 800; height: 120
-            anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; anchors.topMargin: 40
+            width: 800
+            height: 120
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 40
             Row {
-                anchors.centerIn: parent; spacing: 20
+                anchors.centerIn: parent
+                spacing: 20
                 Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
                 Text { text: "0 4 5 1"; color: "#22c55e"; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
             }
@@ -150,42 +152,177 @@ Window {
 
         Rectangle {
             id: authCenter
-            width: 420; height: 500; anchors.centerIn: parent
-            color: "#050a06"; border.color: "#1a4d29"; radius: 4; opacity: 0.95
+            width: 420
+            height: 500
+            anchors.centerIn: parent
+            color: "#050a06"
+            border.color: root.sessionUser === "PAUSE" ? "#1d4ed8" : "#1a4d29"
+            border.width: 2
+            radius: 4
+            opacity: 0.95
             property int authStep: 1
 
             Column {
-                anchors.fill: parent; anchors.margins: 40; spacing: 30
+                anchors.fill: parent
+                anchors.margins: 40
+                spacing: 25
+
                 Column {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    Text { text: "TERMINAL_ID"; color: "#22c55e"; font.pixelSize: 12; opacity: 0.6; anchors.horizontalCenter: parent.horizontalCenter }
-                    Text { text: "PC-" + root.terminalId; color: "white"; font.pixelSize: 54; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                    Text {
+                        text: "TERMINAL_ID"
+                        color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
+                        font.pixelSize: 12
+                        opacity: 0.6
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                    Text {
+                        text: "PC-" + root.terminalId
+                        color: "white"
+                        font.pixelSize: 54
+                        font.bold: true
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
                 }
-                Rectangle { width: parent.width; height: 1; color: "#22c55e"; opacity: 0.3 }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
+                    opacity: 0.3
+                }
+
                 Item {
-                    width: parent.width; height: 100
+                    width: parent.width
+                    height: 200
+
+                    // --- ДИАЛОГ "Я ВЕРНУЛСЯ" (ЕСЛИ НА ПАУЗЕ) ---
                     Column {
-                        visible: authCenter.authStep === 1; width: parent.width; spacing: 12
-                        Text { text: "НОМЕР ТЕЛЕФОНА"; color: "#22c55e"; font.pixelSize: 10 }
-                        TextField { id: phoneInput; width: parent.width; height: 60; color: "#22c55e"; font.pixelSize: 24; inputMask: "+7 (999) 999-99-99"; focus: authCenter.authStep === 1 }
+                        visible: root.sessionUser === "PAUSE"
+                        width: parent.width
+                        spacing: 15
+
+                        Text {
+                            text: "СЕССИЯ НА ПАУЗЕ"
+                            color: "#3b82f6"
+                            font.pixelSize: 20
+                            font.bold: true
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+
+                        Text {
+                            text: "Введите PIN-код для разблокировки"
+                            color: "#a3a3a3"
+                            font.pixelSize: 12
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+
+                        TextField {
+                            id: pausePinInput
+                            width: parent.width
+                            height: 55
+                            color: "white"
+                            font.pixelSize: 28
+                            echoMode: TextInput.Password
+                            inputMask: "0000"
+                            horizontalAlignment: Text.AlignHCenter
+                            focus: root.sessionUser === "PAUSE"
+                        }
+
+                        Text {
+                            id: pauseErrorText
+                            text: "Неверный PIN-код"
+                            color: "#ef4444"
+                            font.pixelSize: 12
+                            visible: false
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+
+                        Button {
+                            width: parent.width
+                            height: 50
+                            text: "Я ВЕРНУЛСЯ"
+                            onClicked: {
+                                if (pausePinInput.text === root.temporaryPausePin) {
+                                    pauseErrorText.visible = false;
+                                    pausePinInput.text = "";
+                                    root.sessionUser = "PLAYER_1";
+                                    loginScreen.visible = false;
+                                    if (dashboardLoader.item) {
+                                        dashboardLoader.item.visible = true;
+                                    }
+                                } else {
+                                    pauseErrorText.visible = true;
+                                }
+                            }
+                        }
                     }
+
+                    // --- СТАНДАРТНЫЙ ЛОГИН (ЕСЛИ СЕССИЯ СВОБОДНА) ---
                     Column {
-                        visible: authCenter.authStep === 2; width: parent.width; spacing: 12
-                        Text { text: "PIN-КОД"; color: "#22c55e"; font.pixelSize: 10 }
-                        TextField { id: pinInput; width: parent.width; height: 60; color: "white"; font.pixelSize: 32; echoMode: TextInput.Password; inputMask: "0000"; focus: authCenter.authStep === 2; horizontalAlignment: Text.AlignHCenter }
+                        visible: root.sessionUser !== "PAUSE"
+                        width: parent.width
+                        spacing: 12
+
+                        Column {
+                            visible: authCenter.authStep === 1
+                            width: parent.width
+                            spacing: 12
+                            Text { text: "НОМЕР ТЕЛЕФОНА"; color: "#22c55e"; font.pixelSize: 10 }
+                            TextField {
+                                id: phoneInput
+                                width: parent.width
+                                height: 60
+                                color: "#22c55e"
+                                font.pixelSize: 24
+                                inputMask: "+7 (999) 999-99-99"
+                                focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
+                            }
+                        }
+
+                        Column {
+                            visible: authCenter.authStep === 2
+                            width: parent.width
+                            spacing: 12
+                            Text { text: "PIN-КОД"; color: "#22c55e"; font.pixelSize: 10 }
+                            TextField {
+                                id: pinInput
+                                width: parent.width
+                                height: 60
+                                color: "white"
+                                font.pixelSize: 32
+                                echoMode: TextInput.Password
+                                inputMask: "0000"
+                                focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                        }
+
+                        Item {
+                            height: 10
+                            width: 1
+                        }
+
+                        Button {
+                            width: parent.width
+                            height: 55
+                            text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"
+                            onClicked: {
+                                if (authCenter.authStep === 1) {
+                                    authCenter.authStep = 2;
+                                } else {
+                                    loginToServer(phoneInput.text, pinInput.text);
+                                }
+                            }
+                        }
                     }
-                }
-                Button {
-                    width: parent.width; height: 55
-                    text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"
-                    onClicked: { if (authCenter.authStep === 1) authCenter.authStep = 2; else loginToServer(phoneInput.text, pinInput.text); }
                 }
             }
         }
     }
 
     // ==========================================
-    // 4. СЕТЬ И ЛОГИКА ПАРСИНГА МАССИВА СЛОЕВ
+    // 4. СЕТЬ И ЛОГИКА
     // ==========================================
     function loginToServer(phone, pin) {
         if (typeof NetManager === "undefined") return;
@@ -201,26 +338,29 @@ Window {
                     root.sessionTime = response.user.time_remaining || "00:00:00";
                     loginScreen.visible = false;
                     dashboardLoader.source = "Dashboard.qml";
-                    if (NetManager !== null) NetManager.fetchGames();
+                    if (NetManager !== null) {
+                        NetManager.fetchGames();
+                    }
                 }
             }
         }
         xhr.send(JSON.stringify({ "phone": phone.replace(/[^0-9]/g, ""), "pin": pin.replace(/[^0-9]/g, ""), "terminal_id": root.terminalId }));
     }
 
-    Timer { interval: 30000; running: true; repeat: true; triggeredOnStart: false; onTriggered: fetchOverlays() }
+    Timer {
+        interval: 30000
+        running: true
+        repeat: true
+        onTriggered: fetchOverlays()
+    }
 
     function fetchOverlays() {
-        if (typeof NetManager === "undefined") return;
-        if (root.terminalId === 0) return;
-
+        if (typeof NetManager === "undefined" || root.terminalId === 0) return;
         var xhr = new XMLHttpRequest();
         xhr.open("GET", NetManager.serverUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime());
         xhr.onreadystatechange = function() {
-            if (xhr.readyState === XMLHttpRequest.DONE) {
-                if (xhr.status === 200) {
-                    updateOverlaysToScreen(JSON.parse(xhr.responseText));
-                }
+            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+                updateOverlaysToScreen(JSON.parse(xhr.responseText));
             }
         }
         xhr.send();
@@ -228,18 +368,14 @@ Window {
 
     function updateOverlaysToScreen(response) {
         var actualData = response.data ? response.data : response;
-
         if (!actualData || overlaysContainer.status !== Loader.Ready) return;
         var item = overlaysContainer.item;
         if (!item) return;
 
         var map = {
-            "top_left": item.b1,
-            "top_right": item.b2,
-            "mid_left": item.b3,
-            "mid_right": item.b5,
-            "bottom_left": item.b4,
-            "bottom_right": item.b6
+            "top_left": item.b1, "top_right": item.b2,
+            "mid_left": item.b3, "mid_right": item.b5,
+            "bottom_left": item.b4, "bottom_right": item.b6
         };
 
         for (var key in map) {
@@ -247,7 +383,6 @@ Window {
                 var vUrl = "";
                 var blockData = actualData[key];
 
-                // ИСПРАВЛЕНО: Парсим массив layers внутри content, чтобы вытащить слой с типом "video"
                 if (blockData.content && blockData.content.layers && Array.isArray(blockData.content.layers)) {
                     var layersArray = blockData.content.layers;
                     for (var i = 0; i < layersArray.length; i++) {
@@ -257,13 +392,7 @@ Window {
                         }
                     }
                 }
-
-                // Резервный поиск на случай, если бэкенд поменяет формат
                 if (vUrl === "" && blockData.video_url) vUrl = blockData.video_url;
-                if (vUrl === "" && blockData.content && blockData.content.video_url) vUrl = blockData.content.video_url;
-
-                console.log("[DEBUG-API] Слот:", key, "-> Распарсен URL из слоев:", vUrl);
-
                 map[key].videoSourceUrl = vUrl;
                 map[key].content = blockData.content;
                 map[key].isActive = blockData.is_active;
@@ -290,48 +419,68 @@ Window {
         Behavior on opacity { NumberAnimation { duration: 500 } }
 
         Text {
-            text: title; color: "#22c55e"; font.pixelSize: 10; z: 10
-            anchors.margins: 10; anchors.left: parent.left; anchors.top: parent.top; opacity: 0.6
+            text: title
+            color: "#22c55e"
+            font.pixelSize: 10
+            z: 10
+            anchors.margins: 10
+            anchors.left: parent.left
+            anchors.top: parent.top
+            opacity: 0.6
         }
 
-        // Текстовые слои и картинки рендерятся поверх видео (z: 20)
         Repeater {
             model: (content && content.layers) ? content.layers : []
             delegate: Item {
                 anchors.fill: parent
                 z: 20
-
                 Text {
                     visible: modelData.type === "text"
                     text: modelData.value || ""
                     color: modelData.color || "white"
                     font.pixelSize: modelData.size || 16
-                    font.bold: true; anchors.centerIn: parent
+                    font.bold: true
+                    anchors.centerIn: parent
                 }
-
                 Image {
                     visible: modelData.type === "image"
                     source: modelData.type === "image" ? (modelData.value || "") : ""
-                    anchors.fill: parent; fillMode: Image.PreserveAspectCrop; asynchronous: true
+                    anchors.fill: parent
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
                 }
             }
         }
 
-        // Подложка плеера (z: 1)
         Loader {
             active: parent.videoSourceUrl !== ""
             anchors.fill: parent
             z: 1
-
             sourceComponent: Component {
                 Item {
                     anchors.fill: parent
 
+                    // Функция динамического вычисления источника
+                    function updateSource() {
+                        if (parent.parent.videoSourceUrl !== "" && typeof NetManager !== "undefined") {
+                            overlayBgPlayer.source = NetManager.getLocalPath(parent.parent.videoSourceUrl, blockUniqueId);
+                        } else {
+                            overlayBgPlayer.source = root.fallbackVideo;
+                        }
+                    }
+
+                    // Ловим динамическое изменение пути от бэкенда (убирает 30с задержку)
+                    Connections {
+                        target: parent.parent
+                        function onVideoSourceUrlChanged() {
+                            overlayBgPlayer.updateSource();
+                        }
+                    }
+
                     Connections {
                         target: NetManager
                         function onFileDownloaded(remoteUrl, localPath, target) {
-                            if (target === blockUniqueId && videoSourceUrl === remoteUrl) {
-                                console.log("[OVERLAY-CACHE]", blockUniqueId, "перешел на локальный кэш-файл:", localPath);
+                            if (target === blockUniqueId && parent.parent.videoSourceUrl === remoteUrl) {
                                 overlayBgPlayer.source = localPath;
                             }
                         }
@@ -344,37 +493,21 @@ Window {
                         loops: MediaPlayer.Infinite
 
                         Component.onCompleted: {
-                            if (videoSourceUrl !== "" && typeof NetManager !== "undefined") {
-                                overlayBgPlayer.source = NetManager.getLocalPath(videoSourceUrl, blockUniqueId);
-                            } else {
-                                overlayBgPlayer.source = root.fallbackVideo;
-                            }
+                            updateSource();
                         }
 
                         onMediaStatusChanged: {
-                            if (mediaStatus === MediaPlayer.LoadedMedia && loginScreen.visible) {
+                            if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
                                 overlayBgPlayer.play();
                             } else if (mediaStatus === MediaPlayer.NoMedia || mediaStatus === MediaPlayer.InvalidMedia) {
-                                if (overlayBgPlayer.source !== root.fallbackVideo) {
+                                if (overlayBgPlayer.source !== root.fallbackVideo && overlayBgPlayer.source !== "") {
                                     overlayBgPlayer.source = root.fallbackVideo;
                                     overlayBgPlayer.play();
                                 }
                             }
                         }
-
-                        onErrorOccurred: function(error, errorString) {
-                            if (source !== root.fallbackVideo) {
-                                overlayBgPlayer.source = root.fallbackVideo;
-                                overlayBgPlayer.play();
-                            }
-                        }
                     }
-
-                    VideoOutput {
-                        id: vOutOverlayBg
-                        anchors.fill: parent
-                        fillMode: VideoOutput.PreserveAspectCrop
-                    }
+                    VideoOutput { id: vOutOverlayBg; anchors.fill: parent; fillMode: VideoOutput.PreserveAspectCrop }
                 }
             }
         }

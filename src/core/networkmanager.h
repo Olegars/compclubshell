@@ -30,6 +30,9 @@ public:
     Q_INVOKABLE void callAdmin(int terminalId);
     Q_INVOKABLE int getLatency(const QString &host);
 
+    // Метод генерации одноразового ПИН-кода для паузы
+    Q_INVOKABLE void requestPausePin(int terminalId);
+
     // Добавили аргумент target с дефолтным значением для совместимости
     Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target = "");
 
@@ -37,6 +40,7 @@ private slots:
     void onTerminalConfigFetched();
     void onGamesFetched();
     void onProductsFetched();
+    void onPausePinFetched();
 
 private:
     QNetworkAccessManager *manager;
