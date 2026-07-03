@@ -38,11 +38,22 @@ Window {
         }
     }
 
+    // Полная очистка и сброс формы до первого шага
+    function resetAuthForm() {
+        authCenter.authStep = 1
+        if (typeof phoneInput !== 'undefined') phoneInput.text = ""
+        if (typeof pinInput !== 'undefined') pinInput.text = ""
+    }
+
     // Мгновенный пинок бэкенда при уходе на паузу или выходе из неё (убирает лаг таймера)
     onSessionUserChanged: {
         if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
             console.log("[SHELL-STATUS] Сессия изменилась на:", root.sessionUser, ". Срочно запрашиваем оверлеи...");
             root.fetchOverlays();
+
+            if (root.sessionUser === "GUEST" || root.sessionUser === "") {
+                root.resetAuthForm();
+            }
         }
     }
 
@@ -153,7 +164,7 @@ Window {
         Rectangle {
             id: authCenter
             width: 420
-            height: 500
+            height: 520
             anchors.centerIn: parent
             color: "#050a06"
             border.color: root.sessionUser === "PAUSE" ? "#1d4ed8" : "#1a4d29"
@@ -194,7 +205,7 @@ Window {
 
                 Item {
                     width: parent.width
-                    height: 200
+                    height: 230
 
                     // --- ДИАЛОГ "Я ВЕРНУЛСЯ" (ЕСЛИ НА ПАУЗЕ) ---
                     Column {
@@ -203,10 +214,11 @@ Window {
                         spacing: 15
 
                         Text {
-                            text: "СЕССИЯ НА ПАУЗЕ"
+                            text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"
                             color: "#3b82f6"
                             font.pixelSize: 20
                             font.bold: true
+                            font.letterSpacing: 1
                             anchors.horizontalCenter: parent.horizontalCenter
                         }
 
@@ -221,12 +233,54 @@ Window {
                             id: pausePinInput
                             width: parent.width
                             height: 55
+                            font.pixelSize: 22
+                            font.bold: false
+                            font.family: "Roboto"
+                            font.letterSpacing: 4
+
+                            inputMask: "0000;_"
+                            echoMode: TextInput.Normal
+
                             color: "white"
-                            font.pixelSize: 28
-                            echoMode: TextInput.Password
-                            inputMask: "0000"
+                            selectionColor: "#3b82f6"
+                            selectedTextColor: "black"
                             horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: TextInput.AlignVCenter
                             focus: root.sessionUser === "PAUSE"
+
+                            onAccepted: {
+                                var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
+                                var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
+
+                                if (cleanPin === cleanTarget && cleanTarget !== "") {
+                                    pauseErrorText.visible = false;
+                                    pausePinInput.text = "";
+                                    root.sessionUser = "PLAYER_1";
+                                    loginScreen.visible = false;
+                                    if (dashboardLoader.item) {
+                                        dashboardLoader.item.visible = true;
+                                    }
+                                } else {
+                                    pauseErrorText.visible = true;
+                                }
+                            }
+
+                            background: Rectangle {
+                                color: pausePinInput.activeFocus ? "#08162a" : "#0d1117"
+                                border.color: pausePinInput.activeFocus ? "#3b82f6" : "#1d4ed8"
+                                border.width: pausePinInput.activeFocus ? 2 : 1
+                                radius: 4
+
+                                Behavior on color { ColorAnimation { duration: 150 } }
+                                Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                layer.enabled: pausePinInput.activeFocus
+                                layer.effect: MultiEffect {
+                                    blurEnabled: true
+                                    blur: 0.2
+                                    brightness: 0.1
+                                }
+                            }
                         }
 
                         Text {
@@ -243,7 +297,10 @@ Window {
                             height: 50
                             text: "Я ВЕРНУЛСЯ"
                             onClicked: {
-                                if (pausePinInput.text === root.temporaryPausePin) {
+                                var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
+                                var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
+
+                                if (cleanPin === cleanTarget && cleanTarget !== "") {
                                     pauseErrorText.visible = false;
                                     pausePinInput.text = "";
                                     root.sessionUser = "PLAYER_1";
@@ -264,37 +321,118 @@ Window {
                         width: parent.width
                         spacing: 12
 
+                        // --- ШАГ 1: ВВОД НОМЕРА ТЕЛЕФОНА ---
                         Column {
                             visible: authCenter.authStep === 1
                             width: parent.width
                             spacing: 12
-                            Text { text: "НОМЕР ТЕЛЕФОНА"; color: "#22c55e"; font.pixelSize: 10 }
+
+                            Text {
+                                text: "НОМЕР ТЕЛЕФОНА"
+                                color: "#22c55e"
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.letterSpacing: 2
+                                anchors.horizontalCenter: parent.horizontalCenter
+                            }
+
                             TextField {
                                 id: phoneInput
                                 width: parent.width
-                                height: 60
-                                color: "#22c55e"
-                                font.pixelSize: 24
-                                inputMask: "+7 (999) 999-99-99"
+                                height: 55
+                                font.pixelSize: 22
+                                font.bold: false
+                                font.family: "Roboto"
+                                font.letterSpacing: 1
+
+                                inputMask: "+7 (999) 999-99-99;_"
                                 focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
+
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: TextInput.AlignVCenter
+
+                                color: "white"
+                                selectionColor: "#22c55e"
+                                selectedTextColor: "black"
+
+                                onAccepted: {
+                                    authCenter.authStep = 2
+                                }
+
+                                background: Rectangle {
+                                    color: phoneInput.activeFocus ? "#08120a" : "#0d130e"
+                                    border.color: phoneInput.activeFocus ? "#22c55e" : "#1a4d29"
+                                    border.width: phoneInput.activeFocus ? 2 : 1
+                                    radius: 4
+
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+                                    Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                    layer.enabled: phoneInput.activeFocus
+                                    layer.effect: MultiEffect {
+                                        blurEnabled: true
+                                        blur: 0.2
+                                        brightness: 0.1
+                                    }
+                                }
                             }
                         }
 
+                        // --- ШАГ 2: ВВОД PIN-КОДА ---
                         Column {
                             visible: authCenter.authStep === 2
                             width: parent.width
                             spacing: 12
-                            Text { text: "PIN-КОД"; color: "#22c55e"; font.pixelSize: 10 }
+
+                            Text {
+                                text: "PIN-КОД"
+                                color: "#22c55e"
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.letterSpacing: 2
+                                anchors.horizontalCenter: parent.horizontalCenter
+                            }
+
                             TextField {
                                 id: pinInput
                                 width: parent.width
-                                height: 60
-                                color: "white"
-                                font.pixelSize: 32
-                                echoMode: TextInput.Password
-                                inputMask: "0000"
+                                height: 55
+                                font.pixelSize: 22
+                                font.bold: false
+                                font.family: "Roboto"
+                                font.letterSpacing: 4
+
+                                inputMask: "0000;_"
+                                echoMode: TextInput.Normal
+
                                 focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"
                                 horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: TextInput.AlignVCenter
+
+                                color: "white"
+                                selectionColor: "#22c55e"
+                                selectedTextColor: "black"
+
+                                onAccepted: {
+                                    loginToServer(phoneInput.text, pinInput.text);
+                                }
+
+                                background: Rectangle {
+                                    color: pinInput.activeFocus ? "#08120a" : "#0d130e"
+                                    border.color: pinInput.activeFocus ? "#22c55e" : "#1a4d29"
+                                    border.width: pinInput.activeFocus ? 2 : 1
+                                    radius: 4
+
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+                                    Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                    layer.enabled: pinInput.activeFocus
+                                    layer.effect: MultiEffect {
+                                        blurEnabled: true
+                                        blur: 0.2
+                                        brightness: 0.1
+                                    }
+                                }
                             }
                         }
 
@@ -312,6 +450,33 @@ Window {
                                     authCenter.authStep = 2;
                                 } else {
                                     loginToServer(phoneInput.text, pinInput.text);
+                                }
+                            }
+                        }
+
+                        // --- КНОПКА "НАЗАД" ПОД КНОПКОЙ "НАЧАТЬ СЕССИЮ" ---
+                        Text {
+                            id: backBtn
+                            text: "НАЗАД"
+                            font.pixelSize: 12
+                            font.bold: true
+                            font.letterSpacing: 2
+                            color: backMouse.containsMouse ? "#22c55e" : "#666666"
+                            visible: authCenter.authStep === 2
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            Layout.topMargin: 5
+
+                            Behavior on color { ColorAnimation { duration: 100 } }
+
+                            MouseArea {
+                                id: backMouse
+                                anchors.fill: parent
+                                anchors.margins: -10
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    pinInput.text = ""
+                                    authCenter.authStep = 1
                                 }
                             }
                         }

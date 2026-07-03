@@ -281,8 +281,8 @@ Item {
                                         if (res.status === "success") {
                                             if (typeof root !== 'undefined') {
                                                 root.temporaryPausePin = res.pin_code;
-                                                root.sessionUser = "PAUSE"; // Выставляем статус паузы
-                                                root.authScreen.visible = true; // Открываем экран блокировки
+                                                root.sessionUser = "PAUSE";
+                                                root.authScreen.visible = true;
                                                 dashboardRoot.visible = false;
                                             }
                                         }
