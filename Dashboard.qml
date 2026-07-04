@@ -229,18 +229,20 @@ Item {
                             id: storeActionBtn
                             text: "МАГАЗИН"
                             icon: "🛒"
-
-                            // Контур кнопки всегда остается золотистым/желтым
                             baseColor: "#eab308"
-
                             isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
                             orderIsFinished: (typeof root !== 'undefined' && root.orderStatusText === "ЗАКАЗ ВЫПОЛНЕН")
                             statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
-
                             onClicked: storePopup.open()
                         }
 
-                        ActionBtn { text: "ПОПОЛНИТЬ БАЛАНС"; icon: "💳" }
+                        // КНОПКА ПОПОЛНЕНИЯ БАЛАНСА
+                        ActionBtn {
+                            text: "ПОПОЛНИТЬ БАЛАНС"
+                            icon: "💳"
+                            baseColor: "#eab308"
+                            onClicked: depositPopup.open()
+                        }
 
                         ActionBtn {
                             text: "ОТОЙТИ (ПАУЗА)"
@@ -542,7 +544,139 @@ Item {
     }
 
     // ==========================================
-    // АВТОНОМНЫЙ КЛАСС КНОПОК БЕЗ КАКИХ-ЛИБО ЗАЛИВОК ФОНА[cite: 3]
+    // МОДАЛЬНОЕ ОКНО ОНЛАЙН-ПОПОЛНЕНИЯ БАЛАНСА ПО QR (ИСПРАВЛЕНО)
+    // ==========================================
+    Popup {
+        id: depositPopup
+        width: 500
+        height: 520
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
+        background: Rectangle { color: "#050505"; border.color: "#eab308"; border.width: 1; radius: 8 }
+
+        property string qrSourceUrl: ""
+        property int selectedAmount: 100    // Базовое рабочее свойство суммы
+        property bool showQrScreen: false   // Базовое рабочее свойство экрана
+
+        onClosed: {
+            showQrScreen = false;
+            qrSourceUrl = "";
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 30
+            spacing: 20
+
+            // Заголовок попапа
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "ПОПОЛНЕНИЕ БАЛАНСА"; color: "#eab308"; font.pixelSize: 18; font.bold: true; font.letterSpacing: 1 }
+                Item { Layout.fillWidth: true }
+                Rectangle {
+                    width: 28; height: 28; color: "transparent"; border.color: "#222"; radius: 14
+                    Text { anchors.centerIn: parent; text: "✕"; color: "#666"; font.pixelSize: 12 }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.close() }
+                }
+            }
+
+            // ЭКРАН 1: ВЫБОР СУММЫ ДЛЯ ОПЛАТЫ
+            ColumnLayout {
+                visible: !depositPopup.showQrScreen
+                Layout.fillWidth: true
+                spacing: 15
+
+                Text { text: "Выберите сумму к зачислению:"; color: "#888"; font.pixelSize: 12 }
+
+                RowLayout {
+                    spacing: 10; Layout.fillWidth: true
+                    Repeater {
+                        model: [100, 300, 500, 1000]
+                        delegate: Rectangle {
+                            Layout.fillWidth: true; Layout.preferredHeight: 45; radius: 4
+                            color: depositPopup.selectedAmount === modelData ? "#eab308" : "#0d0d0d"
+                            border.color: depositPopup.selectedAmount === modelData ? "#eab308" : "#222"
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData + " ₽"
+                                color: depositPopup.selectedAmount === modelData ? "black" : "white"
+                                font.bold: true; font.pixelSize: 13
+                            }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.selectedAmount = modelData }
+                        }
+                    }
+                }
+
+                Item { height: 15; width: 1 }
+
+                // Кнопка генерации СБП QR-кода
+                Rectangle {
+                    Layout.fillWidth: true; Layout.preferredHeight: 55; radius: 6
+                    color: "#111"; border.color: sbpMouse.containsMouse ? "#eab308" : "#222"
+                    RowLayout {
+                        anchors.fill: parent; anchors.margins: 15; spacing: 15
+                        Text { text: "📲"; font.pixelSize: 20 }
+                        Text { text: "Получить QR-код на оплату"; color: "white"; font.bold: true; font.pixelSize: 14 }
+                        Item { Layout.fillWidth: true }
+                        Text { text: "⚡"; color: "#eab308" }
+                    }
+                    MouseArea {
+                        id: sbpMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            // ФИКС ПЕРЕМЕННЫХ: Заменили depositAmount на selectedAmount
+                            depositPopup.qrSourceUrl = "http://192.168.222.2:22222/api/payments/sbp-mock-qr?amount=" + depositPopup.selectedAmount + "&computer_id=" + dashboardRoot.termId + "&t=" + Date.now();
+                            depositPopup.showQrScreen = true;
+                        }
+                    }
+                }
+            }
+
+            // ЭКРАН 2: ОТОБРАЖЕНИЕ QR-КОДА ОПЛАТЫ
+            ColumnLayout {
+                visible: depositPopup.showQrScreen
+                Layout.fillWidth: true
+                spacing: 15
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    width: 220; height: 220; color: "white"; radius: 6
+                    Image {
+                        anchors.fill: parent; anchors.margins: 10
+                        source: depositPopup.qrSourceUrl
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                    }
+                }
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Сумма к зачислению: " + depositPopup.selectedAmount + " ₽"
+                    color: "#eab308"; font.pixelSize: 16; font.bold: true
+                }
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Отсканируйте камерой смартфона для симуляции СБП.\nЗаглушка бэкенда начислит рубли автоматически."
+                    color: "#555"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter
+                }
+
+                Item { height: 5; width: 1 }
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    width: 140; height: 35; radius: 4; color: "#111"; border.color: "#333"
+                    Text { anchors.centerIn: parent; text: "Назад к суммам"; color: "#aaa"; font.pixelSize: 12 }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.showQrScreen = false }
+                }
+            }
+        }
+    }
+
+    // ==========================================
+    // АВТОНОМНЫЙ КЛАСС КНОПОК БЕЗ КАКИХ-ЛИБО ЗАЛИВОК ФОНА
     // ==========================================
     component ActionBtn : Rectangle {
         id: controlRoot
@@ -558,7 +692,6 @@ Item {
 
         Layout.fillWidth: true; Layout.preferredHeight: 50; radius: 4
 
-        // ЖЕСТКИЙ ФИКС ФОНА: ВСЕГДА transparent в пассивном и активном состоянии. Окрашивается только при клике мышкой[cite: 3].
         color: bMouse.pressed ? baseColor : "transparent"
         border.color: bMouse.containsMouse || isActiveStatus ? baseColor : Qt.rgba(1,1,1,0.15)
         border.width: 1
@@ -567,7 +700,6 @@ Item {
             anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 20; spacing: 6
             Text { text: icon; font.pixelSize: 18; anchors.verticalCenter: parent.verticalCenter }
 
-            // Основной текст "МАГАЗИН" (Золотистый цвет)
             Text {
                 text: controlRoot.text
                 font.bold: true; font.pixelSize: 14
@@ -575,7 +707,6 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
             }
 
-            // Дополнительная приписка статуса чека. При выполнении заказа ВСЕГДА принудительно загорается зелёным!
             Text {
                 text: " (" + controlRoot.statusText + ")"
                 font.bold: true; font.pixelSize: 14
@@ -586,7 +717,6 @@ Item {
         }
         MouseArea { id: bMouse; anchors.fill: parent; hoverEnabled: true; onClicked: controlRoot.clicked() }
 
-        // ВСТРОЕННЫЙ КРАСНЫЙ СПИННЕР (Вращается только на этапе сборки и тухнет при выполнении)
         RowLayout {
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right
@@ -596,7 +726,7 @@ Item {
             Rectangle {
                 width: 16; height: 16
                 color: "transparent"
-                border.color: controlRoot.baseColor
+                border.color: "#ef4444"
                 border.width: 2; radius: 8
 
                 Rectangle {
@@ -612,7 +742,6 @@ Item {
             }
         }
 
-        // СТАТИЧНАЯ ЗЕЛЁНАЯ ГАЛОЧКА (✓ появляется строго вместо спиннера при выполнении заказа)
         Text {
             anchors.verticalCenter: parent.verticalCenter
             anchors.right: parent.right
