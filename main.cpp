@@ -42,7 +42,7 @@ QString getMotherboardSerialNumber() {
 int main(int argc, char *argv[])
 {
     qDebug() << "[START-TRACE] [STEP 1] Вход в функцию main.cpp";
-
+    qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
     QGuiApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
