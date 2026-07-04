@@ -8,6 +8,7 @@
 #include <QProcess>
 #include <QCoreApplication>
 #include <QQmlApplicationEngine>
+#include <QUrlQuery>  // Добавлено для передачи параметров в GET запросе
 #include <vector>
 #include <QDir>
 #include <QUrl>
@@ -145,7 +146,22 @@ void NetworkManager::onGamesFetched() {
 }
 
 void NetworkManager::fetchProducts() {
-    QNetworkRequest request(QUrl(m_serverUrl + "/api/shell/store/products"));
+    int terminalId = 0;
+    if (!qApp->property("engine").isNull()) {
+        QQmlApplicationEngine *engine = qobject_cast<QQmlApplicationEngine*>(qApp->property("engine").value<QObject*>());
+        if (engine && !engine->rootObjects().isEmpty()) {
+            terminalId = engine->rootObjects().first()->property("terminalId").toInt();
+        }
+    }
+
+    QUrl url(m_serverUrl + "/api/shell/store/products");
+    QUrlQuery query;
+    if (terminalId > 0) {
+        query.addQueryItem("terminal_id", QString::number(terminalId));
+    }
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
     QNetworkReply *reply = manager->get(request);
     connect(reply, &QNetworkReply::finished, this, &NetworkManager::onProductsFetched);
 }
@@ -155,10 +171,31 @@ void NetworkManager::onProductsFetched() {
     if (!reply) return;
 
     if (reply->error() == QNetworkReply::NoError) {
-        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
-        QJsonArray productsArray = doc.array();
+        QByteArray responseData = reply->readAll();
 
+        // КОНТРОЛЬ В КОНСОЛИ: Выводим то, что вернул доработанный бэкенд Laravel
+        qDebug() << "[NET-TRACKER] Комбинированный ответ сервера:" << responseData;
+
+        QJsonDocument doc = QJsonDocument::fromJson(responseData);
+        QJsonObject rootObj = doc.object();
+
+        // 1. Парсим статус активного заказа и прокидываем напрямую в корень Main.qml
+        bool hasActiveOrder = rootObj["has_active_order"].toBool();
+        QString statusText = rootObj["status_text"].toString();
+
+        if (!qApp->property("engine").isNull()) {
+            QQmlApplicationEngine *engine = qobject_cast<QQmlApplicationEngine*>(qApp->property("engine").value<QObject*>());
+            if (engine && !engine->rootObjects().isEmpty()) {
+                QObject *rootQml = engine->rootObjects().first();
+                rootQml->setProperty("hasActiveOrder", hasActiveOrder);
+                rootQml->setProperty("orderStatusText", statusText.isEmpty() ? "ЗАКАЗ В РАБОТЕ" : statusText.toUpper());
+            }
+        }
+
+        // 2. Распаковываем массив товаров из ключа "products"
+        QJsonArray productsArray = rootObj["products"].toArray();
         std::vector<StoreItem> products;
+
         for (const auto &val : productsArray) {
             QJsonObject obj = val.toObject();
             StoreItem item;
@@ -166,7 +203,7 @@ void NetworkManager::onProductsFetched() {
             item.name = obj["name"].toString();
             item.category = obj["category"].toString();
 
-            // Безопасно перевариваем как чистые double, так и строковые numeric(10,2) из базы
+            // Железный парсинг цены из строки "90.00" / "180.00"
             if (obj["price"].isString()) {
                 item.price = obj["price"].toString().toDouble();
             } else {
@@ -178,6 +215,9 @@ void NetworkManager::onProductsFetched() {
             products.push_back(item);
         }
         storeModel->setProducts(products);
+        qDebug() << "[NET] Модель обновлена. Успешно загружено товаров:" << products.size() << "| Статус заказа:" << hasActiveOrder;
+    } else {
+        qDebug() << "[NET ERROR] Не удалось получить маркет и статус заказа:" << reply->errorString();
     }
     reply->deleteLater();
 }
@@ -241,4 +281,9 @@ void NetworkManager::onPausePinFetched() {
 int NetworkManager::getLatency(const QString &host) {
     Q_UNUSED(host);
     return 24 + (rand() % 4);
+}
+
+// Пустая заглушка — fetchProducts теперь обновляет статус и товары одновременно
+void NetworkManager::checkOrderStatus(int terminalId) {
+    Q_UNUSED(terminalId);
 }

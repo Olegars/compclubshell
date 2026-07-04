@@ -9,22 +9,18 @@ Item {
     id: dashboardRoot
     anchors.fill: parent
 
-    // Данные профиля (заполняются автоматически из Main.qml при успешном логине)
-    property string userName: "PLAYER_1"
-    property real userBalance: 0
-    property string timeRemaining: "00:00:00"
+    property string userName: (typeof root !== 'undefined') ? root.sessionUser : "PLAYER_1"
+    property real userBalance: (typeof root !== 'undefined') ? root.sessionBalance : 0.0
+    property string timeRemaining: (typeof root !== 'undefined') ? root.sessionTime : "00:00:00"
 
-    // Принимаем числовой ID terminal и тип ПК напрямую из Main.qml
     property int termId: (typeof root !== 'undefined' && root !== null) ? root.terminalId : 0
     property string pcType: (typeof root !== 'undefined' && root !== null) ? root.pcTypeFromDatabase : "standard"
 
-    // Динамическое определение PRO-зоны на основе ответа бэкенда
     property bool isProBootcamp: {
         var typeLower = pcType.toLowerCase();
         return typeLower === "pro" || typeLower === "bootcamp" || typeLower === "trio" || typeLower === "vip";
     }
 
-    // Текст для отображения зоны
     property string zoneTitle: {
         if (pcType.toLowerCase() === "trio") return "TRIO ZONE"
         if (pcType.toLowerCase() === "vip") return "VIP ZONE"
@@ -33,15 +29,18 @@ Item {
 
     property string accentColor: isProBootcamp ? "#a855f7" : "#22c55e"
     property string darkBg: "#030704"
-
-    // Глобальное свойство языка для UI
     property string currentLanguage: "RU"
 
-    // Модель данных для локального хранения корзины
+    // Принудительно запрашиваем список товаров и статус active чека при загрузке дашборда
+    Component.onCompleted: {
+        if (typeof NetManager !== 'undefined') {
+            NetManager.fetchProducts();
+        }
+    }
+
     ListModel {
         id: cartModel
 
-        // Хелпер для подсчета итоговой стоимости всей корзины
         function updateTotalPrice() {
             var sum = 0;
             for (var i = 0; i < count; i++) {
@@ -53,7 +52,6 @@ Item {
             return sum.toFixed(0);
         }
 
-        // Функция добавления товара в корзину
         function addProduct(prodId, prodName, prodPrice) {
             var parsedPrice = parseFloat(prodPrice || 0);
             console.log("[CART-TRACE] Добавление в корзину -> ID:", prodId, "| Name:", prodName, "| Пришедшая цена:", prodPrice, "| Распарсено:", parsedPrice);
@@ -72,7 +70,6 @@ Item {
         }
     }
 
-    // --- ФОН ---
     Rectangle {
         id: bgContainer
         anchors.fill: parent
@@ -98,15 +95,12 @@ Item {
         }
     }
 
-    // ==========================================
-    // ГЛАВНЫЙ ИНТЕРФЕЙС ШЕЛЛА
-    // ==========================================
     RowLayout {
         anchors.fill: parent
         anchors.margins: 40
         spacing: 40
 
-        // ЛЕВАЯ ПАНЕЛЬ (ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ)
+        // ЛЕВАЯ ПАНЕЛЬ С КНОПКАМИ И ИНДИКАТОРОМ ЗАКАЗА
         Rectangle {
             Layout.preferredWidth: 380
             Layout.fillHeight: true
@@ -119,7 +113,6 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 30
 
-                // КНОПКА "SOS" (ВЫЗОВ АДМИНИСТРАТОРА)
                 Rectangle {
                     id: sosBtn
                     width: 60
@@ -193,74 +186,36 @@ Item {
                         Layout.fillWidth: true
                         spacing: 5
                         Text { text: "ПОЛЬЗОВАТЕЛЬ"; color: accentColor; font.pixelSize: 10; opacity: 0.7 }
-                        Text { text: userName; color: "white"; font.pixelSize: 28; font.bold: true }
+                        Text { text: dashboardRoot.userName; color: "white"; font.pixelSize: 28; font.bold: true }
                         Item { height: 10; width: 1 }
                         Text { text: "ОСТАЛОСЬ ВРЕМЕНИ"; color: accentColor; font.pixelSize: 10; opacity: 0.7 }
                         Text {
-                            text: timeRemaining
+                            text: dashboardRoot.timeRemaining
                             color: "white"
                             font.pixelSize: 52
                             font.family: "Monospace"
                             font.bold: true
                         }
-                        Text { text: "БАЛАНС: " + userBalance.toFixed(2) + " ₽"; color: "#a3a3a3"; font.pixelSize: 18 }
+                        Text { text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"; color: "#a3a3a3"; font.pixelSize: 18 }
                     }
 
                     Item { Layout.fillHeight: true }
 
                     Text {
                         text: "БЫСТРЫЙ ЗАПУСК ПЛАТФОРМ"
-                        color: accentColor
-                        font.pixelSize: 10
-                        font.bold: true
-                        font.letterSpacing: 2
-                        opacity: 0.6
-                        Layout.alignment: Qt.AlignHCenter
+                        color: accentColor; font.pixelSize: 10; font.bold: true; font.letterSpacing: 2; opacity: 0.6; Layout.alignment: Qt.AlignHCenter
                     }
 
                     GridLayout {
-                        columns: 3
-                        rows: 2
-                        columnSpacing: 10
-                        rowSpacing: 10
+                        columns: 3; rows: 2; columnSpacing: 10; rowSpacing: 10
                         Layout.fillWidth: true
 
-                        PlatformSquareBtn {
-                            btnText: "STEAM"
-                            iconText: "󰓓"
-                            brandColor: "#00adef"
-                            onClicked: Launcher.launch("C:\\Program Files (x86)\\Steam\\steam.exe", "")
-                        }
-                        PlatformSquareBtn {
-                            btnText: "EPIC"
-                            iconText: "󰊗"
-                            brandColor: "#ffffff"
-                            onClicked: Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", "")
-                        }
-                        PlatformSquareBtn {
-                            btnText: "ROBLOX"
-                            iconText: "󰩊"
-                            brandColor: "#e11d48"
-                            onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", "")
-                        }
-                        PlatformSquareBtn {
-                            btnText: "RIOT"
-                            iconText: "󰊴"
-                            brandColor: "#d32f2f"
-                            onClicked: Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "")
-                        }
-                        PlatformSquareBtn {
-                            btnText: "EA APP"
-                            iconText: "󰓡"
-                            brandColor: "#ff5722"
-                            onClicked: Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", "")
-                        }
-                        PlatformSquareBtn {
-                            btnText: "VK PLAY"
-                            iconText: "󰕼"
-                            brandColor: "#ff3347"
-                            onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", "")
-                        }
+                        PlatformSquareBtn { btnText: "STEAM"; iconText: "󰓓"; brandColor: "#00adef"; onClicked: Launcher.launch("C:\\Program Files (x86)\\Steam\\steam.exe", "") }
+                        PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", "") }
+                        PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", "") }
+                        PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "") }
+                        PlatformSquareBtn { btnText: "EA APP"; iconText: "󰓡"; brandColor: "#ff5722"; onClicked: Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", "") }
+                        PlatformSquareBtn { btnText: "VK PLAY"; iconText: "󰕼"; brandColor: "#ff3347"; onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", "") }
                     }
 
                     Item { height: 5; width: 1 }
@@ -269,10 +224,19 @@ Item {
                         Layout.fillWidth: true
                         spacing: 10
 
+                        // КНОПКА МАГАЗИНА С АВТОМАТИЧЕСКИМ ТРЕКЕРОМ СТАТУСОВ В ДЛИНУ
                         ActionBtn {
-                            text: "МАРКЕТ И БАР"
+                            id: storeActionBtn
+                            text: "МАГАЗИН"
                             icon: "🛒"
+
+                            // Контур кнопки всегда остается золотистым/желтым
                             baseColor: "#eab308"
+
+                            isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
+                            orderIsFinished: (typeof root !== 'undefined' && root.orderStatusText === "ЗАКАЗ ВЫПОЛНЕН")
+                            statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
+
                             onClicked: storePopup.open()
                         }
 
@@ -320,24 +284,17 @@ Item {
                     Item { height: 10; width: 1 }
 
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 40
-                        color: "#0a0f0b"
-                        border.color: "#162e1a"
-                        radius: 4
+                        Layout.fillWidth: true; Layout.preferredHeight: 40
+                        color: "#0a0f0b"; border.color: "#162e1a"; radius: 4
 
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 12
+                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 12
 
                             RowLayout {
                                 spacing: 6
                                 Text { text: "🔊"; font.pixelSize: 12 }
                                 Item {
-                                    id: customSlider
-                                    width: 90; height: 20
+                                    id: customSlider; width: 90; height: 20
                                     property int value: 50
                                     Rectangle {
                                         width: parent.width; height: 4; radius: 2; color: "#222"
@@ -375,9 +332,7 @@ Item {
 
         // ПРАВАЯ ПАНЕЛЬ (БИБЛИОТЕКА ИГР)
         ColumnLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            spacing: 25
+            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 25
             Text { text: "БИБЛИОТЕКА ИГР"; color: "white"; font.pixelSize: 24; font.bold: true; font.letterSpacing: 2 }
             Row {
                 id: filterRow; Layout.fillWidth: true; spacing: 30; property string activeTab: "ВСЕ ИГРЫ"
@@ -412,9 +367,6 @@ Item {
         }
     }
 
-    // ==========================================
-    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА С КОРЗИНОЙ
-    // ==========================================
     Popup {
         id: storePopup
         width: 1500; height: 880; anchors.centerIn: parent; modal: true; focus: true
@@ -422,7 +374,6 @@ Item {
         Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
         background: Rectangle { color: "#050505"; border.color: "#eab308"; border.width: 2; radius: 12 }
 
-        // ТРАССИРОВКА: Дамп при открытии попапа магазина
         onOpened: {
             console.log("[QML-STORE-TRACE] Модель storeModel открыта. Количество записей rowCount:", storeModel.rowCount());
             for (var i = 0; i < storeModel.rowCount(); i++) {
@@ -462,20 +413,11 @@ Item {
             RowLayout {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 30
 
-                // ЛЕВАЯ СТОРОНА: СЕТКА ТОВАРОВ
                 GridView {
                     id: storeGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 250; cellHeight: 330; clip: true; model: storeModel
                     delegate: Rectangle {
                         width: storeGrid.cellWidth - 15; height: storeGrid.cellHeight - 15; color: "#0a0a0a"; border.color: "#1c1c1c"; border.width: 1; radius: 10
                         opacity: (typeof stock !== "undefined" ? stock : model["stock"]) > 0 ? 1.0 : 0.35
-
-                        Component.onCompleted: {
-                            console.log("[DELEGATE-ITEM-TRACE] Отрисовка карточки. Название:", name,
-                                        "| Сырой 'price':", price,
-                                        "| Тип 'price':", typeof price,
-                                        "| model['price']:", model["price"],
-                                        "| modelData.price:", (typeof modelData !== "undefined" ? modelData.price : "no modelData"));
-                        }
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 15
@@ -501,8 +443,7 @@ Item {
                                         else if (typeof model["price"] !== "undefined") finalPrice = model["price"];
                                         return parseFloat(finalPrice || 0).toFixed(0) + " ₽";
                                     }
-                                    color: "#eab308"
-                                    font.pixelSize: 22; font.bold: true; font.italic: true
+                                    color: "#eab308"; font.pixelSize: 22; font.bold: true; font.italic: true
                                 }
                                 Item { Layout.fillWidth: true }
                                 Rectangle {
@@ -525,7 +466,6 @@ Item {
                     }
                 }
 
-                // ПРАВАЯ СТОРОНА: БОКОВАЯ ПАНЕЛЬ КОРЗИНЫ
                 Rectangle {
                     Layout.preferredWidth: 400; Layout.fillHeight: true; color: "#0a0a0a"; border.color: "#1c1c1c"; radius: 8
                     ColumnLayout {
@@ -559,7 +499,7 @@ Item {
                                     Rectangle {
                                         width: 28; height: 28; color: "transparent"
                                         Text { anchors.centerIn: parent; text: "🗑"; color: "#ef4444"; font.pixelSize: 14 }
-                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cartModel.remove(index) }
+                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: text.remove(index) }
                                     }
                                 }
                             }
@@ -587,6 +527,10 @@ Item {
                                         }
                                         cartModel.clear();
                                         storePopup.close();
+
+                                        if (typeof NetManager !== 'undefined') {
+                                            NetManager.fetchProducts();
+                                        }
                                     }
                                 }
                             }
@@ -598,68 +542,104 @@ Item {
     }
 
     // ==========================================
-    // ИЗОЛИРОВАННЫЕ КОМПОНЕНТЫ КНОПОК (НА ВЕРХНЕМ УРОВНЕ)
+    // АВТОНОМНЫЙ КЛАСС КНОПОК БЕЗ КАКИХ-ЛИБО ЗАЛИВОК ФОНА[cite: 3]
     // ==========================================
     component ActionBtn : Rectangle {
+        id: controlRoot
         property string text: "BUTTON"
         property string icon: ""
         property string baseColor: accentColor
+
+        property bool isActiveStatus: false
+        property bool orderIsFinished: false
+        property string statusText: ""
+
         signal clicked()
 
-        Layout.fillWidth: true
-        Layout.preferredHeight: 50
-        radius: 4
+        Layout.fillWidth: true; Layout.preferredHeight: 50; radius: 4
 
-        color: bMouse.pressed ? baseColor : (bMouse.containsMouse ? Qt.rgba(1,1,1,0.06) : "transparent")
-        border.color: bMouse.containsMouse ? baseColor : Qt.rgba(1,1,1,0.15)
+        // ЖЕСТКИЙ ФИКС ФОНА: ВСЕГДА transparent в пассивном и активном состоянии. Окрашивается только при клике мышкой[cite: 3].
+        color: bMouse.pressed ? baseColor : "transparent"
+        border.color: bMouse.containsMouse || isActiveStatus ? baseColor : Qt.rgba(1,1,1,0.15)
         border.width: 1
 
-        Behavior on border.color {
-            ColorAnimation { duration: 100 }
-        }
-
         Row {
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.left: parent.left
-            anchors.leftMargin: 20
-            spacing: 15
-
+            anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 20; spacing: 6
             Text { text: icon; font.pixelSize: 18; anchors.verticalCenter: parent.verticalCenter }
+
+            // Основной текст "МАГАЗИН" (Золотистый цвет)
             Text {
-                text: parent.parent.text
-                font.bold: true
-                font.pixelSize: 14
+                text: controlRoot.text
+                font.bold: true; font.pixelSize: 14
                 color: bMouse.pressed ? "black" : (bMouse.containsMouse ? "white" : baseColor)
                 anchors.verticalCenter: parent.verticalCenter
             }
+
+            // Дополнительная приписка статуса чека. При выполнении заказа ВСЕГДА принудительно загорается зелёным!
+            Text {
+                text: " (" + controlRoot.statusText + ")"
+                font.bold: true; font.pixelSize: 14
+                visible: controlRoot.isActiveStatus && controlRoot.statusText !== ""
+                color: controlRoot.orderIsFinished ? "#22c55e" : "#ef4444"
+                anchors.verticalCenter: parent.verticalCenter
+            }
         }
-        MouseArea { id: bMouse; anchors.fill: parent; hoverEnabled: true; onClicked: parent.clicked() }
+        MouseArea { id: bMouse; anchors.fill: parent; hoverEnabled: true; onClicked: controlRoot.clicked() }
+
+        // ВСТРОЕННЫЙ КРАСНЫЙ СПИННЕР (Вращается только на этапе сборки и тухнет при выполнении)
+        RowLayout {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 20
+            visible: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
+
+            Rectangle {
+                width: 16; height: 16
+                color: "transparent"
+                border.color: controlRoot.baseColor
+                border.width: 2; radius: 8
+
+                Rectangle {
+                    width: 9; height: 9
+                    color: darkBg
+                    anchors.top: parent.top; anchors.right: parent.right; anchors.margins: -2
+                }
+
+                RotationAnimation on rotation {
+                    from: 0; to: 360; duration: 1000; loops: Animation.Infinite
+                    running: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
+                }
+            }
+        }
+
+        // СТАТИЧНАЯ ЗЕЛЁНАЯ ГАЛОЧКА (✓ появляется строго вместо спиннера при выполнении заказа)
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 20
+            text: "✓"
+            color: "#22c55e"
+            font.bold: true
+            font.pixelSize: 16
+            visible: controlRoot.isActiveStatus && controlRoot.orderIsFinished
+        }
     }
 
     component PlatformSquareBtn : Rectangle {
-        property string btnText: "LAUNCH"
-        property string iconText: "🎮"
-        property string brandColor: accentColor
+        property string btnText: "LAUNCH"; property string iconText: "🎮"; property string brandColor: accentColor
         signal clicked()
 
-        Layout.fillWidth: true
-        Layout.preferredHeight: 65
-        radius: 4
-
+        Layout.fillWidth: true; Layout.preferredHeight: 65; radius: 4
         color: pMouse.containsMouse ? Qt.rgba(1,1,1,0.06) : "#0a0d0b"
-        border.color: pMouse.containsMouse ? brandColor : "#1a1f1c"
-        border.width: 1
+        border.color: pMouse.containsMouse ? brandColor : "#1a1f1c"; border.width: 1
 
-        Behavior on border.color {
-            ColorAnimation { duration: 100 }
-        }
+        Behavior on border.color { ColorAnimation { duration: 100 } }
 
         layer.enabled: pMouse.containsMouse
         layer.effect: MultiEffect { blurEnabled: true; blur: 0.2; brightness: 0.1 }
 
         Column {
-            anchors.centerIn: parent
-            spacing: 6
+            anchors.centerIn: parent; spacing: 6
             Text { text: iconText; color: pMouse.containsMouse ? brandColor : "#444"; font.pixelSize: 20; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
             Text { text: btnText; color: pMouse.containsMouse ? "white" : "#666"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
         }

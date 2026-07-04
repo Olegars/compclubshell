@@ -32,7 +32,7 @@ public:
 
     // Метод генерации одноразового ПИН-кода для паузы
     Q_INVOKABLE void requestPausePin(int terminalId);
-
+    Q_INVOKABLE void checkOrderStatus(int terminalId);
     // Добавили аргумент target с дефолтным значением для совместимости
     Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target = "");
 

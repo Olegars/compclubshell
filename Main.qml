@@ -25,6 +25,10 @@ Window {
     property string pcTypeFromDatabase: "standard"
     property bool isHardwareAdmin: false
 
+    // Глобальные свойства статуса заказа для синхронизации с C++ и Dashboard
+    property bool hasActiveOrder: false
+    property string orderStatusText: "ЗАКАЗ В РАБОТЕ"
+
     readonly property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
 
     readonly property int blockWidth: 524
@@ -38,14 +42,12 @@ Window {
         }
     }
 
-    // Полная очистка и сброс формы до первого шага
     function resetAuthForm() {
         authCenter.authStep = 1
         if (typeof phoneInput !== 'undefined') phoneInput.text = ""
         if (typeof pinInput !== 'undefined') pinInput.text = ""
     }
 
-    // Мгновенный пинок бэкенда при уходе на паузу или выходе из неё (убирает лаг таймера)
     onSessionUserChanged: {
         if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
             console.log("[SHELL-STATUS] Сессия изменилась на:", root.sessionUser, ". Срочно запрашиваем оверлеи...");
@@ -207,7 +209,6 @@ Window {
                     width: parent.width
                     height: 230
 
-                    // --- ДИАЛОГ "Я ВЕРНУЛСЯ" (ЕСЛИ НА ПАУЗЕ) ---
                     Column {
                         visible: root.sessionUser === "PAUSE"
                         width: parent.width
@@ -315,13 +316,11 @@ Window {
                         }
                     }
 
-                    // --- СТАНДАРТНЫЙ ЛОГИН (ЕСЛИ СЕССИЯ СВОБОДНА) ---
                     Column {
                         visible: root.sessionUser !== "PAUSE"
                         width: parent.width
                         spacing: 12
 
-                        // --- ШАГ 1: ВВОД НОМЕРА ТЕЛЕФОНА ---
                         Column {
                             visible: authCenter.authStep === 1
                             width: parent.width
@@ -378,7 +377,6 @@ Window {
                             }
                         }
 
-                        // --- ШАГ 2: ВВОД PIN-КОДА ---
                         Column {
                             visible: authCenter.authStep === 2
                             width: parent.width
@@ -436,10 +434,7 @@ Window {
                             }
                         }
 
-                        Item {
-                            height: 10
-                            width: 1
-                        }
+                        Item { height: 10; width: 1 }
 
                         Button {
                             width: parent.width
@@ -454,7 +449,6 @@ Window {
                             }
                         }
 
-                        // --- КНОПКА "НАЗАД" ПОД КНОПКОЙ "НАЧАТЬ СЕССИЮ" ---
                         Text {
                             id: backBtn
                             text: "НАЗАД"
@@ -487,7 +481,7 @@ Window {
     }
 
     // ==========================================
-    // 4. СЕТЬ И ЛОГИКА
+    // 4. СЕТЬ И ЛОГИКА ОПРОСА СИСТЕМЫ
     // ==========================================
     function loginToServer(phone, pin) {
         if (typeof NetManager === "undefined") return;
@@ -505,6 +499,7 @@ Window {
                     dashboardLoader.source = "Dashboard.qml";
                     if (NetManager !== null) {
                         NetManager.fetchGames();
+                        NetManager.fetchProducts(); // Сразу подтягиваем актуальный маркет
                     }
                 }
             }
@@ -512,11 +507,18 @@ Window {
         xhr.send(JSON.stringify({ "phone": phone.replace(/[^0-9]/g, ""), "pin": pin.replace(/[^0-9]/g, ""), "terminal_id": root.terminalId }));
     }
 
+    // Единый глобальный таймер: раз в 25 секунд обновляет и оверлеи, и маркет+статус заказа в фоне
     Timer {
-        interval: 30000
+        interval: 25000
         running: true
         repeat: true
-        onTriggered: fetchOverlays()
+        triggeredOnStart: false
+        onTriggered: {
+            fetchOverlays();
+            if (root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.terminalId > 0) {
+                NetManager.fetchProducts();
+            }
+        }
     }
 
     function fetchOverlays() {
@@ -565,9 +567,6 @@ Window {
         }
     }
 
-    // ==========================================
-    // ИЗОЛИРОВАННЫЙ КОМПОНЕНТ ОВЕРЛЕЙ-БЛОКА
-    // ==========================================
     component OverlayBlock : Rectangle {
         property string title: "BLOCK"
         property string blockUniqueId: ""
@@ -625,7 +624,6 @@ Window {
                 Item {
                     anchors.fill: parent
 
-                    // Функция динамического вычисления источника
                     function updateSource() {
                         if (parent.parent.videoSourceUrl !== "" && typeof NetManager !== "undefined") {
                             overlayBgPlayer.source = NetManager.getLocalPath(parent.parent.videoSourceUrl, blockUniqueId);
@@ -634,7 +632,6 @@ Window {
                         }
                     }
 
-                    // Ловим динамическое изменение пути от бэкенда (убирает 30с задержку)
                     Connections {
                         target: parent.parent
                         function onVideoSourceUrlChanged() {
