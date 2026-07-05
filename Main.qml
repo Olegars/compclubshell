@@ -492,6 +492,12 @@ Window {
             if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
                 var response = JSON.parse(xhr.responseText);
                 if (response.status === "success") {
+                    // [ВНЕДРЕНИЕ FIX]: Вызываем С++ лимитирование трафика ДО открытия Дашборда и запуска Steam
+                    if (typeof Launcher !== "undefined") {
+                        console.log("[QML-AUTH] Пользователь проверен. Запуск фиксации конфигов Steam...");
+                        Launcher.applyQosPolicies(true);
+                    }
+
                     root.sessionUser = response.user.name || "GUEST";
                     root.sessionBalance = parseFloat(response.user.balance) || 0;
                     root.sessionTime = response.user.time_remaining || "00:00:00";

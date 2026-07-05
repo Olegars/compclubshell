@@ -45,11 +45,14 @@ set_target_properties(appsector0451 PROPERTIES
 # Связываем наш экзешник с модулями Qt
 target_link_libraries(appsector0451
     PRIVATE
+        Qt6::Core
         Qt6::Quick
         Qt6::Gui
         Qt6::Qml
         Qt6::Network
         Qt6::Multimedia # <--- СТРОГО ОБЯЗАТЕЛЬНО
+        iphlpapi
+        ws2_32
 )
 
 # 6. Инсталляция (опционально)

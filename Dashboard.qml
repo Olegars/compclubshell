@@ -348,13 +348,26 @@ Item {
             }
 
             GridView {
-                id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320; clip: true; model: gamesModel
+                id: gamesGrid
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                cellWidth: 230
+                cellHeight: 320
+                clip: true
+                model: gamesModel
                 delegate: Item {
-                    width: gamesGrid.cellWidth; height: gamesGrid.cellHeight
+                    width: gamesGrid.cellWidth
+                    height: gamesGrid.cellHeight
                     Rectangle {
-                        anchors.fill: parent; anchors.margins: 10; color: "#0a0a0a"; radius: 6; border.width: gArea.containsMouse ? 2 : 1; border.color: gArea.containsMouse ? accentColor : "#1a1a1a"
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        color: "#0a0a0a"
+                        radius: 6
+                        border.width: gArea.containsMouse ? 2 : 1
+                        border.color: gArea.containsMouse ? accentColor : "#1a1a1a"
                         Image {
-                            width: parent.width; height: parent.height - 45
+                            width: parent.width
+                            height: parent.height - 45
                             source: { var pUrl = model.poster !== undefined ? model.poster : (poster !== undefined ? poster : ""); if (pUrl === "") return ""; if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0) return pUrl; if (pUrl.indexOf("/") === 0) return "http://192.168.222.2:22222" + pUrl; return "http://192.168.222.2:22222/" + pUrl; }
                             fillMode: Image.PreserveAspectCrop; asynchronous: true; opacity: gArea.containsMouse ? 1.0 : 0.7
                         }
@@ -362,7 +375,48 @@ Item {
                             width: parent.width; height: 45; anchors.bottom: parent.bottom; color: gArea.containsMouse ? accentColor : "#050505"
                             Text { anchors.centerIn: parent; text: (typeof title !== 'undefined') ? title : (model.title || ""); color: gArea.containsMouse ? "black" : "white"; font.bold: true }
                         }
-                        MouseArea { id: gArea; anchors.fill: parent; hoverEnabled: true; onClicked: { var exe = (typeof exePath !== 'undefined') ? exePath : model.exePath; var pArgs = (typeof args !== 'undefined') ? args : model.args; Launcher.launch(exe, pArgs); } }
+                        MouseArea {
+                            id: gArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+
+                            onClicked: {
+                                var currentGameId = (typeof id !== 'undefined') ? id : model.id;
+                                var defaultExe = (typeof exePath !== 'undefined') ? exePath : model.exePath;
+                                var defaultArgs = (typeof args !== 'undefined') ? args : model.args;
+
+                                console.log("[LAUNCH-TRACE] Запрос клубного аккаунта для Game ID:", currentGameId);
+
+                                var xhr = new XMLHttpRequest();
+                                xhr.open("POST", "http://192.168.222.2:22222/api/shell/games/take-account");
+                                xhr.setRequestHeader("Content-Type", "application/json");
+
+                                xhr.onreadystatechange = function() {
+                                    if (xhr.readyState === XMLHttpRequest.DONE) {
+                                        if (xhr.status === 200) {
+                                            var res = JSON.parse(xhr.responseText);
+
+                                            if (res.status === "success" && res.login) {
+                                                console.log("[LAUNCH-TRACE] Аккаунт выделен! Логин:", res.login, "Лаунчер:", res.exe_path);
+                                                var clubArgs = "-login " + res.login + " " + res.password + " " + (res.args ? res.args : defaultArgs);
+                                                Launcher.launch(res.exe_path ? res.exe_path : defaultExe, clubArgs);
+                                            } else {
+                                                console.log("[LAUNCH-TRACE] Клубные аккаунты заняты. Запуск дефолтного лаунчера.");
+                                                Launcher.launch(defaultExe, defaultArgs);
+                                            }
+                                        } else {
+                                            console.log("[LAUNCH-ERROR] Сбой Shell API. Код ошибки:", xhr.status);
+                                            Launcher.launch(defaultExe, defaultArgs);
+                                        }
+                                    }
+                                }
+
+                                xhr.send(JSON.stringify({
+                                    "game_id": parseInt(currentGameId),
+                                    "terminal_id": parseInt(dashboardRoot.termId)
+                                }));
+                            }
+                        }
                     }
                 }
             }
@@ -544,7 +598,7 @@ Item {
     }
 
     // ==========================================
-    // МОДАЛЬНОЕ ОКНО ОНЛАЙН-ПОПОЛНЕНИЯ БАЛАНСА ПО QR (ИСПРАВЛЕНО)
+    // МОДАЛЬНОЕ ОКНО ОНЛАЙН-ПОПОЛНЕНИЯ БАЛАНСА ПО QR
     // ==========================================
     Popup {
         id: depositPopup
@@ -558,8 +612,8 @@ Item {
         background: Rectangle { color: "#050505"; border.color: "#eab308"; border.width: 1; radius: 8 }
 
         property string qrSourceUrl: ""
-        property int selectedAmount: 100    // Базовое рабочее свойство суммы
-        property bool showQrScreen: false   // Базовое рабочее свойство экрана
+        property int selectedAmount: 100
+        property bool showQrScreen: false
 
         onClosed: {
             showQrScreen = false;
@@ -571,7 +625,6 @@ Item {
             anchors.margins: 30
             spacing: 20
 
-            // Заголовок попапа
             RowLayout {
                 Layout.fillWidth: true
                 Text { text: "ПОПОЛНЕНИЕ БАЛАНСА"; color: "#eab308"; font.pixelSize: 18; font.bold: true; font.letterSpacing: 1 }
@@ -583,7 +636,6 @@ Item {
                 }
             }
 
-            // ЭКРАН 1: ВЫБОР СУММЫ ДЛЯ ОПЛАТЫ
             ColumnLayout {
                 visible: !depositPopup.showQrScreen
                 Layout.fillWidth: true
@@ -612,7 +664,6 @@ Item {
 
                 Item { height: 15; width: 1 }
 
-                // Кнопка генерации СБП QR-кода
                 Rectangle {
                     Layout.fillWidth: true; Layout.preferredHeight: 55; radius: 6
                     color: "#111"; border.color: sbpMouse.containsMouse ? "#eab308" : "#222"
@@ -626,7 +677,6 @@ Item {
                     MouseArea {
                         id: sbpMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            // ФИКС ПЕРЕМЕННЫХ: Заменили depositAmount на selectedAmount
                             depositPopup.qrSourceUrl = "http://192.168.222.2:22222/api/payments/sbp-mock-qr?amount=" + depositPopup.selectedAmount + "&computer_id=" + dashboardRoot.termId + "&t=" + Date.now();
                             depositPopup.showQrScreen = true;
                         }
@@ -634,7 +684,6 @@ Item {
                 }
             }
 
-            // ЭКРАН 2: ОТОБРАЖЕНИЕ QR-КОДА ОПЛАТЫ
             ColumnLayout {
                 visible: depositPopup.showQrScreen
                 Layout.fillWidth: true
@@ -670,6 +719,90 @@ Item {
                     width: 140; height: 35; radius: 4; color: "#111"; border.color: "#333"
                     Text { anchors.centerIn: parent; text: "Назад к суммам"; color: "#aaa"; font.pixelSize: 12 }
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.showQrScreen = false }
+                }
+            }
+        }
+    }
+
+    // ==========================================
+    // УНИВЕРСАЛЬНЫЙ ПЕРЕХВАТ ТЯЖЕЛОЙ ЗАГРУЗКИ ПО ЛАУНЧЕРАМ
+    // ==========================================
+    Connections {
+        target: Launcher
+        function onHeavyDownloadDetected(processName) {
+            detectedLauncherText.text = "Обнаружена активность процесса: " + processName.toUpperCase();
+            universalAlertPopup.open();
+        }
+    }
+
+    Popup {
+        id: universalAlertPopup
+        width: 550
+        height: 340
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.NoAutoClose
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.9 }
+        background: Rectangle { color: "#0a0505"; border.color: "#ef4444"; border.width: 1; radius: 8 }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 30
+            spacing: 15
+
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "⚠️ ВНИМАНИЕ: ЗАГРУЗКА ДАННЫХ"
+                color: "#ef4444"; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1
+            }
+
+            Text {
+                id: detectedLauncherText
+                Layout.alignment: Qt.AlignHCenter
+                text: "Обнаружена фоновая загрузка лаунчера"
+                color: "#eab308"; font.pixelSize: 13; font.bold: true
+            }
+
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "Вы пытаетесь скачать или обновить игру внутри лаунчера.\nСкорость загрузки этого процесса искусственно ограничена до 256 Кбит/с,\nчтобы предотвратить падение производительности диска и сети."
+                color: "white"; font.pixelSize: 12; font.bold: true
+                horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
+            }
+
+            Item { height: 10; Layout.fillHeight: true }
+
+            RowLayout {
+                spacing: 20
+                Layout.fillWidth: true
+
+                // КНОПКА ОТМЕНЫ (Выгружает лаунчер из ОЗУ и убирает шейпер)
+                Rectangle {
+                    Layout.fillWidth: true; Layout.preferredHeight: 48; radius: 4
+                    color: "#ef4444"
+                    Text { anchors.centerIn: parent; text: "ОТМЕНИТЬ И ЗАКРЫТЬ ИГРУ"; color: "black"; font.bold: true; font.pixelSize: 11 }
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            Launcher.handleDownloadDecision(false);
+                            universalAlertPopup.close();
+                        }
+                    }
+                }
+
+                // КНОПКА ПРОДОЛЖЕНИЯ (Снимает лимитирующую NetQosPolicy)
+                Rectangle {
+                    Layout.fillWidth: true; Layout.preferredHeight: 48; radius: 4
+                    color: "transparent"; border.color: "#333"; border.width: 1
+                    Text { anchors.centerIn: parent; text: "РАЗРЕШИТЬ И СНЯТЬ ЛИМИТ"; color: "white"; font.bold: true; font.pixelSize: 11 }
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            Launcher.handleDownloadDecision(true);
+                            universalAlertPopup.close();
+                        }
+                    }
                 }
             }
         }
