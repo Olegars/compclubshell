@@ -210,7 +210,20 @@ Item {
                         columns: 3; rows: 2; columnSpacing: 10; rowSpacing: 10
                         Layout.fillWidth: true
 
-                        PlatformSquareBtn { btnText: "STEAM"; iconText: "󰓓"; brandColor: "#00adef"; onClicked: Launcher.launch("C:\\Program Files (x86)\\Steam\\steam.exe", "") }
+                        PlatformSquareBtn {
+                            btnText: "STEAM";
+                            iconText: "󰓓";
+                            brandColor: "#00adef";
+                            onClicked: {
+                                // Передаем параметры запуска в попап
+                                steamLimitAlertPopup.targetExe = "C:\\Program Files (x86)\\Steam\\steam.exe";
+                                steamLimitAlertPopup.targetArgs = "";
+
+                                // Открываем предупреждение и взводим таймер автоматического старта
+                                steamLimitAlertPopup.open();
+                                launchDelayTimer.start();
+                            }
+                        }
                         PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", "") }
                         PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", "") }
                         PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "") }
@@ -907,4 +920,107 @@ Item {
         }
         MouseArea { id: pMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: parent.clicked() }
     }
+    // ==========================================
+        // ПОПАП ПРЕДУПРЕЖДЕНИЯ О ЛИМИТЕ СКАЧИВАНИЯ STEAM
+        // ==========================================
+        Popup {
+            id: steamLimitAlertPopup
+            width: 600
+            height: 380
+            anchors.centerIn: parent
+            modal: true
+            focus: true
+            z: 9999
+
+            closePolicy: Popup.NoAutoClose
+
+            Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
+            background: Rectangle { color: "#0a0505"; border.color: accentColor; border.width: 1; radius: 8 }
+
+            property string targetExe: ""
+            property string targetArgs: ""
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 30
+                spacing: 15
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "⚙️ СИСТЕМА КОНТРОЛЯ ТРАФИКА"
+                    color: accentColor; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1
+                }
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Внимание: Активирован игровой режим сети"
+                    color: "white"; font.pixelSize: 13; font.bold: true
+                }
+
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Скорость скачивания и обновлений внутри Steam ограничена до 1 МБ/с.\nЭто необходимо для поддержания идеального пинга у всех игроков в клубе."
+                    color: "#a3a3a3"; font.pixelSize: 12; font.bold: true
+                    horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
+                }
+
+                // --- ОБНОВЛЕННЫЙ КОНТРАСТНЫЙ БЛОК ---
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 70
+                    color: "#1a0505"
+                    border.color: "#dc2626"
+                    border.width: 1
+                    radius: 4
+                    Layout.topMargin: 5
+                    Layout.bottomMargin: 5
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 4
+                        Text {
+                            text: "ЕСЛИ НУЖНОЙ ИГРЫ НЕТ НА КОМПЬЮТЕРЕ"
+                            color: "#ef4444"
+                            font.pixelSize: 15
+                            font.bold: true
+                            font.letterSpacing: 1
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+                        Text {
+                            text: "Воспользуйтесь услугой «Заказ предустановки» в личном кабинете,\nи мы скачаем её к вашему следующему визиту на максимальной скорости."
+                            color: "#fca5a5"
+                            font.pixelSize: 11
+                            font.bold: true
+                            horizontalAlignment: Text.AlignHCenter
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
+                    }
+                }
+                // ------------------------------------
+
+                Item { height: 5; Layout.fillHeight: true }
+
+                Rectangle {
+                    Layout.alignment: Qt.AlignHCenter
+                    width: 220; height: 45; radius: 4
+                    color: accentColor
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "ПОНЯТНО, ЗАПУСТИТЬ"
+                        color: "black"
+                        font.bold: true
+                        font.pixelSize: 12
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            Launcher.launch(steamLimitAlertPopup.targetExe, steamLimitAlertPopup.targetArgs);
+                            steamLimitAlertPopup.close();
+                        }
+                    }
+                }
+            }
+        }
 }
