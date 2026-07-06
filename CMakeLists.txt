@@ -9,17 +9,16 @@ find_package(Qt6 REQUIRED COMPONENTS Quick Gui Qml Network Multimedia)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
-# 2. Перечисляем все C++ исходники здесь
-# Это основа нашего исполняемого файла
+# 2. Перечисляем все C++ исходники здесь + config.ini для отображения в IDE
 qt_add_executable(appsector0451
     main.cpp
     src/models/gamemodel.h src/models/gamemodel.cpp
     src/core/processmanager.h src/core/processmanager.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
+    config.ini # <--- ТЕПЕРЬ ОТОБРАЖАЕТСЯ В ДЕРЕВЕ ПРОЕКТА QT CREATOR
 )
 
 # 3. Настраиваем QML-модуль
-# Здесь только интерфейс и ресурсы (шрифты, картинки)
 qt_add_qml_module(appsector0451
     URI sector0451
     VERSION 1.0
@@ -28,7 +27,6 @@ qt_add_qml_module(appsector0451
         Dashboard.qml
     RESOURCES
         fonts/bomber.otf
-        # Если появятся картинки, добавляй их сюда:
         images/hex_bg.png
         SOURCES src/models/storemodel.h src/models/storemodel.cpp
         QML_FILES SetupScreen.qml
@@ -43,7 +41,6 @@ set_target_properties(appsector0451 PROPERTIES
 )
 
 # 5. Линковка библиотек
-# Связываем наш экзешник с модулями Qt
 target_link_libraries(appsector0451
     PRIVATE
         Qt6::Core
@@ -51,7 +48,7 @@ target_link_libraries(appsector0451
         Qt6::Gui
         Qt6::Qml
         Qt6::Network
-        Qt6::Multimedia # <--- СТРОГО ОБЯЗАТЕЛЬНО
+        Qt6::Multimedia
         iphlpapi
         ws2_32
 )
