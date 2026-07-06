@@ -31,6 +31,7 @@ qt_add_qml_module(appsector0451
         # Если появятся картинки, добавляй их сюда:
         images/hex_bg.png
         SOURCES src/models/storemodel.h src/models/storemodel.cpp
+        QML_FILES SetupScreen.qml
 )
 
 # 4. Системные свойства (Windows/macOS)

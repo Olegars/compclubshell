@@ -1,4 +1,3 @@
-// Путь: Main.qml
 import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
@@ -13,21 +12,23 @@ Window {
     width: 1920
     height: 1080
     visible: true
-    title: "REACTOR SHELL | Sector 0451"
+    title: "REACTOR SHELL Sector 0451"
     color: "#020202"
+    visibility: Window.FullScreen
 
     property int terminalId: 0
     property string sessionUser: "GUEST"
     property real sessionBalance: 0.0
     property string sessionTime: "00:00:00"
-    property alias authScreen: loginScreen
+    property alias authScreen: screenSwitcher
     property string temporaryPausePin: "----"
     property string pcTypeFromDatabase: "standard"
     property bool isHardwareAdmin: false
 
-    // Глобальные свойства статуса заказа для синхронизации с C++ и Dashboard
     property bool hasActiveOrder: false
     property string orderStatusText: "ЗАКАЗ В РАБОТЕ"
+
+    property string pcNameString: "PC-UNKNOWN"
 
     readonly property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
 
@@ -59,18 +60,40 @@ Window {
         }
     }
 
-    Component.onCompleted: {
-        console.log("[START-TRACE] [STEP QML-A] Корневой Window загрузился. Ожидаем авторизации от REACTOR CONTROL...")
+    Connections {
+        target: NetworkManager
+
+        function onSetupRequired() {
+            console.log("[REACTOR-SHELL] Получен сигнал setupRequired. Переключение на SetupScreen.qml");
+            screenSwitcher.sourceComponent = null;
+            setupScreenLoader.source = "SetupScreen.qml";
+        }
+
+        function onAuthRequired() {
+            console.log("[REACTOR-SHELL] Получен сигнал authRequired. Загрузка AuthScreen.");
+            root.pcNameString = NetworkManager.getCurrentPcName();
+            setupScreenLoader.source = "";
+            screenSwitcher.sourceComponent = loginScreenComponent;
+            root.terminalId = root.pcNameString.replace(/[^0-9]/g, "") || 0;
+        }
     }
 
-    // ==========================================
-    // 1. ОВЕРЛЕИ
-    // ==========================================
+    Component.onCompleted: {
+        console.log("[START-TRACE] [STEP QML-A] Корневой Window загрузился. Запуск проверки статуса терминала...");
+        NetworkManager.checkTerminalStatus();
+    }
+
+    Loader {
+        id: setupScreenLoader
+        anchors.fill: parent
+        z: 100
+    }
+
     Loader {
         id: overlaysContainer
         anchors.fill: parent
         z: 50
-        active: (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE")
+        active: (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") && !setupScreenLoader.item
 
         sourceComponent: Component {
             Item {
@@ -107,9 +130,6 @@ Window {
         }
     }
 
-    // ==========================================
-    // 2. ДАШБОРД
-    // ==========================================
     Loader {
         id: dashboardLoader
         anchors.fill: parent
@@ -118,281 +138,137 @@ Window {
         z: 10
     }
 
-    // ==========================================
-    // 3. ЭКРАН БЛОКИРОВКИ И ПАУЗЫ
-    // ==========================================
-    Item {
-        id: loginScreen
+    Loader {
+        id: screenSwitcher
         anchors.fill: parent
-        visible: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
         z: 20
+    }
 
-        Rectangle {
+    Component {
+        id: loginScreenComponent
+        Item {
+            id: loginScreen
             anchors.fill: parent
-            color: "#020202"
-            Image { anchors.fill: parent; source: "images/hex_bg.png"; fillMode: Image.Tile; opacity: 0.15 }
-            Shape {
+
+            Rectangle {
                 anchors.fill: parent
-                layer.enabled: true
-                layer.effect: MultiEffect { blurEnabled: true; blur: 0.3 }
-                ShapePath {
-                    fillGradient: RadialGradient {
-                        centerX: 1920 / 2
-                        centerY: 1080 / 2
-                        centerRadius: 1920 / 1.2
-                        GradientStop { position: 0.0; color: "transparent" }
-                        GradientStop { position: 1.0; color: "black" }
+                color: "#020202"
+                Image { anchors.fill: parent; source: "images/hex_bg.png"; fillMode: Image.Tile; opacity: 0.15 }
+                Shape {
+                    anchors.fill: parent
+                    layer.enabled: true
+                    layer.effect: MultiEffect { blurEnabled: true; blur: 0.3 }
+                    ShapePath {
+                        fillGradient: RadialGradient {
+                            centerX: 1920 / 2
+                            centerY: 1080 / 2
+                            centerRadius: 1920 / 1.2
+                            GradientStop { position: 0.0; color: "transparent" }
+                            GradientStop { position: 1.0; color: "black" }
+                        }
+                        PathRectangle { x: 0; y: 0; width: 1920; height: 1080 }
                     }
-                    PathRectangle { x: 0; y: 0; width: 1920; height: 1080 }
                 }
             }
-        }
 
-        Item {
-            id: logoArea
-            width: 800
-            height: 120
-            anchors.top: parent.top
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.topMargin: 40
-            Row {
-                anchors.centerIn: parent
-                spacing: 20
-                Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
-                Text { text: "0 4 5 1"; color: "#22c55e"; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
+            Item {
+                id: logoArea
+                width: 800
+                height: 120
+                anchors.top: parent.top
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.topMargin: 40
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 20
+                    Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
+                    Text { text: "0 4 5 1"; color: "#22c55e"; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
+                }
             }
-        }
 
-        Rectangle {
-            id: authCenter
-            width: 420
-            height: 520
-            anchors.centerIn: parent
-            color: "#050a06"
-            border.color: root.sessionUser === "PAUSE" ? "#1d4ed8" : "#1a4d29"
-            border.width: 2
-            radius: 4
-            opacity: 0.95
-            property int authStep: 1
-
-            Column {
-                anchors.fill: parent
-                anchors.margins: 40
-                spacing: 25
+            Rectangle {
+                id: authCenter
+                width: 420
+                height: 520
+                anchors.centerIn: parent
+                color: "#050a06"
+                border.color: root.sessionUser === "PAUSE" ? "#1d4ed8" : "#1a4d29"
+                border.width: 2
+                radius: 4
+                opacity: 0.95
+                property int authStep: 1
 
                 Column {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    Text {
-                        text: "TERMINAL_ID"
-                        color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
-                        font.pixelSize: 12
-                        opacity: 0.6
-                        anchors.horizontalCenter: parent.horizontalCenter
-                    }
-                    Text {
-                        text: "PC-" + root.terminalId
-                        color: "white"
-                        font.pixelSize: 54
-                        font.bold: true
-                        anchors.horizontalCenter: parent.horizontalCenter
-                    }
-                }
-
-                Rectangle {
-                    width: parent.width
-                    height: 1
-                    color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
-                    opacity: 0.3
-                }
-
-                Item {
-                    width: parent.width
-                    height: 230
+                    anchors.fill: parent
+                    anchors.margins: 40
+                    spacing: 25
 
                     Column {
-                        visible: root.sessionUser === "PAUSE"
-                        width: parent.width
-                        spacing: 15
-
+                        anchors.horizontalCenter: parent.horizontalCenter
                         Text {
-                            text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"
-                            color: "#3b82f6"
-                            font.pixelSize: 20
-                            font.bold: true
-                            font.letterSpacing: 1
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
-
-                        Text {
-                            text: "Введите PIN-код для разблокировки"
-                            color: "#a3a3a3"
+                            text: "TERMINAL_ID"
+                            color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
                             font.pixelSize: 12
+                            opacity: 0.6
                             anchors.horizontalCenter: parent.horizontalCenter
                         }
 
-                        TextField {
-                            id: pausePinInput
-                            width: parent.width
-                            height: 55
-                            font.pixelSize: 22
-                            font.bold: false
-                            font.family: "Roboto"
-                            font.letterSpacing: 4
-
-                            inputMask: "0000;_"
-                            echoMode: TextInput.Normal
-
+                        Text {
+                            text: root.pcNameString
                             color: "white"
-                            selectionColor: "#3b82f6"
-                            selectedTextColor: "black"
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: TextInput.AlignVCenter
-                            focus: root.sessionUser === "PAUSE"
-
-                            onAccepted: {
-                                var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
-                                var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
-
-                                if (cleanPin === cleanTarget && cleanTarget !== "") {
-                                    pauseErrorText.visible = false;
-                                    pausePinInput.text = "";
-                                    root.sessionUser = "PLAYER_1";
-                                    loginScreen.visible = false;
-                                    if (dashboardLoader.item) {
-                                        dashboardLoader.item.visible = true;
-                                    }
-                                } else {
-                                    pauseErrorText.visible = true;
-                                }
-                            }
-
-                            background: Rectangle {
-                                color: pausePinInput.activeFocus ? "#08162a" : "#0d1117"
-                                border.color: pausePinInput.activeFocus ? "#3b82f6" : "#1d4ed8"
-                                border.width: pausePinInput.activeFocus ? 2 : 1
-                                radius: 4
-
-                                Behavior on color { ColorAnimation { duration: 150 } }
-                                Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                layer.enabled: pausePinInput.activeFocus
-                                layer.effect: MultiEffect {
-                                    blurEnabled: true
-                                    blur: 0.2
-                                    brightness: 0.1
-                                }
-                            }
-                        }
-
-                        Text {
-                            id: pauseErrorText
-                            text: "Неверный PIN-код"
-                            color: "#ef4444"
-                            font.pixelSize: 12
-                            visible: false
+                            font.pixelSize: 54
+                            font.bold: true
                             anchors.horizontalCenter: parent.horizontalCenter
-                        }
 
-                        Button {
-                            width: parent.width
-                            height: 50
-                            text: "Я ВЕРНУЛСЯ"
-                            onClicked: {
-                                var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
-                                var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
-
-                                if (cleanPin === cleanTarget && cleanTarget !== "") {
-                                    pauseErrorText.visible = false;
-                                    pausePinInput.text = "";
-                                    root.sessionUser = "PLAYER_1";
-                                    loginScreen.visible = false;
-                                    if (dashboardLoader.item) {
-                                        dashboardLoader.item.visible = true;
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                acceptedButtons: Qt.LeftButton
+                                onClicked: {
+                                    if (mouse.modifiers & Qt.ControlModifier) {
+                                        console.log("[ADMIN-SHELL] Секретная комбинация Ctrl+Клик сработала. Вызов SetupScreen.");
+                                        screenSwitcher.sourceComponent = null;
+                                        setupScreenLoader.source = "SetupScreen.qml";
                                     }
-                                } else {
-                                    pauseErrorText.visible = true;
                                 }
                             }
                         }
                     }
 
-                    Column {
-                        visible: root.sessionUser !== "PAUSE"
+                    Rectangle {
                         width: parent.width
-                        spacing: 12
+                        height: 1
+                        color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
+                        opacity: 0.3
+                    }
+
+                    Item {
+                        width: parent.width
+                        height: 230
 
                         Column {
-                            visible: authCenter.authStep === 1
+                            visible: root.sessionUser === "PAUSE"
                             width: parent.width
-                            spacing: 12
+                            spacing: 15
 
                             Text {
-                                text: "НОМЕР ТЕЛЕФОНА"
-                                color: "#22c55e"
-                                font.pixelSize: 11
+                                text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"
+                                color: "#3b82f6"
+                                font.pixelSize: 20
                                 font.bold: true
-                                font.letterSpacing: 2
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-
-                            TextField {
-                                id: phoneInput
-                                width: parent.width
-                                height: 55
-                                font.pixelSize: 22
-                                font.bold: false
-                                font.family: "Roboto"
                                 font.letterSpacing: 1
-
-                                inputMask: "+7 (999) 999-99-99;_"
-                                focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
-
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: TextInput.AlignVCenter
-
-                                color: "white"
-                                selectionColor: "#22c55e"
-                                selectedTextColor: "black"
-
-                                onAccepted: {
-                                    authCenter.authStep = 2
-                                }
-
-                                background: Rectangle {
-                                    color: phoneInput.activeFocus ? "#08120a" : "#0d130e"
-                                    border.color: phoneInput.activeFocus ? "#22c55e" : "#1a4d29"
-                                    border.width: phoneInput.activeFocus ? 2 : 1
-                                    radius: 4
-
-                                    Behavior on color { ColorAnimation { duration: 150 } }
-                                    Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                    layer.enabled: phoneInput.activeFocus
-                                    layer.effect: MultiEffect {
-                                        blurEnabled: true
-                                        blur: 0.2
-                                        brightness: 0.1
-                                    }
-                                }
+                                anchors.horizontalCenter: parent.horizontalCenter
                             }
-                        }
-
-                        Column {
-                            visible: authCenter.authStep === 2
-                            width: parent.width
-                            spacing: 12
 
                             Text {
-                                text: "PIN-КОД"
-                                color: "#22c55e"
-                                font.pixelSize: 11
-                                font.bold: true
-                                font.letterSpacing: 2
+                                text: "Введите PIN-код для разблокировки"
+                                color: "#a3a3a3"
+                                font.pixelSize: 12
                                 anchors.horizontalCenter: parent.horizontalCenter
                             }
 
                             TextField {
-                                id: pinInput
+                                id: pausePinInput
                                 width: parent.width
                                 height: 55
                                 font.pixelSize: 22
@@ -403,28 +279,39 @@ Window {
                                 inputMask: "0000;_"
                                 echoMode: TextInput.Normal
 
-                                focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"
+                                color: "white"
+                                selectionColor: "#3b82f6"
+                                selectedTextColor: "black"
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: TextInput.AlignVCenter
-
-                                color: "white"
-                                selectionColor: "#22c55e"
-                                selectedTextColor: "black"
+                                focus: root.sessionUser === "PAUSE"
 
                                 onAccepted: {
-                                    loginToServer(phoneInput.text, pinInput.text);
+                                    var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
+                                    var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
+
+                                    if (cleanPin === cleanTarget && cleanTarget !== "") {
+                                        pauseErrorText.visible = false;
+                                        pausePinInput.text = "";
+                                        root.sessionUser = "PLAYER_1";
+                                        if (dashboardLoader.item) {
+                                            dashboardLoader.item.visible = true;
+                                        }
+                                    } else {
+                                        pauseErrorText.visible = true;
+                                    }
                                 }
 
                                 background: Rectangle {
-                                    color: pinInput.activeFocus ? "#08120a" : "#0d130e"
-                                    border.color: pinInput.activeFocus ? "#22c55e" : "#1a4d29"
-                                    border.width: pinInput.activeFocus ? 2 : 1
+                                    color: pausePinInput.activeFocus ? "#08162a" : "#0d1117"
+                                    border.color: pausePinInput.activeFocus ? "#3b82f6" : "#1d4ed8"
+                                    border.width: pausePinInput.activeFocus ? 2 : 1
                                     radius: 4
 
                                     Behavior on color { ColorAnimation { duration: 150 } }
                                     Behavior on border.color { ColorAnimation { duration: 150 } }
 
-                                    layer.enabled: pinInput.activeFocus
+                                    layer.enabled: pausePinInput.activeFocus
                                     layer.effect: MultiEffect {
                                         blurEnabled: true
                                         blur: 0.2
@@ -432,45 +319,194 @@ Window {
                                     }
                                 }
                             }
-                        }
 
-                        Item { height: 10; width: 1 }
+                            Text {
+                                id: pauseErrorText
+                                text: "Неверный PIN-код"
+                                color: "#ef4444"
+                                font.pixelSize: 12
+                                visible: false
+                                anchors.horizontalCenter: parent.horizontalCenter
+                            }
 
-                        Button {
-                            width: parent.width
-                            height: 55
-                            text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"
-                            onClicked: {
-                                if (authCenter.authStep === 1) {
-                                    authCenter.authStep = 2;
-                                } else {
-                                    loginToServer(phoneInput.text, pinInput.text);
+                            Button {
+                                width: parent.width
+                                height: 50
+                                text: "Я ВЕРНУЛСЯ"
+                                onClicked: {
+                                    var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
+                                    var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
+
+                                    if (cleanPin === cleanTarget && cleanTarget !== "") {
+                                        pauseErrorText.visible = false;
+                                        pausePinInput.text = "";
+                                        root.sessionUser = "PLAYER_1";
+                                        if (dashboardLoader.item) {
+                                            dashboardLoader.item.visible = true;
+                                        }
+                                    } else {
+                                        pauseErrorText.visible = true;
+                                    }
                                 }
                             }
                         }
 
-                        Text {
-                            id: backBtn
-                            text: "НАЗАД"
-                            font.pixelSize: 12
-                            font.bold: true
-                            font.letterSpacing: 2
-                            color: backMouse.containsMouse ? "#22c55e" : "#666666"
-                            visible: authCenter.authStep === 2
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            Layout.topMargin: 5
+                        Column {
+                            visible: root.sessionUser !== "PAUSE"
+                            width: parent.width
+                            spacing: 12
 
-                            Behavior on color { ColorAnimation { duration: 100 } }
+                            Column {
+                                visible: authCenter.authStep === 1
+                                width: parent.width
+                                spacing: 12
 
-                            MouseArea {
-                                id: backMouse
-                                anchors.fill: parent
-                                anchors.margins: -10
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
+                                Text {
+                                    text: "НОМЕР ТЕЛЕФОНА"
+                                    color: "#22c55e"
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                }
+
+                                TextField {
+                                    id: phoneInput
+                                    width: parent.width
+                                    height: 55
+                                    font.pixelSize: 22
+                                    font.bold: false
+                                    font.family: "Roboto"
+                                    font.letterSpacing: 1
+
+                                    inputMask: "+7 (999) 999-99-99;_"
+                                    focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
+
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: TextInput.AlignVCenter
+
+                                    color: "white"
+                                    selectionColor: "#22c55e"
+                                    selectedTextColor: "black"
+
+                                    onAccepted: {
+                                        authCenter.authStep = 2
+                                    }
+
+                                    background: Rectangle {
+                                        color: phoneInput.activeFocus ? "#08120a" : "#0d130e"
+                                        border.color: phoneInput.activeFocus ? "#22c55e" : "#1a4d29"
+                                        border.width: phoneInput.activeFocus ? 2 : 1
+                                        radius: 4
+
+                                        Behavior on color { ColorAnimation { duration: 150 } }
+                                        Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                        layer.enabled: phoneInput.activeFocus
+                                        layer.effect: MultiEffect {
+                                            blurEnabled: true
+                                            blur: 0.2
+                                            brightness: 0.1
+                                        }
+                                    }
+                                }
+                            }
+
+                            Column {
+                                visible: authCenter.authStep === 2
+                                width: parent.width
+                                spacing: 12
+
+                                Text {
+                                    text: "PIN-КОД"
+                                    color: "#22c55e"
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                }
+
+                                TextField {
+                                    id: pinInput
+                                    width: parent.width
+                                    height: 55
+                                    font.pixelSize: 22
+                                    font.bold: false
+                                    font.family: "Roboto"
+                                    font.letterSpacing: 4
+
+                                    inputMask: "0000;_"
+                                    echoMode: TextInput.Normal
+
+                                    focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: TextInput.AlignVCenter
+
+                                    color: "white"
+                                    selectionColor: "#22c55e"
+                                    selectedTextColor: "black"
+
+                                    onAccepted: {
+                                        loginToServer(phoneInput.text, pinInput.text);
+                                    }
+
+                                    background: Rectangle {
+                                        color: pinInput.activeFocus ? "#08120a" : "#0d130e"
+                                        border.color: pinInput.activeFocus ? "#22c55e" : "#1a4d29"
+                                        border.width: pinInput.activeFocus ? 2 : 1
+                                        radius: 4
+
+                                        Behavior on color { ColorAnimation { duration: 150 } }
+                                        Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                                        layer.enabled: pinInput.activeFocus
+                                        layer.effect: MultiEffect {
+                                            blurEnabled: true
+                                            blur: 0.2
+                                            brightness: 0.1
+                                        }
+                                    }
+                                }
+                            }
+
+                            Item { height: 10; width: 1 }
+
+                            Button {
+                                width: parent.width
+                                height: 55
+                                text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"
                                 onClicked: {
-                                    pinInput.text = ""
-                                    authCenter.authStep = 1
+                                    if (authCenter.authStep === 1) {
+                                        authCenter.authStep = 2;
+                                    } else {
+                                        loginToServer(phoneInput.text, pinInput.text);
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: backBtn
+                                text: "НАЗАД"
+                                font.pixelSize: 12
+                                font.bold: true
+                                font.letterSpacing: 2
+                                color: backMouse.containsMouse ? "#22c55e" : "#666666"
+                                visible: authCenter.authStep === 2
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                Layout.topMargin: 5
+
+                                Behavior on color { ColorAnimation { duration: 100 } }
+
+                                MouseArea {
+                                    id: backMouse
+                                    anchors.fill: parent
+                                    anchors.margins: -10
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        pinInput.text = ""
+                                        authCenter.authStep = 1
+                                    }
                                 }
                             }
                         }
@@ -480,32 +516,28 @@ Window {
         }
     }
 
-    // ==========================================
-    // 4. СЕТЬ И ЛОГИКА ОПРОСА СИСТЕМЫ
-    // ==========================================
     function loginToServer(phone, pin) {
-        if (typeof NetManager === "undefined") return;
+        if (typeof NetworkManager === "undefined") return;
         var xhr = new XMLHttpRequest();
-        xhr.open("POST", NetManager.serverUrl + "/api/shell/login");
+        xhr.open("POST", NetworkManager.serverUrl + "/api/shell/login");
         xhr.setRequestHeader("Content-Type", "application/json");
         xhr.onreadystatechange = function() {
             if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
                 var response = JSON.parse(xhr.responseText);
                 if (response.status === "success") {
-                    // [ВНЕДРЕНИЕ FIX]: Вызываем С++ лимитирование трафика ДО открытия Дашборда и запуска Steam
                     if (typeof Launcher !== "undefined") {
-                        console.log("[QML-AUTH] Пользователь проверен. Запуск фиксации конфигов Steam...");
+                        console.log("[QML-AUTH] Пользователь проверен. Запуск фиксации конфигов QOS...");
                         Launcher.applyQosPolicies(true);
                     }
 
                     root.sessionUser = response.user.name || "GUEST";
                     root.sessionBalance = parseFloat(response.user.balance) || 0;
                     root.sessionTime = response.user.time_remaining || "00:00:00";
-                    loginScreen.visible = false;
+                    screenSwitcher.sourceComponent = null;
                     dashboardLoader.source = "Dashboard.qml";
-                    if (NetManager !== null) {
-                        NetManager.fetchGames();
-                        NetManager.fetchProducts(); // Сразу подтягиваем актуальный маркет
+                    if (NetworkManager !== null) {
+                        NetworkManager.fetchGames();
+                        NetworkManager.fetchProducts();
                     }
                 }
             }
@@ -513,24 +545,25 @@ Window {
         xhr.send(JSON.stringify({ "phone": phone.replace(/[^0-9]/g, ""), "pin": pin.replace(/[^0-9]/g, ""), "terminal_id": root.terminalId }));
     }
 
-    // Единый глобальный таймер: раз в 25 секунд обновляет и оверлеи, и маркет+статус заказа в фоне
     Timer {
         interval: 25000
         running: true
         repeat: true
         triggeredOnStart: false
         onTriggered: {
-            fetchOverlays();
-            if (root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.terminalId > 0) {
-                NetManager.fetchProducts();
+            if (!setupScreenLoader.item) {
+                fetchOverlays();
+                if (root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.terminalId > 0) {
+                    NetworkManager.fetchProducts();
+                }
             }
         }
     }
 
     function fetchOverlays() {
-        if (typeof NetManager === "undefined" || root.terminalId === 0) return;
+        if (typeof NetworkManager === "undefined" || root.terminalId === 0) return;
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", NetManager.serverUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime());
+        xhr.open("GET", NetworkManager.serverUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime());
         xhr.onreadystatechange = function() {
             if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
                 updateOverlaysToScreen(JSON.parse(xhr.responseText));
@@ -631,8 +664,8 @@ Window {
                     anchors.fill: parent
 
                     function updateSource() {
-                        if (parent.parent.videoSourceUrl !== "" && typeof NetManager !== "undefined") {
-                            overlayBgPlayer.source = NetManager.getLocalPath(parent.parent.videoSourceUrl, blockUniqueId);
+                        if (parent.parent.videoSourceUrl !== "" && typeof NetworkManager !== "undefined") {
+                            overlayBgPlayer.source = NetworkManager.getLocalPath(parent.parent.videoSourceUrl, blockUniqueId);
                         } else {
                             overlayBgPlayer.source = root.fallbackVideo;
                         }
@@ -646,8 +679,8 @@ Window {
                     }
 
                     Connections {
-                        target: NetManager
-                        function onFileDownloaded(remoteUrl, localPath, target) {
+                        target: NetworkManager
+                        function onFileDownloaded(path) {
                             if (target === blockUniqueId && parent.parent.videoSourceUrl === remoteUrl) {
                                 overlayBgPlayer.source = localPath;
                             }
