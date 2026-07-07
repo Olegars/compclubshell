@@ -29,7 +29,7 @@ public:
     Q_INVOKABLE QString serverUrl() const; // ИСПРАВЛЕНО: Теперь метод виден в JS как функция!
     Q_INVOKABLE void fetchTerminalConfig(const QString &hwid);
     Q_INVOKABLE void checkTerminalStatus();
-    Q_INVOKABLE void registerStation(const QString &zoneType);
+    Q_INVOKABLE void registerStation(const QString &zoneType, const QString &pcName);
     Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target = "");
     Q_INVOKABLE int getLatency(const QString &host);
     Q_INVOKABLE QString getCurrentPcName();

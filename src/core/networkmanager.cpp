@@ -120,51 +120,59 @@ QString NetworkManager::getCurrentPcName() {
     return m_pcNameString.isEmpty() ? "PC-UNKNOWN" : m_pcNameString;
 }
 
-void NetworkManager::registerStation(const QString &zoneType) {
-    if (m_hwid.isEmpty()) return;
+void NetworkManager::registerStation(const QString &zoneType, const QString &pcName) {
+    if (m_serverUrl.isEmpty()) {
+        qDebug() << "[CRITICAL-C++ SETUP] Ошибка: m_serverUrl пустой! Запрос отменён.";
+        return;
+    }
 
     QUrl url(m_serverUrl + "/api/shell/register-terminal");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
 
+    // Собираем пакет
     QJsonObject json;
     json["hwid"] = m_hwid;
-    json["type"] = zoneType;
+    json["zone_type"] = zoneType; // Обрати внимание: в QML у тебя "Duo" с большой буквы, Laravel может ждать "duo"
+    json["name"] = pcName;
 
     QJsonDocument doc(json);
-    QByteArray data = doc.toJson();
+    QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
 
-    qDebug() << "[REACTOR-SHELL] Отправка данных регистрации:" << url.toString();
+    qDebug() << "[DEBUG-C++ SETUP] ---> ОТПРАВКА ПОСТ-ЗАПРОСА";
+    qDebug() << "[DEBUG-C++ SETUP] URL:" << url.toString();
+    qDebug() << "[DEBUG-C++ SETUP] JSON DATA:" << jsonData;
 
-    QNetworkReply* reply = m_networkManager->post(request, data);
+    QNetworkReply *reply = m_networkManager->post(request, jsonData);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, zoneType]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
 
-        if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "[REACTOR-SHELL] Критическая ошибка при отправке запроса:" << reply->errorString();
-            return;
+        qDebug() << "[DEBUG-C++ SETUP] <--- ОТВЕТ СЕТИ ПОЛУЧЕН";
+
+        // Проверяем HTTP статус-код (200, 422, 500 и т.д.)
+        QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+        if (statusCode.isValid()) {
+            qDebug() << "[DEBUG-C++ SETUP] HTTP Status Code:" << statusCode.toInt();
         }
 
-        QByteArray responseData = reply->readAll();
-        QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
-        QJsonObject responseObj = responseDoc.object();
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            qDebug() << "[DEBUG-C++ SETUP] Сырой ответ от Laravel:" << responseData;
 
-        if (responseObj.value("status").toString() == "success") {
-            int terminalId = responseObj.value("terminal_id").toInt();
-            m_pcNameString = "PC-" + QString::number(terminalId);
-            m_isPcRegistered = true;
+            QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
+            QJsonObject responseJson = responseDoc.object();
 
-            qDebug() << "[REACTOR-SHELL] Успешная автоматическая генерация! ID ПК:" << terminalId;
-
-            emit pcRegistrationChanged();
-            emit authRequired();
-
-            if (m_rootQml) {
-                QMetaObject::invokeMethod(m_rootQml, "fetchOverlays");
+            if (responseJson["status"].toString() == "success") {
+                qDebug() << "[DEBUG-C++ SETUP] УСПЕХ: База обновилась. Запускаем переопрос терминала...";
+                this->checkTerminalStatus();
+            } else {
+                qDebug() << "[DEBUG-C++ SETUP] ВНИМАНИЕ: Бэкенд ответил JSON-ом, но статус не success! Текст:" << responseDoc.toJson();
             }
         } else {
-            qWarning() << "[REACTOR-SHELL] Регистрация отклонена бэкендом:" << responseObj.value("message").toString();
+            qDebug() << "[DEBUG-C++ SETUP] КРИТИЧЕСКАЯ СЕТЕВАЯ ОШИБКА ОПЕРАЦИИ:" << reply->errorString();
+            qDebug() << "[DEBUG-C++ SETUP] Ответ сервера при ошибке:" << reply->readAll();
         }
     });
 }

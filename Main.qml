@@ -749,10 +749,10 @@ Window {
 
                             Connections {
                                 target: overlayVideoLoader.parent
-                                onVideoSourceUrlChanged: {
-                                    console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
-                                    videoInnerItem.updateSource();
-                                }
+                                onVideoSourceUrlChanged: { // <-- Варнинг летит отсюда
+                                        console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
+                                        videoInnerItem.updateSource();
+                                    }
                             }
 
                             Connections {
