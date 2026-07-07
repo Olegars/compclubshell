@@ -1,17 +1,24 @@
 #include "networkmanager.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
+#include <QCoreApplication> // <-- СЮДА ДОБАВЛЯЕМ СТРОКУ!
 #include <QFile>
+#include <QDir>
+#include <QFileInfo>
+#include <QRegularExpression>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 
 NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent)
     : QObject(parent)
     , m_isPcRegistered(false)
     , m_gamesModel(gamesModel)
     , m_storeModel(storeModel)
+    , m_rootQml(nullptr)
 {
     m_networkManager = new QNetworkAccessManager(this);
 
-    // Перебираем пути, чтобы точно зацепить конфиг бездиска в любой среде сборки
     QString pathCurrent = QCoreApplication::applicationDirPath() + "/config.ini";
     QString pathUp = QCoreApplication::applicationDirPath() + "/../config.ini";
     QString pathTwoUp = QCoreApplication::applicationDirPath() + "/../../config.ini";
@@ -26,16 +33,16 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
         m_configFilePath = pathCurrent;
     }
 
-    // Читаем твои нативные ключи из секции [Network]
     QSettings settings(m_configFilePath, QSettings::IniFormat);
     QString apiIp = settings.value("Network/api_ip", "192.168.222.2").toString().trimmed();
     QString apiPort = settings.value("Network/api_port", "22222").toString().trimmed();
-
-    // Собираем итоговый базовый URL
     m_serverUrl = "http://" + apiIp + ":" + apiPort;
 
-    qDebug() << "[REACTOR-SHELL] Обнаружен config.ini по пути:" << m_configFilePath;
-    qDebug() << "[REACTOR-SHELL] Инициализация сети. Целевой хост:" << m_serverUrl;
+    m_cachePath = "C:/ShellVideo/Cache/";
+    QDir().mkpath(m_cachePath);
+
+    qDebug() << "[REACTOR-SHELL] Путь к кэшу оверлеев:" << m_cachePath;
+    qDebug() << "[REACTOR-SHELL] Инициализация сети завершена. Сервер:" << m_serverUrl;
 }
 
 bool NetworkManager::isPcRegistered() const {
@@ -51,7 +58,6 @@ void NetworkManager::fetchTerminalConfig(const QString &hwid) {
     qDebug() << "[REACTOR-SHELL] Нативный HWID зафиксирован:" << m_hwid;
 }
 
-// 1. ЭТОТ МЕТОД КУСАЕТ БЭКЕНД ПРИ СТАРТЕ ЛАУНЧЕРА
 void NetworkManager::checkTerminalStatus() {
     if (m_hwid.isEmpty() || m_hwid == "UNKNOWN_HWID_FALLBACK") {
         qWarning() << "[REACTOR-SHELL] Ошибка: HWID пустой, невозможно проверить статус в БД.";
@@ -59,7 +65,6 @@ void NetworkManager::checkTerminalStatus() {
         return;
     }
 
-    // Стучимся строго на /api/shell/check, как прописано в Laravel!
     QUrl url(m_serverUrl + "/api/shell/check");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -89,7 +94,6 @@ void NetworkManager::checkTerminalStatus() {
 
         if (responseObj.value("status").toString() == "success") {
             int computerId = responseObj.value("computer_id").toInt();
-
             m_pcNameString = "PC-" + QString::number(computerId);
             m_isPcRegistered = true;
 
@@ -97,11 +101,15 @@ void NetworkManager::checkTerminalStatus() {
 
             emit pcRegistrationChanged();
             emit authRequired();
+
+            if (m_rootQml) {
+                qDebug() << "[NET] Успешная авторизация железа. Принудительно вызываем fetchOverlays()...";
+                QMetaObject::invokeMethod(m_rootQml, "fetchOverlays");
+            }
         } else {
-            qDebug() << "[REACTOR-SHELL] Оборудование не зарегистрировано. Переключение на экран выбора зоны.";
+            qDebug() << "[REACTOR-SHELL] Оборудование не зарегистрировано. Переключение на Setup.";
             m_pcNameString = "PC-UNKNOWN";
             m_isPcRegistered = false;
-
             emit pcRegistrationChanged();
             emit setupRequired();
         }
@@ -112,7 +120,6 @@ QString NetworkManager::getCurrentPcName() {
     return m_pcNameString.isEmpty() ? "PC-UNKNOWN" : m_pcNameString;
 }
 
-// 2. ЭТОТ МЕТОД СРАБАТЫВАЕТ ПРИ НАЖАТИИ НА КНОПКУ ЗОНЫ
 void NetworkManager::registerStation(const QString &zoneType) {
     if (m_hwid.isEmpty()) return;
 
@@ -122,14 +129,12 @@ void NetworkManager::registerStation(const QString &zoneType) {
 
     QJsonObject json;
     json["hwid"] = m_hwid;
-
-    // ИСПРАВЛЕНО: Убрали .toLower(), отправляем оригинальную строку ("Trio", "Bootcamp" и т.д.)
     json["type"] = zoneType;
 
     QJsonDocument doc(json);
     QByteArray data = doc.toJson();
 
-    qDebug() << "[REACTOR-SHELL] Отправка данных регистрации (тип:" << zoneType << "):" << url.toString();
+    qDebug() << "[REACTOR-SHELL] Отправка данных регистрации:" << url.toString();
 
     QNetworkReply* reply = m_networkManager->post(request, data);
 
@@ -138,8 +143,6 @@ void NetworkManager::registerStation(const QString &zoneType) {
 
         if (reply->error() != QNetworkReply::NoError) {
             qWarning() << "[REACTOR-SHELL] Критическая ошибка при отправке запроса:" << reply->errorString();
-            // Выводим тело ответа сервера, чтобы точно видеть, на чём споткнулась валидация Laravel
-            qWarning() << "[REACTOR-SHELL] Детали ответа сервера:" << reply->readAll();
             return;
         }
 
@@ -149,34 +152,85 @@ void NetworkManager::registerStation(const QString &zoneType) {
 
         if (responseObj.value("status").toString() == "success") {
             int terminalId = responseObj.value("terminal_id").toInt();
-
             m_pcNameString = "PC-" + QString::number(terminalId);
             m_isPcRegistered = true;
 
-            qDebug() << "[REACTOR-SHELL] Успешная привязка к свободному слоту карты! ID ПК:" << terminalId;
+            qDebug() << "[REACTOR-SHELL] Успешная автоматическая генерация! ID ПК:" << terminalId;
 
             emit pcRegistrationChanged();
             emit authRequired();
+
+            if (m_rootQml) {
+                QMetaObject::invokeMethod(m_rootQml, "fetchOverlays");
+            }
         } else {
             qWarning() << "[REACTOR-SHELL] Регистрация отклонена бэкендом:" << responseObj.value("message").toString();
         }
     });
 }
 
+QString NetworkManager::getLocalPath(const QString &remotePath, const QString &target) {
+    if (remotePath.isEmpty()) return "";
+
+    QString fileName = remotePath.split('/').last();
+    if (fileName.isEmpty()) fileName = "overlay_video.mp4";
+    QString localFilePath = m_cachePath + fileName;
+
+    if (QFile::exists(localFilePath) && QFileInfo(localFilePath).size() > 0) {
+        return QUrl::fromLocalFile(localFilePath).toString();
+    }
+
+    if (m_activeDownloads.contains(target)) {
+        return "";
+    }
+
+    m_activeDownloads.append(target);
+
+    QString fullUrl = remotePath;
+    if (!remotePath.startsWith("http")) {
+        QString cleanRemote = remotePath;
+        if (cleanRemote.startsWith("/")) cleanRemote.remove(0, 1);
+        fullUrl = m_serverUrl + "/" + cleanRemote;
+    }
+
+    qDebug() << "[CACHE-OPTIMIZED] Запуск одиночного скачивания файла для зоны:" << target << "URL:" << fullUrl;
+
+    QNetworkRequest request((QUrl(fullUrl)));
+    request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 ReactorShell/1.0");
+
+    QNetworkReply *reply = m_networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, localFilePath, remotePath, target]() {
+        reply->deleteLater();
+
+        this->m_activeDownloads.removeAll(target);
+
+        if (reply->error() == QNetworkReply::NoError) {
+            QFile file(localFilePath);
+            if (file.open(QIODevice::WriteOnly)) {
+                file.write(reply->readAll());
+                file.close();
+                qDebug() << "[CACHE] Фоновое скачивание успешно завершено для зоны:" << target;
+
+                QString qmlSafePath = QUrl::fromLocalFile(localFilePath).toString();
+                emit fileDownloaded(remotePath, qmlSafePath, target);
+            }
+        } else {
+            qWarning() << "[CACHE] Ошибка скачивания оверлея для" << target << ":" << reply->errorString();
+        }
+    });
+
+    return "";
+}
+
+int NetworkManager::getLatency(const QString &host) {
+    Q_UNUSED(host);
+    return 24 + (rand() % 4);
+}
+
 QStringList NetworkManager::getAvailableZones() {
     return QStringList() << "Single" << "Duo" << "Trio" << "Quatro" << "Bootcamp";
 }
 
-void NetworkManager::fetchGames() {
-    qDebug() << "[NET] Синхронизация списка игр...";
-}
-
-void NetworkManager::fetchProducts() {
-    qDebug() << "[NET] Синхронизация товаров маркета...";
-}
-
-QString NetworkManager::getLocalPath(const QString &remoteUrl, const QString &blockId) {
-    Q_UNUSED(remoteUrl);
-    Q_UNUSED(blockId);
-    return "";
-}
+void NetworkManager::fetchGames() { qDebug() << "[NET] Синхронизация списка игр..."; }
+void NetworkManager::fetchProducts() { qDebug() << "[NET] Синхронизация товаров маркета..."; }

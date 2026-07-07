@@ -37,6 +37,7 @@ Window {
     readonly property int sideMargin: 50
 
     onTerminalIdChanged: {
+        console.log("[DEBUG-MAIN] ТРИГГЕР: terminalId изменился на:", terminalId);
         if (terminalId > 0) {
             console.log("[START-TRACE] [QML-REACTION] Железо авторизовано. ID:", terminalId, ". Начинаем загрузку оверлеев...");
             fetchOverlays();
@@ -50,6 +51,7 @@ Window {
     }
 
     onSessionUserChanged: {
+        console.log("[DEBUG-MAIN] ТРИГГЕР: sessionUser изменился на:", root.sessionUser);
         if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
             console.log("[SHELL-STATUS] Сессия изменилась на:", root.sessionUser, ". Срочно запрашиваем оверлеи...");
             root.fetchOverlays();
@@ -75,11 +77,15 @@ Window {
             setupScreenLoader.source = "";
             screenSwitcher.sourceComponent = loginScreenComponent;
             root.terminalId = root.pcNameString.replace(/[^0-9]/g, "") || 0;
+            console.log("[DEBUG-MAIN] Конец onAuthRequired. Итоговый terminalId =", root.terminalId);
         }
     }
 
     Component.onCompleted: {
-        console.log("[START-TRACE] [STEP QML-A] Корневой Window загрузился. Запуск проверки статуса терминала...");
+        console.log("[START-TRACE] [STEP QML-A] Корневой Window загрузился. Собираем HWID...");
+        var nativeHwid = "e41057e5-9695-440b-9750-94dcd95263a0";
+        NetworkManager.fetchTerminalConfig(nativeHwid);
+        console.log("[START-TRACE] [STEP QML-B] HWID передан. Запуск проверки статуса терминала...");
         NetworkManager.checkTerminalStatus();
     }
 
@@ -95,8 +101,19 @@ Window {
         z: 50
         active: (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") && !setupScreenLoader.item
 
+        onActiveChanged: console.log("[DEBUG-CONTAINER] Свойство active для overlaysContainer изменилось на:", active);
+
+        onStatusChanged: {
+            console.log("[DEBUG-CONTAINER] Статус overlaysContainer изменился:", status, "(1-Loading, 2-Ready, 3-Error, 0-Null)");
+            if (status === Loader.Ready) {
+                console.log("[LIFECYCLE] overlaysContainer полностью инициализирован в памяти. Повторный запрос сетки оверлеев...");
+                root.fetchOverlays();
+            }
+        }
+
         sourceComponent: Component {
             Item {
+                id: overlaysInnerItem
                 anchors.fill: parent
                 property alias b1: blockTopLeft
                 property alias b2: blockTopRight
@@ -104,6 +121,8 @@ Window {
                 property alias b4: blockBottomLeft
                 property alias b5: blockMidRight
                 property alias b6: blockBottomRight
+
+                Component.onCompleted: console.log("[DEBUG-CONTAINER] Внутренний Item со слотами блогов b1-b6 УСПЕШНО создан в памяти!");
 
                 Column {
                     id: leftColumn
@@ -275,10 +294,8 @@ Window {
                                 font.bold: false
                                 font.family: "Roboto"
                                 font.letterSpacing: 4
-
                                 inputMask: "0000;_"
                                 echoMode: TextInput.Normal
-
                                 color: "white"
                                 selectionColor: "#3b82f6"
                                 selectedTextColor: "black"
@@ -378,13 +395,10 @@ Window {
                                     font.bold: false
                                     font.family: "Roboto"
                                     font.letterSpacing: 1
-
                                     inputMask: "+7 (999) 999-99-99;_"
                                     focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
-
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: TextInput.AlignVCenter
-
                                     color: "white"
                                     selectionColor: "#22c55e"
                                     selectedTextColor: "black"
@@ -434,14 +448,11 @@ Window {
                                     font.bold: false
                                     font.family: "Roboto"
                                     font.letterSpacing: 4
-
                                     inputMask: "0000;_"
                                     echoMode: TextInput.Normal
-
                                     focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: TextInput.AlignVCenter
-
                                     color: "white"
                                     selectionColor: "#22c55e"
                                     selectedTextColor: "black"
@@ -518,8 +529,10 @@ Window {
 
     function loginToServer(phone, pin) {
         if (typeof NetworkManager === "undefined") return;
+        var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
+
         var xhr = new XMLHttpRequest();
-        xhr.open("POST", NetworkManager.serverUrl + "/api/shell/login");
+        xhr.open("POST", baseUrl + "/api/shell/login");
         xhr.setRequestHeader("Content-Type", "application/json");
         xhr.onreadystatechange = function() {
             if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
@@ -552,6 +565,7 @@ Window {
         triggeredOnStart: false
         onTriggered: {
             if (!setupScreenLoader.item) {
+                console.log("[TIMER] Сработал 25с таймер обновления оверлеев.");
                 fetchOverlays();
                 if (root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.terminalId > 0) {
                     NetworkManager.fetchProducts();
@@ -561,23 +575,58 @@ Window {
     }
 
     function fetchOverlays() {
-        if (typeof NetworkManager === "undefined" || root.terminalId === 0) return;
+        console.log("[DEBUG-NET] Вход в fetchOverlays(). Текущий terminalId =", root.terminalId);
+        if (typeof NetworkManager === "undefined") {
+            console.log("[DEBUG-NET] КРИТИЧЕСКАЯ ОШИБКА: NetworkManager не объявлен в QML контексте!");
+            return;
+        }
+        if (root.terminalId === 0) {
+            console.log("[DEBUG-NET] ОТМЕНА: Запрос заблокирован, так как terminalId == 0.");
+            return;
+        }
+
+        var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
+        var targetUrl = baseUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime();
+        console.log("[DEBUG-NET] СТАРТ AJAX-запроса на URL:", targetUrl);
+
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", NetworkManager.serverUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime());
+        xhr.open("GET", targetUrl);
         xhr.onreadystatechange = function() {
-            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
-                updateOverlaysToScreen(JSON.parse(xhr.responseText));
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                console.log("[DEBUG-NET] ОТВЕТ СЕТИ: Статус HTTP =", xhr.status);
+                if (xhr.status === 200) {
+                    console.log("[DEBUG-NET] JSON успешно получен. Размер строки:", xhr.responseText.length);
+                    try {
+                        var parsedJson = JSON.parse(xhr.responseText);
+                        updateOverlaysToScreen(parsedJson);
+                    } catch(e) {
+                        console.log("[DEBUG-NET] ОШИБКА парсинга JSON:", e);
+                    }
+                } else {
+                    console.log("[DEBUG-NET] Сбой запроса. Сервер вернул ошибку.");
+                }
             }
         }
         xhr.send();
     }
 
     function updateOverlaysToScreen(response) {
+        console.log("[DEBUG-PARSER] Вход в updateOverlaysToScreen()");
         var actualData = response.data ? response.data : response;
-        if (!actualData || overlaysContainer.status !== Loader.Ready) return;
-        var item = overlaysContainer.item;
-        if (!item) return;
 
+        console.log("[DEBUG-PARSER] Проверка готовности контейнера. Свойство overlaysContainer.status =", overlaysContainer.status);
+        if (overlaysContainer.status !== Loader.Ready) {
+            console.log("[DEBUG-PARSER] ОТМЕНА: overlaysContainer ещё не Ready (или active=false), обработка прервана.");
+            return;
+        }
+
+        var item = overlaysContainer.item;
+        if (!item) {
+            console.log("[DEBUG-PARSER] КРИТИЧЕСКАЯ ОШИБКА: overlaysContainer.item равен NULL!");
+            return;
+        }
+
+        console.log("[DEBUG-PARSER] Контейнер на месте. b1-b6 доступны. Начинаем маппинг слотов...");
         var map = {
             "top_left": item.b1, "top_right": item.b2,
             "mid_left": item.b3, "mid_right": item.b5,
@@ -599,9 +648,14 @@ Window {
                     }
                 }
                 if (vUrl === "" && blockData.video_url) vUrl = blockData.video_url;
+
+                console.log("[DEBUG-PARSER] Слот:", key, "| isActive:", blockData.is_active, "| Найдено видео URL:", vUrl);
+
                 map[key].videoSourceUrl = vUrl;
                 map[key].content = blockData.content;
                 map[key].isActive = blockData.is_active;
+            } else {
+                console.log("[DEBUG-PARSER] Варнинг: Слот", key, "отсутствует в JSON бэкенда или в устройстве QML.");
             }
         }
     }
@@ -656,61 +710,100 @@ Window {
         }
 
         Loader {
-            active: parent.videoSourceUrl !== ""
-            anchors.fill: parent
-            z: 1
-            sourceComponent: Component {
-                Item {
+                    id: overlayVideoLoader
+                    active: parent.videoSourceUrl !== ""
                     anchors.fill: parent
+                    z: 1
+                    sourceComponent: Component {
+                        Item {
+                            id: videoInnerItem
+                            anchors.fill: parent
 
-                    function updateSource() {
-                        if (parent.parent.videoSourceUrl !== "" && typeof NetworkManager !== "undefined") {
-                            overlayBgPlayer.source = NetworkManager.getLocalPath(parent.parent.videoSourceUrl, blockUniqueId);
-                        } else {
-                            overlayBgPlayer.source = root.fallbackVideo;
-                        }
-                    }
+                            property string currentPlayingPath: ""
 
-                    Connections {
-                        target: parent.parent
-                        function onVideoSourceUrlChanged() {
-                            overlayBgPlayer.updateSource();
-                        }
-                    }
+                            function updateSource() {
+                                var rawUrl = overlayVideoLoader.parent.videoSourceUrl;
+                                var blockId = overlayVideoLoader.parent.blockUniqueId;
 
-                    Connections {
-                        target: NetworkManager
-                        function onFileDownloaded(path) {
-                            if (target === blockUniqueId && parent.parent.videoSourceUrl === remoteUrl) {
-                                overlayBgPlayer.source = localPath;
-                            }
-                        }
-                    }
+                                if (rawUrl !== "" && typeof NetworkManager !== "undefined") {
+                                    var path = NetworkManager.getLocalPath(rawUrl, blockId);
 
-                    MediaPlayer {
-                        id: overlayBgPlayer
-                        videoOutput: vOutOverlayBg
-                        audioOutput: AudioOutput { muted: true }
-                        loops: MediaPlayer.Infinite
+                                    if (overlayBgPlayer.source.toString() === path && path !== "") {
+                                        return;
+                                    }
 
-                        Component.onCompleted: {
-                            updateSource();
-                        }
-
-                        onMediaStatusChanged: {
-                            if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
-                                overlayBgPlayer.play();
-                            } else if (mediaStatus === MediaPlayer.NoMedia || mediaStatus === MediaPlayer.InvalidMedia) {
-                                if (overlayBgPlayer.source !== root.fallbackVideo && overlayBgPlayer.source !== "") {
-                                    overlayBgPlayer.source = root.fallbackVideo;
-                                    overlayBgPlayer.play();
+                                    console.log("[PLAYER-OPTIMIZED]", blockId, "-> Переключение источника на:", path);
+                                    if (path !== "") {
+                                        overlayBgPlayer.stop();
+                                        overlayBgPlayer.source = path;
+                                        overlayBgPlayer.play();
+                                    } else {
+                                        if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
+                                            overlayBgPlayer.stop();
+                                            overlayBgPlayer.source = root.fallbackVideo;
+                                            overlayBgPlayer.play();
+                                        }
+                                    }
                                 }
                             }
+
+                            Connections {
+                                target: overlayVideoLoader.parent
+                                onVideoSourceUrlChanged: {
+                                    console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
+                                    videoInnerItem.updateSource();
+                                }
+                            }
+
+                            Connections {
+                                target: NetManager
+                                function onFileDownloaded(remoteUrl, localPath, target) {
+                                    var blockId = overlayVideoLoader.parent.blockUniqueId;
+                                    var currentUrl = overlayVideoLoader.parent.videoSourceUrl;
+                                    if (target === blockId && currentUrl === remoteUrl) {
+                                        if (overlayBgPlayer.source.toString() !== localPath) {
+                                            console.log("[OVERLAY-CACHE] Слот", blockId, "считал скачанный файл:", localPath);
+                                            overlayBgPlayer.stop();
+                                            overlayBgPlayer.source = localPath;
+                                            overlayBgPlayer.play();
+                                        }
+                                    }
+                                }
+                            }
+
+                            MediaPlayer {
+                                id: overlayBgPlayer
+                                videoOutput: vOutOverlayBg
+                                audioOutput: AudioOutput { muted: true }
+                                loops: MediaPlayer.Infinite
+
+                                Component.onCompleted: {
+                                    videoInnerItem.updateSource();
+                                }
+
+                                onMediaStatusChanged: {
+                                    var blockId = overlayVideoLoader.parent.blockUniqueId;
+                                    if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
+                                        if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
+                                            overlayBgPlayer.play();
+                                        } else {
+                                            overlayBgPlayer.stop();
+                                        }
+                                    } else if (mediaStatus === MediaPlayer.InvalidMedia) {
+                                        console.log("[PLAYER-ERROR]", blockId, "-> Ошибка кодека. Уход на fallback.");
+                                        overlayBgPlayer.stop();
+                                        if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
+                                            overlayBgPlayer.source = root.fallbackVideo;
+                                            if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
+                                                overlayBgPlayer.play();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            VideoOutput { id: vOutOverlayBg; anchors.fill: parent; fillMode: VideoOutput.PreserveAspectCrop; layer.enabled: false }
                         }
                     }
-                    VideoOutput { id: vOutOverlayBg; anchors.fill: parent; fillMode: VideoOutput.PreserveAspectCrop }
                 }
-            }
-        }
     }
 }

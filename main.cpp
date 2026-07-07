@@ -1,87 +1,60 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickStyle>
+
 #include "src/core/networkmanager.h"
-#include "src/core/processmanager.h"
 #include "src/models/gamemodel.h"
 #include "src/models/storemodel.h"
 
-#ifdef Q_OS_WIN
-#include <windows.h>
-#endif
-
-// Безопасное чтение реестра Windows на низком уровне (только для чтения)
-QString readRegistryString(HKEY rootKey, const wchar_t* subKey, const wchar_t* valueName)
-{
-#ifdef Q_OS_WIN
-    HKEY hKey;
-    // Открываем ключ строго с правами KEY_READ (не требует прав администратора)
-    if (RegOpenKeyExW(rootKey, subKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        wchar_t buffer[256];
-        DWORD bufferSize = sizeof(buffer);
-        DWORD type = REG_SZ;
-
-        if (RegQueryValueExW(hKey, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(buffer), &bufferSize) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return QString::fromWCharArray(buffer).trimmed();
-        }
-        RegCloseKey(hKey);
-    }
-#endif
-    return "";
-}
-
-// Корректная функция получения HWID без wmic и QSettings
-QString getMotherboardSerialNumber()
-{
-#ifdef Q_OS_WIN
-    // 1. Пробуем забрать серийник материнки из BIOS
-    QString serial = readRegistryString(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"BaseBoardSerialNumber");
-
-    if (!serial.isEmpty() && serial.toUpper() != "TO BE FILLED BY O.E.M." && serial.toUpper() != "DEFAULT STRING") {
-        return serial;
-    }
-
-    // 2. Фоллбэк: если BIOS пустой (актуально для некоторых китайских плат), берем MachineGuid системы
-    QString machineId = readRegistryString(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Cryptography", L"MachineGuid");
-    if (!machineId.isEmpty()) {
-        return machineId;
-    }
-#endif
-    return "UNKNOWN_HWID_FALLBACK";
-}
-
 int main(int argc, char *argv[])
 {
-    qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
+    // 1. РАЗБЛОКИРУЕМ XMLHttpRequest ДЛЯ ЛОКАЛЬНЫХ СЛОЕВ QML (qrc)
+    // Устраняет ошибку: "Using GET on a local file is disabled by default"
+    qputenv("QML_XHR_ALLOW_FILE_READ", "1");
+
+    // 2. Переключаем тему на Basic для снятия ограничений кастомизации Windows
+    // Устраняет варнинги "The current style does not support customization of this control"
+    QQuickStyle::setStyle("Basic");
 
     QGuiApplication app(argc, argv);
 
     QQmlApplicationEngine engine;
 
-    GameModel gamesModel;
-    StoreModel storeModel;
+    // Инициализируем C++ модели данных лаунчера REACTOR
+    GameModel *gamesModel = new GameModel(&app);
+    StoreModel *storeModel = new StoreModel(&app);
 
-    NetworkManager netManager(&gamesModel, &storeModel);
+    // Создаем единственный экземпляр менеджера сети
+    NetworkManager *netManager = new NetworkManager(gamesModel, storeModel, &app);
 
-    engine.rootContext()->setContextProperty("NetworkManager", &netManager);
-    engine.rootContext()->setContextProperty("GamesModel", &gamesModel);
-    engine.rootContext()->setContextProperty("StoreModel", &storeModel);
+    // Регистрируем объект под двумя именами для полной совместимости со всеми экранами лаунчера
+    engine.rootContext()->setContextProperty("NetworkManager", netManager);
+    engine.rootContext()->setContextProperty("NetManager", netManager);
 
-    // Вытаскиваем железный HWID
-    QString hwid = getMotherboardSerialNumber();
+    engine.rootContext()->setContextProperty("gamesModel", gamesModel);
+    engine.rootContext()->setContextProperty("storeModel", storeModel);
 
-    netManager.fetchTerminalConfig(hwid);
-    netManager.fetchGames();
-    netManager.fetchProducts();
-
+    // Строгий путь автоматического генератора QML-модулей Qt6
     const QUrl url(QStringLiteral("qrc:/qt/qml/sector0451/Main.qml"));
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
-                     &app, [url](QObject *obj, const QUrl &objUrl) {
-        if (!obj && url == objUrl)
-            QCoreApplication::exit(-1);
-    }, Qt::QueuedConnection);
+        &app, [url](QObject *obj, const QUrl &objUrl) {
+            if (!obj && url == objUrl)
+                QCoreApplication::exit(-1);
+        }, Qt::QueuedConnection);
+
     engine.load(url);
+
+    // Находим созданный QML-объект окна и прокидываем ссылку на него
+    if (!engine.rootObjects().isEmpty()) {
+        QObject* rootWindow = engine.rootObjects().first();
+        netManager->setRootQmlObject(rootWindow);
+
+        qDebug() << "[REACTOR-SHELL] Модули ядра засинхронены. Контроль первичного опроса передан в QML.";
+
+        // УБРАНО ДЛЯ ПРЕДОТВРАЩЕНИЯ ДУБЛИРОВАНИЯ: netManager->checkTerminalStatus();
+        // Теперь опрос запускается строго из Component.onCompleted в Main.qml после фиксации HWID.
+    }
 
     return app.exec();
 }
