@@ -1,7 +1,7 @@
 #include "networkmanager.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
-#include <QCoreApplication> // <-- СЮДА ДОБАВЛЯЕМ СТРОКУ!
+#include <QCoreApplication>
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
@@ -94,10 +94,14 @@ void NetworkManager::checkTerminalStatus() {
 
         if (responseObj.value("status").toString() == "success") {
             int computerId = responseObj.value("computer_id").toInt();
-            m_pcNameString = "PC-" + QString::number(computerId);
+
+            // ИСПРАВЛЕНО: Забираем реальное текстовое имя из базы (например, "PC-1" или "VIP-03"), а не генерим по ID
+            QString dbName = responseObj.value("name").toString().trimmed();
+            m_pcNameString = dbName.isEmpty() ? ("PC-" + QString::number(computerId)) : dbName;
+
             m_isPcRegistered = true;
 
-            qDebug() << "[REACTOR-SHELL] Терминал найден в системе. Присвоен ID:" << computerId;
+            qDebug() << "[REACTOR-SHELL] Терминал авторизован под именем:" << m_pcNameString << "| ID записи в БД:" << computerId;
 
             emit pcRegistrationChanged();
             emit authRequired();
@@ -131,16 +135,15 @@ void NetworkManager::registerStation(const QString &zoneType, const QString &pcN
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
 
-    // Собираем пакет
     QJsonObject json;
     json["hwid"] = m_hwid;
-    json["zone_type"] = zoneType; // Обрати внимание: в QML у тебя "Duo" с большой буквы, Laravel может ждать "duo"
+    json["zone_type"] = zoneType;
     json["name"] = pcName;
 
     QJsonDocument doc(json);
     QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
 
-    qDebug() << "[DEBUG-C++ SETUP] ---> ОТПРАВКА ПОСТ-ЗАПРОСА";
+    qDebug() << "[DEBUG-C++ SETUP] ---> ОТПРАВКА ПОСТ-ЗАПРОСА РЕГИСТРАЦИИ";
     qDebug() << "[DEBUG-C++ SETUP] URL:" << url.toString();
     qDebug() << "[DEBUG-C++ SETUP] JSON DATA:" << jsonData;
 
@@ -151,7 +154,6 @@ void NetworkManager::registerStation(const QString &zoneType, const QString &pcN
 
         qDebug() << "[DEBUG-C++ SETUP] <--- ОТВЕТ СЕТИ ПОЛУЧЕН";
 
-        // Проверяем HTTP статус-код (200, 422, 500 и т.д.)
         QVariant statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
         if (statusCode.isValid()) {
             qDebug() << "[DEBUG-C++ SETUP] HTTP Status Code:" << statusCode.toInt();
@@ -173,6 +175,47 @@ void NetworkManager::registerStation(const QString &zoneType, const QString &pcN
         } else {
             qDebug() << "[DEBUG-C++ SETUP] КРИТИЧЕСКАЯ СЕТЕВАЯ ОШИБКА ОПЕРАЦИИ:" << reply->errorString();
             qDebug() << "[DEBUG-C++ SETUP] Ответ сервера при ошибке:" << reply->readAll();
+        }
+    });
+}
+
+// ДОБАВЛЕННЫЙ МЕТОД: ПОЛНОЕ ЗАКРЫТИЕ СЕССИИ И ОЧИСТКА СОСТОЯНИЯ ТЕРМИНАЛА
+void NetworkManager::logoutTerminal(int terminalId) {
+    if (m_serverUrl.isEmpty()) return;
+
+    QUrl url(m_serverUrl + "/api/shell/logout");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
+
+    QJsonObject json;
+    json["terminal_id"] = terminalId;
+
+    QJsonDocument doc(json);
+    QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+
+    qDebug() << "[DEBUG-C++ LOGOUT] ---> ОТПРАВКА ЗАПРОСА НА ЗАКРЫТИЕ СЕССИИ. ID терминала:" << terminalId;
+
+    QNetworkReply *reply = m_networkManager->post(request, jsonData);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
+            QJsonObject responseJson = responseDoc.object();
+
+            if (responseJson["status"].toString() == "success") {
+                qDebug() << "[DEBUG-C++ LOGOUT] <--- СЕССИЯ УСПЕШНО ЗАКРЫТА НА БЭКЕНДЕ";
+
+                // Сбрасываем кэш-имя и принудительно обновляем статус харда
+                this->checkTerminalStatus();
+            } else {
+                qDebug() << "[DEBUG-C++ LOGOUT] Внимание: Бэкенд вернул ошибку логаута:" << responseDoc.toJson();
+            }
+        } else {
+            qWarning() << "[DEBUG-C++ LOGOUT] Критическая сетевая ошибка при логауте:" << reply->errorString();
         }
     });
 }

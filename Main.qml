@@ -45,22 +45,36 @@ Window {
     }
 
     function resetAuthForm() {
-        authCenter.authStep = 1
-        if (typeof phoneInput !== 'undefined') phoneInput.text = ""
-        if (typeof pinInput !== 'undefined') pinInput.text = ""
-    }
+            // ИСПРАВЛЕНО: Защищаем от падения, если форма авторизации еще не создана в памяти
+            if (typeof authCenter !== 'undefined' && authCenter !== null) {
+                authCenter.authStep = 1
+            }
+            if (typeof phoneInput !== 'undefined' && phoneInput !== null) phoneInput.text = ""
+            if (typeof pinInput !== 'undefined' && pinInput !== null) pinInput.text = ""
+        }
 
     onSessionUserChanged: {
-        console.log("[DEBUG-MAIN] ТРИГГЕР: sessionUser изменился на:", root.sessionUser);
-        if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
-            console.log("[SHELL-STATUS] Сессия изменилась на:", root.sessionUser, ". Срочно запрашиваем оверлеи...");
-            root.fetchOverlays();
+            console.log("[DEBUG-MAIN] ТРИГГЕР: sessionUser изменился на:", root.sessionUser);
 
-            if (root.sessionUser === "GUEST" || root.sessionUser === "") {
-                root.resetAuthForm();
+            if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
+                console.log("[SHELL-STATUS] Сессия сброшена/изменена. Активация оверлеев...");
+                root.fetchOverlays();
+
+                // ЖЕСТКИЙ ПЕРЕКЛЮЧАТЕЛЬ ЭКРАНОВ НА СТОРOНЕ MAIN
+                if (root.sessionUser === "GUEST" || root.sessionUser === "") {
+                    root.resetAuthForm();
+
+                    // Гасим дашборд, если он вдруг остался в памяти
+                    dashboardLoader.source = "";
+
+                    // ВОЗВРАЩАЕМ ЭКРАН АВТОРИЗАЦИИ В ПАМЯТЬ!
+                    if (screenSwitcher.sourceComponent !== loginScreenComponent) {
+                        console.log("[LIFECYCLE-MAIN] Принудительное восстановление loginScreenComponent в screenSwitcher");
+                        screenSwitcher.sourceComponent = loginScreenComponent;
+                    }
+                }
             }
         }
-    }
 
     Connections {
         target: NetworkManager
@@ -528,51 +542,100 @@ Window {
     }
 
     function loginToServer(phone, pin) {
-        if (typeof NetworkManager === "undefined") return;
-        var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
+            console.log("[TRACE-AUTH] === СТАРТ ПРОЦЕССА АВТОРИЗАЦИИ ===");
 
-        var xhr = new XMLHttpRequest();
-        xhr.open("POST", baseUrl + "/api/shell/login");
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
-                var response = JSON.parse(xhr.responseText);
-                if (response.status === "success") {
-                    if (typeof Launcher !== "undefined") {
-                        console.log("[QML-AUTH] Пользователь проверен. Запуск фиксации конфигов QOS...");
-                        Launcher.applyQosPolicies(true);
-                    }
+            if (typeof NetworkManager === "undefined") {
+                console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: Объект NetworkManager не найден в контексте QML!");
+                return;
+            }
 
-                    root.sessionUser = response.user.name || "GUEST";
-                    root.sessionBalance = parseFloat(response.user.balance) || 0;
-                    root.sessionTime = response.user.time_remaining || "00:00:00";
-                    screenSwitcher.sourceComponent = null;
-                    dashboardLoader.source = "Dashboard.qml";
-                    if (NetworkManager !== null) {
-                        NetworkManager.fetchGames();
-                        NetworkManager.fetchProducts();
+            // Проверяем, как вычисляется URL бэкенда
+            var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
+            console.log("[TRACE-AUTH] Базовый URL бэкенда:", baseUrl);
+            console.log("[TRACE-AUTH] Текущий terminalId в корневом окне:", root.terminalId);
+            console.log("[TRACE-AUTH] Сырые данные на входе -> Телефон:", phone, "| PIN:", pin);
+
+            // Чистим строки от мусора маски ввода
+            var cleanPhone = phone.replace(/[^0-9]/g, "");
+            var cleanPin = pin.replace(/[^0-9]/g, "");
+            var targetTerminalId = parseInt(root.terminalId);
+
+            console.log("[TRACE-AUTH] Очищенные данные для JSON -> Телефон:", cleanPhone, "| PIN:", cleanPin, "| ID терминала (int):", targetTerminalId);
+
+            if (cleanPhone === "" || cleanPin === "") {
+                console.log("[TRACE-AUTH] ВНИМАНИЕ: Телефон или PIN пустые после очистки! Отмена отправки.");
+                return;
+            }
+
+            var targetUrl = baseUrl + "/api/shell/login";
+            console.log("[TRACE-AUTH] Итоговый URL запроса:", targetUrl);
+
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", targetUrl);
+            xhr.setRequestHeader("Content-Type", "application/json");
+
+            // Отслеживаем абсолютно все изменения состояния сетевого запроса
+            xhr.onreadystatechange = function() {
+                console.log("[TRACE-AUTH] Смена состояния сети: readyState =", xhr.readyState);
+
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    console.log("[TRACE-AUTH] Запрос завершен! HTTP статус-код ответа =", xhr.status);
+                    console.log("[TRACE-AUTH] Сырой текстовый ответ сервера:", xhr.responseText);
+
+                    if (xhr.status === 200) {
+                        try {
+                            var response = JSON.parse(xhr.responseText);
+                            console.log("[TRACE-AUTH] JSON успешно распарсен, статус в теле:", response.status);
+
+                            if (response.status === "success") {
+                                console.log("[TRACE-AUTH] УСПЕХ! Бэкенд подтвердил сессию. Загружаем дашборд...");
+
+                                if (typeof Launcher !== "undefined") {
+                                    console.log("[TRACE-AUTH] Применяем политики QOS...");
+                                    Launcher.applyQosPolicies(true);
+                                }
+
+                                root.sessionUser = response.user.name || "GUEST";
+                                root.sessionBalance = parseFloat(response.user.balance) || 0;
+                                root.sessionTime = response.user.time_remaining || "00:00:00";
+
+                                screenSwitcher.sourceComponent = null;
+                                dashboardLoader.source = "Dashboard.qml";
+
+                                if (NetworkManager !== null) {
+                                    NetworkManager.fetchGames();
+                                    NetworkManager.fetchProducts();
+                                }
+                            } else {
+                                console.log("[TRACE-AUTH] ОШИБКА: Бэкенд вернул 200, но статус в JSON не success:", xhr.responseText);
+                            }
+                        } catch (e) {
+                            console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: Сбой парсинга JSON ответа:", e);
+                        }
+                    } else if (xhr.status === 0) {
+                        console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: HTTP Status 0! Запрос заблокирован (CORS, неверный IP/порт или сервер лежит).");
+                    } else {
+                        console.log("[TRACE-AUTH] ОШИБКА СЕРВЕРА: Бэкенд отклонил запрос. Код ошибки:", xhr.status);
                     }
                 }
-            }
-        }
-        xhr.send(JSON.stringify({ "phone": phone.replace(/[^0-9]/g, ""), "pin": pin.replace(/[^0-9]/g, ""), "terminal_id": root.terminalId }));
-    }
+            };
 
-    Timer {
-        interval: 25000
-        running: true
-        repeat: true
-        triggeredOnStart: false
-        onTriggered: {
-            if (!setupScreenLoader.item) {
-                console.log("[TIMER] Сработал 25с таймер обновления оверлеев.");
-                fetchOverlays();
-                if (root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.terminalId > 0) {
-                    NetworkManager.fetchProducts();
-                }
+            var payload = {
+                "phone": cleanPhone,
+                "pin": cleanPin,
+                "terminal_id": targetTerminalId
+            };
+
+            var jsonString = JSON.stringify(payload);
+            console.log("[TRACE-AUTH] Отправка сформированного JSON пакета в xhr.send():", jsonString);
+
+            try {
+                xhr.send(jsonString);
+                console.log("[TRACE-AUTH] Вызов xhr.send() выполнен успешно, ждем ответ...");
+            } catch (err) {
+                console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА на этапе отправки запроса через send():", err.message);
             }
         }
-    }
 
     function fetchOverlays() {
         console.log("[DEBUG-NET] Вход в fetchOverlays(). Текущий terminalId =", root.terminalId);
@@ -748,12 +811,13 @@ Window {
                             }
 
                             Connections {
-                                target: overlayVideoLoader.parent
-                                onVideoSourceUrlChanged: { // <-- Варнинг летит отсюда
-                                        console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
-                                        videoInnerItem.updateSource();
-                                    }
-                            }
+                                                            target: overlayVideoLoader.parent
+                                                            // ИСПРАВЛЕНО ДЛЯ QT 6: Убран варнинг депрекейта, заменено на синтаксис функции
+                                                            function onVideoSourceUrlChanged() {
+                                                                console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
+                                                                videoInnerItem.updateSource();
+                                                            }
+                                                        }
 
                             Connections {
                                 target: NetManager

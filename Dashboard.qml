@@ -31,10 +31,9 @@ Item {
     property string darkBg: "#030704"
     property string currentLanguage: "RU"
 
-    // Принудительно запрашиваем список товаров и статус active чека при загрузке дашборда
     Component.onCompleted: {
-        if (typeof NetManager !== 'undefined') {
-            NetManager.fetchProducts();
+        if (typeof NetworkManager !== 'undefined') {
+            NetworkManager.fetchProducts();
         }
     }
 
@@ -54,7 +53,7 @@ Item {
 
         function addProduct(prodId, prodName, prodPrice) {
             var parsedPrice = parseFloat(prodPrice || 0);
-            console.log("[CART-TRACE] Добавление в корзину -> ID:", prodId, "| Name:", prodName, "| Пришедшая цена:", prodPrice, "| Распарсено:", parsedPrice);
+            console.log("[CART-TRACE] Добавление в корзину -> ID:", prodId, "| Name:", prodName, "| Цена:", parsedPrice);
             for (var i = 0; i < count; i++) {
                 if (get(i).productId === prodId) {
                     setProperty(i, "quantity", get(i).quantity + 1);
@@ -146,7 +145,9 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: NetManager.callAdmin(dashboardRoot.termId)
+                        onClicked: {
+                            if (typeof NetworkManager !== 'undefined') NetworkManager.callAdmin(dashboardRoot.termId);
+                        }
                     }
                 }
 
@@ -159,7 +160,7 @@ Item {
                         spacing: 8
                         Rectangle { width: 6; height: 6; radius: 3; color: accentColor; anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: "LATENCY (EU): " + NetManager.getLatency("162.249.72.1") + " MS"
+                            text: "LATENCY (EU): " + (typeof NetworkManager !== 'undefined' ? NetworkManager.getLatency("162.249.72.1") : 24) + " MS"
                             color: accentColor
                             font.pixelSize: 9
                             font.bold: true
@@ -203,7 +204,8 @@ Item {
 
                     Text {
                         text: "БЫСТРЫЙ ЗАПУСК ПЛАТФОРМ"
-                        color: accentColor; font.pixelSize: 10; font.bold: true; font.letterSpacing: 2; opacity: 0.6; Layout.alignment: Qt.AlignHCenter
+                        color: accentColor
+                        font.pixelSize: 10; font.bold: true; font.letterSpacing: 2; opacity: 0.6; Layout.alignment: Qt.AlignHCenter
                     }
 
                     GridLayout {
@@ -211,24 +213,18 @@ Item {
                         Layout.fillWidth: true
 
                         PlatformSquareBtn {
-                            btnText: "STEAM";
-                            iconText: "󰓓";
-                            brandColor: "#00adef";
+                            btnText: "STEAM"; iconText: "󰓓"; brandColor: "#00adef";
                             onClicked: {
-                                // Передаем параметры запуска в попап
                                 steamLimitAlertPopup.targetExe = "C:\\Program Files (x86)\\Steam\\steam.exe";
                                 steamLimitAlertPopup.targetArgs = "";
-
-                                // Открываем предупреждение и взводим таймер автоматического старта
                                 steamLimitAlertPopup.open();
-                                launchDelayTimer.start();
                             }
                         }
-                        PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", "") }
-                        PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", "") }
-                        PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "") }
-                        PlatformSquareBtn { btnText: "EA APP"; iconText: "󰓡"; brandColor: "#ff5722"; onClicked: Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", "") }
-                        PlatformSquareBtn { btnText: "VK PLAY"; iconText: "󰕼"; brandColor: "#ff3347"; onClicked: Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", "") }
+                        PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", ""); } }
+                        PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", ""); } }
+                        PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", ""); } }
+                        PlatformSquareBtn { btnText: "EA APP"; iconText: "󰓡"; brandColor: "#ff5722"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", ""); } }
+                        PlatformSquareBtn { btnText: "VK PLAY"; iconText: "󰕼"; brandColor: "#ff3347"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", ""); } }
                     }
 
                     Item { height: 5; width: 1 }
@@ -237,7 +233,6 @@ Item {
                         Layout.fillWidth: true
                         spacing: 10
 
-                        // КНОПКА МАГАЗИНА С АВТОМАТИЧЕСКИМ ТРЕКЕРОМ СТАТУСОВ В ДЛИНУ
                         ActionBtn {
                             id: storeActionBtn
                             text: "МАГАЗИН"
@@ -249,7 +244,6 @@ Item {
                             onClicked: storePopup.open()
                         }
 
-                        // КНОПКА ПОПОЛНЕНИЯ БАЛАНСА
                         ActionBtn {
                             text: "ПОПОЛНИТЬ БАЛАНС"
                             icon: "💳"
@@ -262,8 +256,9 @@ Item {
                             icon: "⏳"
                             baseColor: "#3b82f6"
                             onClicked: {
+                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
                                 var xhr = new XMLHttpRequest();
-                                xhr.open("POST", "http://192.168.222.2:22222/api/shell/games/pause");
+                                xhr.open("POST", baseUrl + "/api/shell/games/pause");
                                 xhr.setRequestHeader("Content-Type", "application/json");
                                 xhr.onreadystatechange = function() {
                                     if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
@@ -272,7 +267,6 @@ Item {
                                             if (typeof root !== 'undefined') {
                                                 root.temporaryPausePin = res.pin_code;
                                                 root.sessionUser = "PAUSE";
-                                                root.authScreen.visible = true;
                                                 dashboardRoot.visible = false;
                                             }
                                         }
@@ -287,9 +281,14 @@ Item {
                             icon: "🚪"
                             baseColor: "#525252"
                             onClicked: {
+                                console.log("[DASHBOARD-LOGOUT] Инициация выхода для терминала ID:", dashboardRoot.termId);
+
+                                if (typeof NetworkManager !== "undefined") {
+                                    NetworkManager.logoutTerminal(dashboardRoot.termId);
+                                }
+
                                 if (typeof root !== 'undefined') {
-                                    root.authScreen.visible = true;
-                                    root.sessionUser = "GUEST";
+                                    root.sessionUser = "";
                                 }
                                 dashboardRoot.visible = false;
                             }
@@ -319,7 +318,11 @@ Item {
                                     Rectangle { id: handleItem; x: (customSlider.value / 100) * (parent.width - width); anchors.verticalCenter: parent.verticalCenter; width: 10; height: 10; radius: 5; color: "white" }
                                     MouseArea {
                                         anchors.fill: parent; property bool isDragging: false
-                                        function updateVolume(mx) { var pct = Math.max(0, Math.min(1, mx / width)); customSlider.value = Math.round(pct * 100); Launcher.setSystemVolume(customSlider.value); }
+                                        function updateVolume(mx) {
+                                            var pct = Math.max(0, Math.min(1, mx / width));
+                                            customSlider.value = Math.round(pct * 100);
+                                            if (typeof Launcher !== 'undefined') Launcher.setSystemVolume(customSlider.value);
+                                        }
                                         onPressed: function(mouse) { isDragging = true; updateVolume(mouse.x); }
                                         onPositionChanged: function(mouse) { if (isDragging) updateVolume(mouse.x); }
                                         onReleased: function(mouse) { isDragging = false; }
@@ -332,7 +335,13 @@ Item {
                             Rectangle {
                                 width: 35; height: 22; color: "#111"; border.color: "#333"; radius: 3
                                 Text { anchors.centerIn: parent; text: dashboardRoot.currentLanguage; color: "white"; font.pixelSize: 11; font.bold: true }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { dashboardRoot.currentLanguage = (dashboardRoot.currentLanguage === "RU") ? "EN" : "RU"; Launcher.toggleSystemLanguage(); } }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor;
+                                    onClicked: {
+                                        dashboardRoot.currentLanguage = (dashboardRoot.currentLanguage === "RU") ? "EN" : "RU";
+                                        if (typeof Launcher !== 'undefined') Launcher.toggleSystemLanguage();
+                                    }
+                                }
                             }
 
                             Text {
@@ -355,79 +364,69 @@ Item {
                     model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "БРАУЗЕРЫ", "УТИЛИТЫ"]
                     delegate: Text {
                         text: modelData; color: filterRow.activeTab === modelData ? accentColor : "#666666"; font.pixelSize: 16; font.bold: true; font.letterSpacing: 1
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { filterRow.activeTab = modelData; gamesModel.setFilter(modelData) } }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor;
+                            onClicked: {
+                                filterRow.activeTab = modelData;
+                                if (typeof gamesModel !== 'undefined') gamesModel.setFilter(modelData);
+                            }
+                        }
                     }
                 }
             }
 
             GridView {
-                id: gamesGrid
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                cellWidth: 230
-                cellHeight: 320
-                clip: true
-                model: gamesModel
+                id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320; clip: true
+                model: (typeof gamesModel !== 'undefined') ? gamesModel : null
                 delegate: Item {
-                    width: gamesGrid.cellWidth
-                    height: gamesGrid.cellHeight
+                    width: gamesGrid.cellWidth; height: gamesGrid.cellHeight
                     Rectangle {
-                        anchors.fill: parent
-                        anchors.margins: 10
-                        color: "#0a0a0a"
-                        radius: 6
+                        anchors.fill: parent; anchors.margins: 10; color: "#0a0a0a"; radius: 6
                         border.width: gArea.containsMouse ? 2 : 1
                         border.color: gArea.containsMouse ? accentColor : "#1a1a1a"
                         Image {
-                            width: parent.width
-                            height: parent.height - 45
-                            source: { var pUrl = model.poster !== undefined ? model.poster : (poster !== undefined ? poster : ""); if (pUrl === "") return ""; if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0) return pUrl; if (pUrl.indexOf("/") === 0) return "http://192.168.222.2:22222" + pUrl; return "http://192.168.222.2:22222/" + pUrl; }
+                            width: parent.width; height: parent.height - 45
+                            source: {
+                                var pUrl = model.poster !== undefined ? model.poster : ""; if (pUrl === "") return "";
+                                if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0) return pUrl;
+                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
+                                if (pUrl.indexOf("/") === 0) return baseUrl + pUrl;
+                                return baseUrl + "/" + pUrl;
+                            }
                             fillMode: Image.PreserveAspectCrop; asynchronous: true; opacity: gArea.containsMouse ? 1.0 : 0.7
                         }
                         Rectangle {
                             width: parent.width; height: 45; anchors.bottom: parent.bottom; color: gArea.containsMouse ? accentColor : "#050505"
-                            Text { anchors.centerIn: parent; text: (typeof title !== 'undefined') ? title : (model.title || ""); color: gArea.containsMouse ? "black" : "white"; font.bold: true }
+                            Text { anchors.centerIn: parent; text: model.title || ""; color: gArea.containsMouse ? "black" : "white"; font.bold: true }
                         }
                         MouseArea {
-                            id: gArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-
+                            id: gArea; anchors.fill: parent; hoverEnabled: true
                             onClicked: {
-                                var currentGameId = (typeof id !== 'undefined') ? id : model.id;
-                                var defaultExe = (typeof exePath !== 'undefined') ? exePath : model.exePath;
-                                var defaultArgs = (typeof args !== 'undefined') ? args : model.args;
-
+                                var currentGameId = model.id;
+                                var defaultExe = model.exePath;
+                                var defaultArgs = model.args;
                                 console.log("[LAUNCH-TRACE] Запрос клубного аккаунта для Game ID:", currentGameId);
 
+                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
                                 var xhr = new XMLHttpRequest();
-                                xhr.open("POST", "http://192.168.222.2:22222/api/shell/games/take-account");
+                                xhr.open("POST", baseUrl + "/api/shell/games/take-account");
                                 xhr.setRequestHeader("Content-Type", "application/json");
-
                                 xhr.onreadystatechange = function() {
                                     if (xhr.readyState === XMLHttpRequest.DONE) {
                                         if (xhr.status === 200) {
                                             var res = JSON.parse(xhr.responseText);
-
                                             if (res.status === "success" && res.login) {
-                                                console.log("[LAUNCH-TRACE] Аккаунт выделен! Логин:", res.login, "Лаунчер:", res.exe_path);
                                                 var clubArgs = "-login " + res.login + " " + res.password + " " + (res.args ? res.args : defaultArgs);
-                                                Launcher.launch(res.exe_path ? res.exe_path : defaultExe, clubArgs);
+                                                if (typeof Launcher !== 'undefined') Launcher.launch(res.exe_path ? res.exe_path : defaultExe, clubArgs);
                                             } else {
-                                                console.log("[LAUNCH-TRACE] Клубные аккаунты заняты. Запуск дефолтного лаунчера.");
-                                                Launcher.launch(defaultExe, defaultArgs);
+                                                if (typeof Launcher !== 'undefined') Launcher.launch(defaultExe, defaultArgs);
                                             }
                                         } else {
-                                            console.log("[LAUNCH-ERROR] Сбой Shell API. Код ошибки:", xhr.status);
-                                            Launcher.launch(defaultExe, defaultArgs);
+                                            if (typeof Launcher !== 'undefined') Launcher.launch(defaultExe, defaultArgs);
                                         }
                                     }
                                 }
-
-                                xhr.send(JSON.stringify({
-                                    "game_id": parseInt(currentGameId),
-                                    "terminal_id": parseInt(dashboardRoot.termId)
-                                }));
+                                xhr.send(JSON.stringify({ "game_id": parseInt(currentGameId), "terminal_id": parseInt(dashboardRoot.termId) }));
                             }
                         }
                     }
@@ -436,20 +435,15 @@ Item {
         }
     }
 
+    // ==========================================
+    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА
+    // ==========================================
     Popup {
         id: storePopup
         width: 1500; height: 880; anchors.centerIn: parent; modal: true; focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
         background: Rectangle { color: "#050505"; border.color: "#eab308"; border.width: 2; radius: 12 }
-
-        onOpened: {
-            console.log("[QML-STORE-TRACE] Модель storeModel открыта. Количество записей rowCount:", storeModel.rowCount());
-            for (var i = 0; i < storeModel.rowCount(); i++) {
-                var idx = storeModel.index(i, 0);
-                console.log("[QML-STORE-TRACE] Проверка строки:", i, "| Название товара:", storeModel.data(idx, Qt.UserRole + 2));
-            }
-        }
 
         ColumnLayout {
             anchors.fill: parent; anchors.margins: 35; spacing: 25
@@ -470,11 +464,17 @@ Item {
             Row {
                 id: filterCatRow; spacing: 15; property string activeCat: "Все"
                 Repeater {
-                    model: [{ name: "Все", tag: "" }, { name: "Напитки", tag: "drinks" }, { name: "Снэки", tag: "food" }, { name: "Еда", tag: "food" }]
+                    model: [{ name: "Все", tag: "" }, { name: "Напитки", tag: "drinks" }, { name: "Снэки", tag: "food" }]
                     delegate: Rectangle {
                         width: 120; height: 38; radius: 6; color: filterCatRow.activeCat === modelData.name ? "#eab308" : "#111"
                         Text { anchors.centerIn: parent; text: modelData.name; color: filterCatRow.activeCat === modelData.name ? "black" : "white"; font.bold: true; font.pixelSize: 13 }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { filterCatRow.activeCat = modelData.name; storeModel.setFilter(modelData.tag); } }
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor;
+                            onClicked: {
+                                filterCatRow.activeCat = modelData.name;
+                                if (typeof storeModel !== 'undefined') storeModel.setFilter(modelData.tag);
+                            }
+                        }
                     }
                 }
             }
@@ -483,10 +483,11 @@ Item {
                 Layout.fillWidth: true; Layout.fillHeight: true; spacing: 30
 
                 GridView {
-                    id: storeGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 250; cellHeight: 330; clip: true; model: storeModel
+                    id: storeGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 250; cellHeight: 330; clip: true;
+                    model: (typeof storeModel !== 'undefined') ? storeModel : null
                     delegate: Rectangle {
                         width: storeGrid.cellWidth - 15; height: storeGrid.cellHeight - 15; color: "#0a0a0a"; border.color: "#1c1c1c"; border.width: 1; radius: 10
-                        opacity: (typeof stock !== "undefined" ? stock : model["stock"]) > 0 ? 1.0 : 0.35
+                        opacity: model.stock > 0 ? 1.0 : 0.35
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 15
@@ -494,42 +495,40 @@ Item {
                                 Layout.fillWidth: true; Layout.preferredHeight: 140; color: "#111"; radius: 6; clip: true
                                 Image {
                                     anchors.fill: parent; anchors.margins: 5
-                                    source: { var imgUrl = (typeof image !== "undefined" ? image : model["image"]) || ""; if (imgUrl === "") return ""; if (imgUrl.indexOf("http") === 0 || imgUrl.indexOf("file") === 0) return imgUrl; if (imgUrl.indexOf("/") === 0) return "http://192.168.222.2:22222" + imgUrl; return "http://192.168.222.2:22222/" + imgUrl; }
+                                    source: {
+                                        var imgUrl = model.image || ""; if (imgUrl === "") return "";
+                                        if (imgUrl.indexOf("http") === 0 || imgUrl.indexOf("file") === 0) return imgUrl;
+                                        var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
+                                        if (imgUrl.indexOf("/") === 0) return baseUrl + imgUrl;
+                                        return baseUrl + "/" + imgUrl;
+                                    }
                                     fillMode: Image.PreserveAspectFit; asynchronous: true
                                 }
-                                Text { visible: !(typeof image !== "undefined" ? image : model["image"]); anchors.centerIn: parent; text: "📦"; font.pixelSize: 36 }
+                                Text { visible: !model.image; anchors.centerIn: parent; text: "📦"; font.pixelSize: 36 }
                             }
-                            Text { text: (typeof name !== "undefined" ? name : model["name"]); color: "white"; font.bold: true; font.pixelSize: 15; Layout.topMargin: 5; elide: Text.ElideRight; Layout.fillWidth: true }
-                            Text { text: (typeof category !== "undefined" ? category : model["category"]).toUpperCase(); color: "#555"; font.pixelSize: 9; font.letterSpacing: 2; font.bold: true }
+                            Text { text: model.name || ""; color: "white"; font.bold: true; font.pixelSize: 15; Layout.topMargin: 5; elide: Text.ElideRight; Layout.fillWidth: true }
+                            Text { text: (model.category || "BAR").toUpperCase(); color: "#555"; font.pixelSize: 9; font.letterSpacing: 2; font.bold: true }
                             Item { Layout.fillHeight: true }
 
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text {
-                                    text: {
-                                        var finalPrice = 0;
-                                        if (typeof price !== "undefined") finalPrice = price;
-                                        else if (typeof model["price"] !== "undefined") finalPrice = model["price"];
-                                        return parseFloat(finalPrice || 0).toFixed(0) + " ₽";
-                                    }
+                                    text: parseFloat(model.price || 0).toFixed(0) + " ₽"
                                     color: "#eab308"; font.pixelSize: 22; font.bold: true; font.italic: true
                                 }
                                 Item { Layout.fillWidth: true }
                                 Rectangle {
-                                    visible: (typeof stock !== "undefined" ? stock : model["stock"]) > 0
+                                    visible: model.stock > 0
                                     width: 44; height: 44; radius: 8; color: itemMouse.containsMouse ? "#ffffff" : "#eab308"
                                     Text { anchors.centerIn: parent; text: "+"; color: "black"; font.pixelSize: 22; font.bold: true }
                                     MouseArea {
                                         id: itemMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            var targetId = (typeof id !== "undefined" ? id : model["id"]);
-                                            var targetName = (typeof name !== "undefined" ? name : model["name"]);
-                                            var targetPrice = (typeof price !== "undefined" ? price : model["price"]);
-                                            cartModel.addProduct(targetId, targetName, targetPrice);
-                                        }
+                                        onClicked: cartModel.addProduct(model.id, model.name, model.price);
                                     }
                                 }
-                                Rectangle { visible: (typeof stock !== "undefined" ? stock : model["stock"]) <= 0; width: 75; height: 28; radius: 4; color: "#300c0c"; border.color: "#991b1b"; Text { anchors.centerIn: parent; text: "SOLD OUT"; color: "#ef4444"; font.pixelSize: 9; font.bold: true } }
+                                Rectangle { visible: model.stock <= 0; width: 75; height: 28; radius: 4; color: "#300c0c"; border.color: "#991b1b"
+                                    Text { anchors.centerIn: parent; text: "SOLD OUT"; color: "#ef4444"; font.pixelSize: 9; font.bold: true }
+                                }
                             }
                         }
                     }
@@ -568,7 +567,7 @@ Item {
                                     Rectangle {
                                         width: 28; height: 28; color: "transparent"
                                         Text { anchors.centerIn: parent; text: "🗑"; color: "#ef4444"; font.pixelSize: 14 }
-                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: text.remove(index) }
+                                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: cartModel.remove(index) }
                                     }
                                 }
                             }
@@ -588,18 +587,19 @@ Item {
                                 MouseArea {
                                     anchors.fill: parent; enabled: cartModel.count > 0; cursorShape: cartModel.count > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     onClicked: {
+                                        var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
                                         for (var i = 0; i < cartModel.count; i++) {
                                             var item = cartModel.get(i);
                                             for (var q = 0; q < item.quantity; q++) {
-                                                NetManager.buyItem(item.productId, dashboardRoot.termId);
+                                                var xhr = new XMLHttpRequest();
+                                                xhr.open("POST", baseUrl + "/api/shell/store/checkout");
+                                                xhr.setRequestHeader("Content-Type", "application/json");
+                                                xhr.send(JSON.stringify({ "product_id": item.productId, "terminal_id": dashboardRoot.termId }));
                                             }
                                         }
                                         cartModel.clear();
                                         storePopup.close();
-
-                                        if (typeof NetManager !== 'undefined') {
-                                            NetManager.fetchProducts();
-                                        }
+                                        if (typeof NetworkManager !== 'undefined') NetworkManager.fetchProducts();
                                     }
                                 }
                             }
@@ -615,11 +615,7 @@ Item {
     // ==========================================
     Popup {
         id: depositPopup
-        width: 500
-        height: 520
-        anchors.centerIn: parent
-        modal: true
-        focus: true
+        width: 500; height: 520; anchors.centerIn: parent; modal: true; focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
         background: Rectangle { color: "#050505"; border.color: "#eab308"; border.width: 1; radius: 8 }
@@ -634,9 +630,7 @@ Item {
         }
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 30
-            spacing: 20
+            anchors.fill: parent; anchors.margins: 30; spacing: 20
 
             RowLayout {
                 Layout.fillWidth: true
@@ -651,9 +645,7 @@ Item {
 
             ColumnLayout {
                 visible: !depositPopup.showQrScreen
-                Layout.fillWidth: true
-                spacing: 15
-
+                Layout.fillWidth: true; spacing: 15
                 Text { text: "Выберите сумму к зачислению:"; color: "#888"; font.pixelSize: 12 }
 
                 RowLayout {
@@ -664,12 +656,7 @@ Item {
                             Layout.fillWidth: true; Layout.preferredHeight: 45; radius: 4
                             color: depositPopup.selectedAmount === modelData ? "#eab308" : "#0d0d0d"
                             border.color: depositPopup.selectedAmount === modelData ? "#eab308" : "#222"
-                            Text {
-                                anchors.centerIn: parent
-                                text: modelData + " ₽"
-                                color: depositPopup.selectedAmount === modelData ? "black" : "white"
-                                font.bold: true; font.pixelSize: 13
-                            }
+                            Text { anchors.centerIn: parent; text: modelData + " ₽"; color: depositPopup.selectedAmount === modelData ? "black" : "white"; font.bold: true; font.pixelSize: 13 }
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.selectedAmount = modelData }
                         }
                     }
@@ -690,7 +677,8 @@ Item {
                     MouseArea {
                         id: sbpMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            depositPopup.qrSourceUrl = "http://192.168.222.2:22222/api/payments/sbp-mock-qr?amount=" + depositPopup.selectedAmount + "&computer_id=" + dashboardRoot.termId + "&t=" + Date.now();
+                            var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
+                            depositPopup.qrSourceUrl = baseUrl + "/api/payments/sbp-mock-qr?amount=" + depositPopup.selectedAmount + "&computer_id=" + dashboardRoot.termId + "&t=" + Date.now();
                             depositPopup.showQrScreen = true;
                         }
                     }
@@ -699,37 +687,18 @@ Item {
 
             ColumnLayout {
                 visible: depositPopup.showQrScreen
-                Layout.fillWidth: true
-                spacing: 15
+                Layout.fillWidth: true; spacing: 15
 
                 Rectangle {
-                    Layout.alignment: Qt.AlignHCenter
-                    width: 220; height: 220; color: "white"; radius: 6
-                    Image {
-                        anchors.fill: parent; anchors.margins: 10
-                        source: depositPopup.qrSourceUrl
-                        fillMode: Image.PreserveAspectFit
-                        asynchronous: true
-                    }
+                    Layout.alignment: Qt.AlignHCenter; width: 220; height: 220; color: "white"; radius: 6
+                    Image { anchors.fill: parent; anchors.margins: 10; source: depositPopup.qrSourceUrl; fillMode: Image.PreserveAspectFit; asynchronous: true }
                 }
 
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Сумма к зачислению: " + depositPopup.selectedAmount + " ₽"
-                    color: "#eab308"; font.pixelSize: 16; font.bold: true
-                }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Отсканируйте камерой смартфона для симуляции СБП.\nЗаглушка бэкенда начислит рубли автоматически."
-                    color: "#555"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter
-                }
-
+                Text { Layout.alignment: Qt.AlignHCenter; text: "Сумма к зачислению: " + depositPopup.selectedAmount + " ₽"; color: "#eab308"; font.pixelSize: 16; font.bold: true }
+                Text { Layout.alignment: Qt.AlignHCenter; text: "Отсканируйте камерой смартфона для симуляции СБП.\nЗаглушка бэкенда начислит рубли автоматически."; color: "#555"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter }
                 Item { height: 5; width: 1 }
-
                 Rectangle {
-                    Layout.alignment: Qt.AlignHCenter
-                    width: 140; height: 35; radius: 4; color: "#111"; border.color: "#333"
+                    Layout.alignment: Qt.AlignHCenter; width: 140; height: 35; radius: 4; color: "#111"; border.color: "#333"
                     Text { anchors.centerIn: parent; text: "Назад к суммам"; color: "#aaa"; font.pixelSize: 12 }
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.showQrScreen = false }
                 }
@@ -738,83 +707,46 @@ Item {
     }
 
     // ==========================================
-    // УНИВЕРСАЛЬНЫЙ ПЕРЕХВАТ ТЯЖЕЛОЙ ЗАГРУЗКИ ПО ЛАУНЧЕРАМ
+    // ПОПАП ПРЕДУПРЕЖДЕНИЯ О ЛИМИТЕ СКАЧИВАНИЯ STEAM
     // ==========================================
-    Connections {
-        target: Launcher
-        function onHeavyDownloadDetected(processName) {
-            detectedLauncherText.text = "Обнаружена активность процесса: " + processName.toUpperCase();
-            universalAlertPopup.open();
-        }
-    }
-
     Popup {
-        id: universalAlertPopup
-        width: 550
-        height: 340
-        anchors.centerIn: parent
-        modal: true
-        focus: true
+        id: steamLimitAlertPopup
+        width: 600; height: 380; anchors.centerIn: parent; modal: true; focus: true; z: 9999
         closePolicy: Popup.NoAutoClose
-        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.9 }
-        background: Rectangle { color: "#0a0505"; border.color: "#ef4444"; border.width: 1; radius: 8 }
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
+        background: Rectangle { color: "#0a0505"; border.color: accentColor; border.width: 1; radius: 8 }
+
+        property string targetExe: ""
+        property string targetArgs: ""
 
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 30
-            spacing: 15
+            anchors.fill: parent; anchors.margins: 30; spacing: 15
 
-            Text {
-                Layout.alignment: Qt.AlignHCenter
-                text: "⚠️ ВНИМАНИЕ: ЗАГРУЗКА ДАННЫХ"
-                color: "#ef4444"; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1
-            }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "⚙️ СИСТЕМА КОНТРОЛЯ ТРАФИКА"; color: accentColor; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1 }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "Внимание: Активирован игровой режим сети"; color: "white"; font.pixelSize: 13; font.bold: true }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "Скорость скачивания и обновлений внутри Steam ограничена до 1 МБ/с.\nЭто необходимо для поддержания идеального пинга у всех игроков в клубе."; color: "#a3a3a3"; font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
 
-            Text {
-                id: detectedLauncherText
-                Layout.alignment: Qt.AlignHCenter
-                text: "Обнаружена фоновая загрузка лаунчера"
-                color: "#eab308"; font.pixelSize: 13; font.bold: true
-            }
+            Rectangle {
+                Layout.fillWidth: true; Layout.preferredHeight: 70; color: "#1a0505"; border.color: "#dc2626"; border.width: 1; radius: 4
+                Layout.topMargin: 5; Layout.bottomMargin: 5
 
-            Text {
-                Layout.alignment: Qt.AlignHCenter
-                text: "Вы пытаетесь скачать или обновить игру внутри лаунчера.\nСкорость загрузки этого процесса искусственно ограничена до 256 Кбит/с,\nчтобы предотвратить падение производительности диска и сети."
-                color: "white"; font.pixelSize: 12; font.bold: true
-                horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
-            }
-
-            Item { height: 10; Layout.fillHeight: true }
-
-            RowLayout {
-                spacing: 20
-                Layout.fillWidth: true
-
-                // КНОПКА ОТМЕНЫ (Выгружает лаунчер из ОЗУ и убирает шейпер)
-                Rectangle {
-                    Layout.fillWidth: true; Layout.preferredHeight: 48; radius: 4
-                    color: "#ef4444"
-                    Text { anchors.centerIn: parent; text: "ОТМЕНИТЬ И ЗАКРЫТЬ ИГРУ"; color: "black"; font.bold: true; font.pixelSize: 11 }
-                    MouseArea {
-                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            Launcher.handleDownloadDecision(false);
-                            universalAlertPopup.close();
-                        }
-                    }
+                Column {
+                    anchors.centerIn: parent; spacing: 4
+                    Text { text: "ЕСЛИ НУЖНОЙ ИГРЫ НЕТ НА КОМПЬЮТЕРЕ"; color: "#ef4444"; font.pixelSize: 15; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
+                    Text { text: "Воспользуйтесь услугой «Заказ предустановки» в личном кабинете,\nи мы скачаем её к вашему следующему визиту на максимальной скорости."; color: "#fca5a5"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; anchors.horizontalCenter: parent.horizontalCenter }
                 }
+            }
 
-                // КНОПКА ПРОДОЛЖЕНИЯ (Снимает лимитирующую NetQosPolicy)
-                Rectangle {
-                    Layout.fillWidth: true; Layout.preferredHeight: 48; radius: 4
-                    color: "transparent"; border.color: "#333"; border.width: 1
-                    Text { anchors.centerIn: parent; text: "РАЗРЕШИТЬ И СНЯТЬ ЛИМИТ"; color: "white"; font.bold: true; font.pixelSize: 11 }
-                    MouseArea {
-                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            Launcher.handleDownloadDecision(true);
-                            universalAlertPopup.close();
-                        }
+            Item { height: 5; Layout.fillHeight: true }
+
+            Rectangle {
+                Layout.alignment: Qt.AlignHCenter; width: 220; height: 45; radius: 4; color: accentColor
+                Text { anchors.centerIn: parent; text: "ПОНЯТНО, ЗАПУСТИТЬ"; color: "black"; font.bold: true; font.pixelSize: 12 }
+                MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (typeof Launcher !== 'undefined') Launcher.launch(steamLimitAlertPopup.targetExe, steamLimitAlertPopup.targetArgs);
+                        steamLimitAlertPopup.close();
                     }
                 }
             }
@@ -822,22 +754,19 @@ Item {
     }
 
     // ==========================================
-    // АВТОНОМНЫЙ КЛАСС КНОПОК БЕЗ КАКИХ-ЛИБО ЗАЛИВОК ФОНА
+    // СТИЛИЗОВАННЫЕ КОМПОНЕНТЫ КНОПОК
     // ==========================================
     component ActionBtn : Rectangle {
         id: controlRoot
         property string text: "BUTTON"
         property string icon: ""
         property string baseColor: accentColor
-
         property bool isActiveStatus: false
         property bool orderIsFinished: false
         property string statusText: ""
-
         signal clicked()
 
         Layout.fillWidth: true; Layout.preferredHeight: 50; radius: 4
-
         color: bMouse.pressed ? baseColor : "transparent"
         border.color: bMouse.containsMouse || isActiveStatus ? baseColor : Qt.rgba(1,1,1,0.15)
         border.width: 1
@@ -845,74 +774,21 @@ Item {
         Row {
             anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; anchors.leftMargin: 20; spacing: 6
             Text { text: icon; font.pixelSize: 18; anchors.verticalCenter: parent.verticalCenter }
-
-            Text {
-                text: controlRoot.text
-                font.bold: true; font.pixelSize: 14
-                color: bMouse.pressed ? "black" : (bMouse.containsMouse ? "white" : baseColor)
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
-                text: " (" + controlRoot.statusText + ")"
-                font.bold: true; font.pixelSize: 14
-                visible: controlRoot.isActiveStatus && controlRoot.statusText !== ""
-                color: controlRoot.orderIsFinished ? "#22c55e" : "#ef4444"
-                anchors.verticalCenter: parent.verticalCenter
-            }
+            Text { text: controlRoot.text; font.bold: true; font.pixelSize: 14; color: bMouse.pressed ? "black" : (bMouse.containsMouse ? "white" : baseColor); anchors.verticalCenter: parent.verticalCenter }
+            Text { text: " (" + controlRoot.statusText + ")"; font.bold: true; font.pixelSize: 14; visible: controlRoot.isActiveStatus && controlRoot.statusText !== ""; color: controlRoot.orderIsFinished ? "#22c55e" : "#ef4444"; anchors.verticalCenter: parent.verticalCenter }
         }
         MouseArea { id: bMouse; anchors.fill: parent; hoverEnabled: true; onClicked: controlRoot.clicked() }
-
-        RowLayout {
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.right: parent.right
-            anchors.rightMargin: 20
-            visible: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
-
-            Rectangle {
-                width: 16; height: 16
-                color: "transparent"
-                border.color: "#ef4444"
-                border.width: 2; radius: 8
-
-                Rectangle {
-                    width: 9; height: 9
-                    color: darkBg
-                    anchors.top: parent.top; anchors.right: parent.right; anchors.margins: -2
-                }
-
-                RotationAnimation on rotation {
-                    from: 0; to: 360; duration: 1000; loops: Animation.Infinite
-                    running: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
-                }
-            }
-        }
-
-        Text {
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.right: parent.right
-            anchors.rightMargin: 20
-            text: "✓"
-            color: "#22c55e"
-            font.bold: true
-            font.pixelSize: 16
-            visible: controlRoot.isActiveStatus && controlRoot.orderIsFinished
-        }
     }
 
     component PlatformSquareBtn : Rectangle {
         property string btnText: "LAUNCH"; property string iconText: "🎮"; property string brandColor: accentColor
         signal clicked()
-
         Layout.fillWidth: true; Layout.preferredHeight: 65; radius: 4
         color: pMouse.containsMouse ? Qt.rgba(1,1,1,0.06) : "#0a0d0b"
         border.color: pMouse.containsMouse ? brandColor : "#1a1f1c"; border.width: 1
-
         Behavior on border.color { ColorAnimation { duration: 100 } }
-
         layer.enabled: pMouse.containsMouse
         layer.effect: MultiEffect { blurEnabled: true; blur: 0.2; brightness: 0.1 }
-
         Column {
             anchors.centerIn: parent; spacing: 6
             Text { text: iconText; color: pMouse.containsMouse ? brandColor : "#444"; font.pixelSize: 20; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
@@ -920,107 +796,4 @@ Item {
         }
         MouseArea { id: pMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: parent.clicked() }
     }
-    // ==========================================
-        // ПОПАП ПРЕДУПРЕЖДЕНИЯ О ЛИМИТЕ СКАЧИВАНИЯ STEAM
-        // ==========================================
-        Popup {
-            id: steamLimitAlertPopup
-            width: 600
-            height: 380
-            anchors.centerIn: parent
-            modal: true
-            focus: true
-            z: 9999
-
-            closePolicy: Popup.NoAutoClose
-
-            Overlay.modal: Rectangle { color: "#000000"; opacity: 0.85 }
-            background: Rectangle { color: "#0a0505"; border.color: accentColor; border.width: 1; radius: 8 }
-
-            property string targetExe: ""
-            property string targetArgs: ""
-
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 30
-                spacing: 15
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "⚙️ СИСТЕМА КОНТРОЛЯ ТРАФИКА"
-                    color: accentColor; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1
-                }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Внимание: Активирован игровой режим сети"
-                    color: "white"; font.pixelSize: 13; font.bold: true
-                }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Скорость скачивания и обновлений внутри Steam ограничена до 1 МБ/с.\nЭто необходимо для поддержания идеального пинга у всех игроков в клубе."
-                    color: "#a3a3a3"; font.pixelSize: 12; font.bold: true
-                    horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true
-                }
-
-                // --- ОБНОВЛЕННЫЙ КОНТРАСТНЫЙ БЛОК ---
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 70
-                    color: "#1a0505"
-                    border.color: "#dc2626"
-                    border.width: 1
-                    radius: 4
-                    Layout.topMargin: 5
-                    Layout.bottomMargin: 5
-
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Text {
-                            text: "ЕСЛИ НУЖНОЙ ИГРЫ НЕТ НА КОМПЬЮТЕРЕ"
-                            color: "#ef4444"
-                            font.pixelSize: 15
-                            font.bold: true
-                            font.letterSpacing: 1
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
-                        Text {
-                            text: "Воспользуйтесь услугой «Заказ предустановки» в личном кабинете,\nи мы скачаем её к вашему следующему визиту на максимальной скорости."
-                            color: "#fca5a5"
-                            font.pixelSize: 11
-                            font.bold: true
-                            horizontalAlignment: Text.AlignHCenter
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
-                    }
-                }
-                // ------------------------------------
-
-                Item { height: 5; Layout.fillHeight: true }
-
-                Rectangle {
-                    Layout.alignment: Qt.AlignHCenter
-                    width: 220; height: 45; radius: 4
-                    color: accentColor
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "ПОНЯТНО, ЗАПУСТИТЬ"
-                        color: "black"
-                        font.bold: true
-                        font.pixelSize: 12
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            Launcher.launch(steamLimitAlertPopup.targetExe, steamLimitAlertPopup.targetArgs);
-                            steamLimitAlertPopup.close();
-                        }
-                    }
-                }
-            }
-        }
 }

@@ -34,7 +34,7 @@ public:
     Q_INVOKABLE int getLatency(const QString &host);
     Q_INVOKABLE QString getCurrentPcName();
     Q_INVOKABLE QStringList getAvailableZones();
-
+    Q_INVOKABLE void logoutTerminal(int terminalId);
     // Заглушки синхронизации игровых сессий
     Q_INVOKABLE void fetchGames();
     Q_INVOKABLE void fetchProducts();
