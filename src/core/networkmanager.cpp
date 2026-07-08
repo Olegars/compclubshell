@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QJsonArray>
 
 NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent)
     : QObject(parent)
@@ -283,5 +284,99 @@ QStringList NetworkManager::getAvailableZones() {
     return QStringList() << "Single" << "Duo" << "Trio" << "Quatro" << "Bootcamp";
 }
 
-void NetworkManager::fetchGames() { qDebug() << "[NET] Синхронизация списка игр..."; }
-void NetworkManager::fetchProducts() { qDebug() << "[NET] Синхронизация товаров маркета..."; }
+
+void NetworkManager::fetchGames() {
+    qDebug() << "[NET] Синхронизация списка игр с бэкенда...";
+
+    if (m_serverUrl.isEmpty()) return;
+
+    QUrl url(m_serverUrl + "/api/shell/games");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply* reply = m_networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            QJsonDocument doc = QJsonDocument::fromJson(responseData);
+
+            // ИСПРАВЛЕНО: Твой Laravel возвращает прямой массив объектов, а не словарь!
+            QJsonArray gamesArray = doc.array();
+
+            qDebug() << "[NET] Получено сырых игр из JSON массива:" << gamesArray.count();
+
+            std::vector<GameItem> gamesVector;
+            for (const QJsonValue &value : gamesArray) {
+                QJsonObject obj = value.toObject();
+                GameItem item;
+
+                item.id = obj.value("id").toInt();
+                item.title = obj.value("title").toString();
+                item.exePath = obj.value("exe_path").toString();
+                item.args = obj.value("args").toString();
+                item.poster = obj.value("poster").toString();
+
+                gamesVector.push_back(item);
+            }
+
+            if (m_gamesModel) {
+                m_gamesModel->setGames(gamesVector);
+                qDebug() << "[NET] Модель игр успешно обновлена. Элементов в векторе:" << gamesVector.size();
+            }
+        } else {
+            qWarning() << "[NET] Ошибка получения списка игр:" << reply->errorString();
+        }
+    });
+}
+
+void NetworkManager::fetchProducts() {
+    qDebug() << "[NET] Синхронизация товаров маркета...";
+
+    if (m_serverUrl.isEmpty()) return;
+
+    // Стучимся на прямой роут /api/shell/products, который прописан в web.php
+    QUrl url(m_serverUrl + "/api/shell/products");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QNetworkReply* reply = m_networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        if (reply->error() == QNetworkReply::NoError) {
+            QByteArray responseData = reply->readAll();
+            QJsonDocument doc = QJsonDocument::fromJson(responseData);
+
+            // ИСПРАВЛЕНО: Маркет тоже отдает чистый массив объектов без ключей
+            QJsonArray productsArray = doc.array();
+
+            qDebug() << "[NET] Получено сырых товаров из JSON массива:" << productsArray.count();
+
+            std::vector<StoreItem> productsVector;
+            for (const QJsonValue &value : productsArray) {
+                QJsonObject obj = value.toObject();
+                StoreItem item;
+
+                item.id = obj.value("id").toInt();
+                item.name = obj.value("name").toString();
+                item.price = obj.value("price").toDouble();
+                item.stock = obj.value("stock").toInt();
+                item.image = obj.value("image").toString();
+                item.category = obj.value("category").toString();
+
+                productsVector.push_back(item);
+            }
+
+            if (m_storeModel) {
+                m_storeModel->setProducts(productsVector);
+                qDebug() << "[NET] Модель маркета успешно обновлена. Элементов в векторе:" << productsVector.size();
+            }
+        } else {
+            qWarning() << "[NET] Ошибка получения товаров маркета:" << reply->errorString();
+        }
+    });
+}

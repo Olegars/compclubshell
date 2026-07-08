@@ -252,29 +252,36 @@ Item {
                         }
 
                         ActionBtn {
-                            text: "ОТОЙТИ (ПАУЗА)"
-                            icon: "⏳"
-                            baseColor: "#3b82f6"
-                            onClicked: {
-                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
-                                var xhr = new XMLHttpRequest();
-                                xhr.open("POST", baseUrl + "/api/shell/games/pause");
-                                xhr.setRequestHeader("Content-Type", "application/json");
-                                xhr.onreadystatechange = function() {
-                                    if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
-                                        var res = JSON.parse(xhr.responseText);
-                                        if (res.status === "success") {
-                                            if (typeof root !== 'undefined') {
-                                                root.temporaryPausePin = res.pin_code;
-                                                root.sessionUser = "PAUSE";
-                                                dashboardRoot.visible = false;
-                                            }
-                                        }
-                                    }
-                                }
-                                xhr.send(JSON.stringify({ "computer_id": dashboardRoot.termId }));
-                            }
-                        }
+                                                    text: "ОТОЙТИ (ПАУЗА)"
+                                                    icon: "⏳"
+                                                    baseColor: "#3b82f6"
+                                                    onClicked: {
+                                                        console.log("[DASHBOARD-PAUSE] Старт процедуры паузы для ПК ID:", dashboardRoot.termId);
+
+                                                        // Забираем динамический адрес сервера из C++ менеджера
+                                                        var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
+
+                                                        var xhr = new XMLHttpRequest();
+                                                        xhr.open("POST", baseUrl + "/api/shell/games/pause");
+                                                        xhr.setRequestHeader("Content-Type", "application/json");
+                                                        xhr.onreadystatechange = function() {
+                                                            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+                                                                var res = JSON.parse(xhr.responseText);
+                                                                console.log("[DASHBOARD-PAUSE] Бэкенд сгенерировал новый ПИН на паузу:", res.pin_code);
+
+                                                                if (res.status === "success") {
+                                                                    if (typeof root !== 'undefined') {
+                                                                        // 1. Сохраняем свежий одноразовый ПИН в корень
+                                                                        root.temporaryPausePin = String(res.pin_code);
+                                                                        // 2. Переводим статус в PAUSE. Триггер в Main.qml всё перестроит!
+                                                                        root.sessionUser = "PAUSE";
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        xhr.send(JSON.stringify({ "computer_id": parseInt(dashboardRoot.termId) }));
+                                                    }
+                                                }
 
                         ActionBtn {
                             text: "ЗАКРЫТЬ СЕССИЮ"
@@ -377,7 +384,7 @@ Item {
 
             GridView {
                 id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320; clip: true
-                model: (typeof gamesModel !== 'undefined') ? gamesModel : null
+                model: gamesModel
                 delegate: Item {
                     width: gamesGrid.cellWidth; height: gamesGrid.cellHeight
                     Rectangle {
@@ -484,7 +491,7 @@ Item {
 
                 GridView {
                     id: storeGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 250; cellHeight: 330; clip: true;
-                    model: (typeof storeModel !== 'undefined') ? storeModel : null
+                    model: storeModel
                     delegate: Rectangle {
                         width: storeGrid.cellWidth - 15; height: storeGrid.cellHeight - 15; color: "#0a0a0a"; border.color: "#1c1c1c"; border.width: 1; radius: 10
                         opacity: model.stock > 0 ? 1.0 : 0.35

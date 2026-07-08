@@ -30,6 +30,13 @@ Window {
 
     property string pcNameString: "PC-UNKNOWN"
 
+    // ГЛОБАЛЬНЫЕ СВОЙСТВА ДЛЯ УПРАВЛЕНИЯ ОШИБКОЙ АВТОРИЗАЦИИ
+    property string authErrorMessage: ""
+    property bool authErrorVisible: false
+
+    // ФЛАГ АКТИВНОСТИ ИНДИКАТОРА ЗАГРУЗКИ
+    property bool isLoggingIn: false
+
     readonly property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
 
     readonly property int blockWidth: 524
@@ -45,36 +52,53 @@ Window {
     }
 
     function resetAuthForm() {
-            // ИСПРАВЛЕНО: Защищаем от падения, если форма авторизации еще не создана в памяти
-            if (typeof authCenter !== 'undefined' && authCenter !== null) {
-                authCenter.authStep = 1
-            }
-            if (typeof phoneInput !== 'undefined' && phoneInput !== null) phoneInput.text = ""
-            if (typeof pinInput !== 'undefined' && pinInput !== null) pinInput.text = ""
+        if (typeof authCenter !== 'undefined' && authCenter !== null) {
+            authCenter.authStep = 1;
         }
 
+        if (typeof phoneInput !== 'undefined' && phoneInput !== null) {
+            phoneInput.text = "";
+        }
+        if (typeof pinInput !== 'undefined' && pinInput !== null) {
+            pinInput.text = "";
+        }
+
+        root.authErrorVisible = false;
+        root.authErrorMessage = "";
+        root.isLoggingIn = false;
+
+        // Принудительный сброс фокуса на телефон при логауте
+        if (typeof phoneInput !== 'undefined' && phoneInput !== null) {
+            phoneInput.forceActiveFocus();
+            phoneInput.cursorPosition = 4;
+        }
+    }
+
     onSessionUserChanged: {
-            console.log("[DEBUG-MAIN] ТРИГГЕР: sessionUser изменился на:", root.sessionUser);
+        console.log("[DEBUG-MAIN] ТРИГГЕР: sessionUser изменился на:", root.sessionUser);
 
-            if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
-                console.log("[SHELL-STATUS] Сессия сброшена/изменена. Активация оверлеев...");
-                root.fetchOverlays();
+        if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
+            console.log("[SHELL-STATUS] Сессия изменилась. Запрос фоновых оверлеев...");
+            root.fetchOverlays();
 
-                // ЖЕСТКИЙ ПЕРЕКЛЮЧАТЕЛЬ ЭКРАНОВ НА СТОРOНЕ MAIN
-                if (root.sessionUser === "GUEST" || root.sessionUser === "") {
-                    root.resetAuthForm();
-
-                    // Гасим дашборд, если он вдруг остался в памяти
-                    dashboardLoader.source = "";
-
-                    // ВОЗВРАЩАЕМ ЭКРАН АВТОРИЗАЦИИ В ПАМЯТЬ!
-                    if (screenSwitcher.sourceComponent !== loginScreenComponent) {
-                        console.log("[LIFECYCLE-MAIN] Принудительное восстановление loginScreenComponent в screenSwitcher");
-                        screenSwitcher.sourceComponent = loginScreenComponent;
-                    }
+            // 1. ЕСЛИ ЭТО РЕЖИМ ПАУЗЫ (БЛОКИРОВКА ЭКРАНА)
+            if (root.sessionUser === "PAUSE") {
+                console.log("[LIFECYCLE-MAIN] Активация режима Паузы. Блокируем интерфейс.");
+                dashboardLoader.source = "";
+                if (screenSwitcher.sourceComponent !== loginScreenComponent) {
+                    screenSwitcher.sourceComponent = loginScreenComponent;
+                }
+            }
+            // 2. ЕСЛИ ЭТО ПОЛНЫЙ ВЫХОД (СВОБОДНЫЙ СТЕНД)
+            else if (root.sessionUser === "GUEST" || root.sessionUser === "") {
+                root.resetAuthForm();
+                dashboardLoader.source = "";
+                if (screenSwitcher.sourceComponent !== loginScreenComponent) {
+                    screenSwitcher.sourceComponent = loginScreenComponent;
                 }
             }
         }
+    }
 
     Connections {
         target: NetworkManager
@@ -279,6 +303,7 @@ Window {
                         width: parent.width
                         height: 230
 
+                        // БЛОК ОЖИДАНИЯ С ПАУЗЫ (ОКНО Я ВЕРНУЛСЯ)
                         Column {
                             visible: root.sessionUser === "PAUSE"
                             width: parent.width
@@ -324,10 +349,10 @@ Window {
                                     if (cleanPin === cleanTarget && cleanTarget !== "") {
                                         pauseErrorText.visible = false;
                                         pausePinInput.text = "";
+                                        root.temporaryPausePin = "----";
                                         root.sessionUser = "PLAYER_1";
-                                        if (dashboardLoader.item) {
-                                            dashboardLoader.item.visible = true;
-                                        }
+                                        screenSwitcher.sourceComponent = null;
+                                        dashboardLoader.source = "Dashboard.qml";
                                     } else {
                                         pauseErrorText.visible = true;
                                     }
@@ -343,11 +368,7 @@ Window {
                                     Behavior on border.color { ColorAnimation { duration: 150 } }
 
                                     layer.enabled: pausePinInput.activeFocus
-                                    layer.effect: MultiEffect {
-                                        blurEnabled: true
-                                        blur: 0.2
-                                        brightness: 0.1
-                                    }
+                                    layer.effect: MultiEffect { blurEnabled: true; blur: 0.2; brightness: 0.1 }
                                 }
                             }
 
@@ -371,10 +392,10 @@ Window {
                                     if (cleanPin === cleanTarget && cleanTarget !== "") {
                                         pauseErrorText.visible = false;
                                         pausePinInput.text = "";
+                                        root.temporaryPausePin = "----";
                                         root.sessionUser = "PLAYER_1";
-                                        if (dashboardLoader.item) {
-                                            dashboardLoader.item.visible = true;
-                                        }
+                                        screenSwitcher.sourceComponent = null;
+                                        dashboardLoader.source = "Dashboard.qml";
                                     } else {
                                         pauseErrorText.visible = true;
                                     }
@@ -382,6 +403,7 @@ Window {
                             }
                         }
 
+                        // СТАНДАРТНЫЙ БЛОК ГОСТЕВОГО ВХОДА (ТЕЛЕФОН + ПИН)
                         Column {
                             visible: root.sessionUser !== "PAUSE"
                             width: parent.width
@@ -410,15 +432,47 @@ Window {
                                     font.family: "Roboto"
                                     font.letterSpacing: 1
                                     inputMask: "+7 (999) 999-99-99;_"
+
                                     focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
+
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: TextInput.AlignVCenter
                                     color: "white"
                                     selectionColor: "#22c55e"
                                     selectedTextColor: "black"
 
+                                    Timer {
+                                        id: focusTimer
+                                        interval: 50
+                                        running: false
+                                        repeat: false
+                                        onTriggered: {
+                                            phoneInput.forceActiveFocus();
+                                            phoneInput.cursorPosition = 4;
+                                            console.log("[TIMER-FOCUS] Принудительный фокус и курсор выставлены на позицию 4.");
+                                        }
+                                    }
+
+                                    Component.onCompleted: {
+                                        focusTimer.start();
+                                    }
+
+                                    onVisibleChanged: {
+                                        if (visible && authCenter.authStep === 1) {
+                                            focusTimer.start();
+                                        }
+                                    }
+
+                                    onActiveFocusChanged: {
+                                        if (activeFocus && (text === "+7 (   )    -  -  " || text === "")) {
+                                            Qt.callLater(function() {
+                                                phoneInput.cursorPosition = 4;
+                                            });
+                                        }
+                                    }
+
                                     onAccepted: {
-                                        authCenter.authStep = 2
+                                        authCenter.authStep = 2;
                                     }
 
                                     background: Rectangle {
@@ -431,11 +485,7 @@ Window {
                                         Behavior on border.color { ColorAnimation { duration: 150 } }
 
                                         layer.enabled: phoneInput.activeFocus
-                                        layer.effect: MultiEffect {
-                                            blurEnabled: true
-                                            blur: 0.2
-                                            brightness: 0.1
-                                        }
+                                        layer.effect: MultiEffect { blurEnabled: true; blur: 0.2; brightness: 0.1 }
                                     }
                                 }
                             }
@@ -471,6 +521,14 @@ Window {
                                     selectionColor: "#22c55e"
                                     selectedTextColor: "black"
 
+                                    onActiveFocusChanged: {
+                                        if (activeFocus) {
+                                            Qt.callLater(function() {
+                                                pinInput.cursorPosition = 0;
+                                            });
+                                        }
+                                    }
+
                                     onAccepted: {
                                         loginToServer(phoneInput.text, pinInput.text);
                                     }
@@ -485,16 +543,31 @@ Window {
                                         Behavior on border.color { ColorAnimation { duration: 150 } }
 
                                         layer.enabled: pinInput.activeFocus
-                                        layer.effect: MultiEffect {
-                                            blurEnabled: true
-                                            blur: 0.2
-                                            brightness: 0.1
-                                        }
+                                        layer.effect: MultiEffect { blurEnabled: true; blur: 0.2; brightness: 0.1 }
                                     }
                                 }
                             }
 
-                            Item { height: 10; width: 1 }
+                            Text {
+                                id: authErrorText
+                                text: root.authErrorMessage
+                                visible: root.authErrorVisible
+                                color: "#ef4444"
+                                font.pixelSize: 12
+                                font.bold: true
+                                anchors.horizontalCenter: parent.horizontalCenter
+
+                                Connections {
+                                    target: pinInput
+                                    function onTextChanged() { root.authErrorVisible = false; }
+                                }
+                                Connections {
+                                    target: phoneInput
+                                    function onTextChanged() { root.authErrorVisible = false; }
+                                }
+                            }
+
+                            Item { height: 5; width: 1 }
 
                             Button {
                                 width: parent.width
@@ -529,113 +602,173 @@ Window {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        pinInput.text = ""
-                                        authCenter.authStep = 1
+                                        pinInput.text = "";
+                                        root.authErrorVisible = false;
+                                        authCenter.authStep = 1;
+                                        focusTimer.start();
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
+
+                // КАСTОМНЫЙ ОВЕРЛЕЙ BusyIndicator ДЛЯ БЛОКИРОВКИ И ОЖИДАНИЯ ОТВЕТА СЕРВЕРА
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#cc050a06"
+                    radius: 4
+                    visible: root.isLoggingIn
+                    z: 10
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 15
+
+                        BusyIndicator {
+                            id: loginSpinner
+                            Layout.alignment: Qt.AlignHCenter
+                            running: root.isLoggingIn
+
+                            contentItem: Rectangle {
+                                implicitWidth: 48
+                                implicitHeight: 48
+                                color: "transparent"
+                                border.color: "#22c55e"
+                                border.width: 3
+                                radius: 24
+
+                                RotationAnimator on rotation {
+                                    running: loginSpinner.running
+                                    from: 0
+                                    to: 360
+                                    loops: Animation.Infinite
+                                    duration: 1000
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "ЗАПУСК СЕКТOРА..."
+                            color: "#22c55e"
+                            font.pixelSize: 11
+                            font.bold: true
+                            font.letterSpacing: 2
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+            } // Конец authCenter
         }
     }
 
     function loginToServer(phone, pin) {
-            console.log("[TRACE-AUTH] === СТАРТ ПРОЦЕССА АВТОРИЗАЦИИ ===");
+        console.log("[TRACE-AUTH] === СТАРТ ПРОЦЕССА АВТОРИЗАЦИИ ===");
+        if (typeof NetworkManager === "undefined") {
+            console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: Объект NetworkManager не найден в контексте QML!");
+            return;
+        }
 
-            if (typeof NetworkManager === "undefined") {
-                console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: Объект NetworkManager не найден в контексте QML!");
-                return;
-            }
+        var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
+        console.log("[TRACE-AUTH] Базовый URL бэкенда:", baseUrl);
+        console.log("[TRACE-AUTH] Текущий terminalId в корневом окне:", root.terminalId);
+        console.log("[TRACE-AUTH] Сырые данные на входе -> Телефон:", phone, "| PIN:", pin);
 
-            // Проверяем, как вычисляется URL бэкенда
-            var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
-            console.log("[TRACE-AUTH] Базовый URL бэкенда:", baseUrl);
-            console.log("[TRACE-AUTH] Текущий terminalId в корневом окне:", root.terminalId);
-            console.log("[TRACE-AUTH] Сырые данные на входе -> Телефон:", phone, "| PIN:", pin);
+        var cleanPhone = phone.replace(/[^0-9]/g, "");
+        var cleanPin = pin.replace(/[^0-9]/g, "");
+        var targetTerminalId = parseInt(root.terminalId);
 
-            // Чистим строки от мусора маски ввода
-            var cleanPhone = phone.replace(/[^0-9]/g, "");
-            var cleanPin = pin.replace(/[^0-9]/g, "");
-            var targetTerminalId = parseInt(root.terminalId);
+        console.log("[TRACE-AUTH] Очищенные данные для JSON -> Телефон:", cleanPhone, "| PIN:", cleanPin, "| ID терминала (int):", targetTerminalId);
+        if (cleanPhone === "" || cleanPin === "") {
+            console.log("[TRACE-AUTH] ВНИМАНИЕ: Телефон или PIN пустые после очистки! Отмена отправки.");
+            return;
+        }
 
-            console.log("[TRACE-AUTH] Очищенные данные для JSON -> Телефон:", cleanPhone, "| PIN:", cleanPin, "| ID терминала (int):", targetTerminalId);
+        var targetUrl = baseUrl + "/api/shell/login";
+        console.log("[TRACE-AUTH] Итоговый URL запроса:", targetUrl);
 
-            if (cleanPhone === "" || cleanPin === "") {
-                console.log("[TRACE-AUTH] ВНИМАНИЕ: Телефон или PIN пустые после очистки! Отмена отправки.");
-                return;
-            }
+        // ВКЛЮЧАЕМ ИНДИКАТOР ЗАГРУЗКИ ПО КЛИКУ "НАЧАТЬ СЕССИЮ"
+        root.isLoggingIn = true;
 
-            var targetUrl = baseUrl + "/api/shell/login";
-            console.log("[TRACE-AUTH] Итоговый URL запроса:", targetUrl);
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", targetUrl);
+        xhr.setRequestHeader("Content-Type", "application/json");
 
-            var xhr = new XMLHttpRequest();
-            xhr.open("POST", targetUrl);
-            xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = function() {
+            console.log("[TRACE-AUTH] Смена состояния сети: readyState =", xhr.readyState);
+            if (xhr.readyState === XMLHttpRequest.DONE) {
+                console.log("[TRACE-AUTH] Запрос завершен! HTTP статус-код ответа =", xhr.status);
+                console.log("[TRACE-AUTH] Сырой текстовый ответ сервера:", xhr.responseText);
 
-            // Отслеживаем абсолютно все изменения состояния сетевого запроса
-            xhr.onreadystatechange = function() {
-                console.log("[TRACE-AUTH] Смена состояния сети: readyState =", xhr.readyState);
+                if (xhr.status === 200) {
+                    try {
+                        var response = JSON.parse(xhr.responseText);
+                        console.log("[TRACE-AUTH] JSON успешно распарсен, статус в теле:", response.status);
 
-                if (xhr.readyState === XMLHttpRequest.DONE) {
-                    console.log("[TRACE-AUTH] Запрос завершен! HTTP статус-код ответа =", xhr.status);
-                    console.log("[TRACE-AUTH] Сырой текстовый ответ сервера:", xhr.responseText);
-
-                    if (xhr.status === 200) {
-                        try {
-                            var response = JSON.parse(xhr.responseText);
-                            console.log("[TRACE-AUTH] JSON успешно распарсен, статус в теле:", response.status);
-
-                            if (response.status === "success") {
-                                console.log("[TRACE-AUTH] УСПЕХ! Бэкенд подтвердил сессию. Загружаем дашборд...");
-
-                                if (typeof Launcher !== "undefined") {
-                                    console.log("[TRACE-AUTH] Применяем политики QOS...");
-                                    Launcher.applyQosPolicies(true);
-                                }
-
-                                root.sessionUser = response.user.name || "GUEST";
-                                root.sessionBalance = parseFloat(response.user.balance) || 0;
-                                root.sessionTime = response.user.time_remaining || "00:00:00";
-
-                                screenSwitcher.sourceComponent = null;
-                                dashboardLoader.source = "Dashboard.qml";
-
-                                if (NetworkManager !== null) {
-                                    NetworkManager.fetchGames();
-                                    NetworkManager.fetchProducts();
-                                }
-                            } else {
-                                console.log("[TRACE-AUTH] ОШИБКА: Бэкенд вернул 200, но статус в JSON не success:", xhr.responseText);
+                        if (response.status === "success") {
+                            console.log("[TRACE-AUTH] УСПЕХ! Бэкенд подтвердил сессию. Загружаем дашборд...");
+                            if (typeof Launcher !== "undefined") {
+                                console.log("[TRACE-AUTH] Применяем политики QOS...");
+                                Launcher.applyQosPolicies(true);
                             }
-                        } catch (e) {
-                            console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: Сбой парсинга JSON ответа:", e);
+
+                            root.sessionUser = response.user.name || "GUEST";
+                            root.sessionBalance = parseFloat(response.user.balance) || 0;
+                            root.sessionTime = response.user.time_remaining || "00:00:00";
+
+                            screenSwitcher.sourceComponent = null;
+                            dashboardLoader.source = "Dashboard.qml";
+                            if (NetworkManager !== null) {
+                                NetworkManager.fetchGames();
+                                NetworkManager.fetchProducts();
+                            }
+                        } else {
+                            root.isLoggingIn = false; // ГАСИМ ИНДИКАТOР, ЕСЛИ СЕРВЕР ОТКАЗАЛ
+                            console.log("[TRACE-AUTH] ОШИБКА: Бэкенд вернул 200, но статус в JSON не success:", xhr.responseText);
                         }
-                    } else if (xhr.status === 0) {
-                        console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: HTTP Status 0! Запрос заблокирован (CORS, неверный IP/порт или сервер лежит).");
-                    } else {
-                        console.log("[TRACE-AUTH] ОШИБКА СЕРВЕРА: Бэкенд отклонил запрос. Код ошибки:", xhr.status);
+                    } catch (e) {
+                        root.isLoggingIn = false;
+                        console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: Сбой парсинга JSON ответа:", e);
+                    }
+                } else if (xhr.status === 0) {
+                    console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: HTTP Status 0! Сервер лежит.");
+                    root.isLoggingIn = false; // ГАСИМ ИНДИКАТOР ПРИ КРАШЕ СЕТИ
+                    root.authErrorMessage = "Ошибка сети: Сервер недоступен";
+                    root.authErrorVisible = true;
+                } else {
+                    console.log("[TRACE-AUTH] ОШИБКА СЕРВЕРА: Бэкенд отклонил запрос. Код ошибки:", xhr.status);
+                    root.isLoggingIn = false; // ГАСИМ ИНДИКАТOР ПРИ НЕВЕРНОМ ПИНЕ (ОТВЕТ 401/422)
+
+                    try {
+                        var errResponse = JSON.parse(xhr.responseText);
+                        root.authErrorMessage = errResponse.message ? errResponse.message : "Логин или PIN-код не найдены";
+                    } catch(e) {
+                        root.authErrorMessage = "Логин или PIN-код не найдены";
+                    }
+                    root.authErrorVisible = true;
+
+                    if (typeof pinInput !== "undefined" && pinInput !== null) {
+                        pinInput.text = "";
                     }
                 }
-            };
-
-            var payload = {
-                "phone": cleanPhone,
-                "pin": cleanPin,
-                "terminal_id": targetTerminalId
-            };
-
-            var jsonString = JSON.stringify(payload);
-            console.log("[TRACE-AUTH] Отправка сформированного JSON пакета в xhr.send():", jsonString);
-
-            try {
-                xhr.send(jsonString);
-                console.log("[TRACE-AUTH] Вызов xhr.send() выполнен успешно, ждем ответ...");
-            } catch (err) {
-                console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА на этапе отправки запроса через send():", err.message);
             }
+        };
+
+        var payload = {
+            "phone": cleanPhone,
+            "pin": cleanPin,
+            "terminal_id": targetTerminalId
+        };
+        var jsonString = JSON.stringify(payload);
+        console.log("[TRACE-AUTH] Отправка сформированного JSON пакета в xhr.send():", jsonString);
+        try {
+            xhr.send(jsonString);
+            console.log("[TRACE-AUTH] Вызов xhr.send() выполнен успешно, ждем ответ...");
+        } catch (err) {
+            root.isLoggingIn = false;
+            console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА на этапе отправки запроса через send():", err.message);
         }
+    }
 
     function fetchOverlays() {
         console.log("[DEBUG-NET] Вход в fetchOverlays(). Текущий terminalId =", root.terminalId);
@@ -651,7 +784,6 @@ Window {
         var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl;
         var targetUrl = baseUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime();
         console.log("[DEBUG-NET] СТАРТ AJAX-запроса на URL:", targetUrl);
-
         var xhr = new XMLHttpRequest();
         xhr.open("GET", targetUrl);
         xhr.onreadystatechange = function() {
@@ -695,7 +827,6 @@ Window {
             "mid_left": item.b3, "mid_right": item.b5,
             "bottom_left": item.b4, "bottom_right": item.b6
         };
-
         for (var key in map) {
             if (actualData[key] && map[key]) {
                 var vUrl = "";
@@ -711,8 +842,7 @@ Window {
                     }
                 }
                 if (vUrl === "" && blockData.video_url) vUrl = blockData.video_url;
-
-                console.log("[DEBUG-PARSER] Слот:", key, "| isActive:", blockData.is_active, "| Найдено видео URL:", vUrl);
+                console.log("[DEBUG-PARSER] Слот:", key, "| isActive:", blockData.is_active, "| Найдено video URL:", vUrl);
 
                 map[key].videoSourceUrl = vUrl;
                 map[key].content = blockData.content;
@@ -773,101 +903,99 @@ Window {
         }
 
         Loader {
-                    id: overlayVideoLoader
-                    active: parent.videoSourceUrl !== ""
+            id: overlayVideoLoader
+            active: parent.videoSourceUrl !== ""
+            anchors.fill: parent
+            z: 1
+            sourceComponent: Component {
+                Item {
+                    id: videoInnerItem
                     anchors.fill: parent
-                    z: 1
-                    sourceComponent: Component {
-                        Item {
-                            id: videoInnerItem
-                            anchors.fill: parent
 
-                            property string currentPlayingPath: ""
+                    property string currentPlayingPath: ""
 
-                            function updateSource() {
-                                var rawUrl = overlayVideoLoader.parent.videoSourceUrl;
-                                var blockId = overlayVideoLoader.parent.blockUniqueId;
+                    function updateSource() {
+                        var rawUrl = overlayVideoLoader.parent.videoSourceUrl;
+                        var blockId = overlayVideoLoader.parent.blockUniqueId;
 
-                                if (rawUrl !== "" && typeof NetworkManager !== "undefined") {
-                                    var path = NetworkManager.getLocalPath(rawUrl, blockId);
-
-                                    if (overlayBgPlayer.source.toString() === path && path !== "") {
-                                        return;
-                                    }
-
-                                    console.log("[PLAYER-OPTIMIZED]", blockId, "-> Переключение источника на:", path);
-                                    if (path !== "") {
-                                        overlayBgPlayer.stop();
-                                        overlayBgPlayer.source = path;
-                                        overlayBgPlayer.play();
-                                    } else {
-                                        if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
-                                            overlayBgPlayer.stop();
-                                            overlayBgPlayer.source = root.fallbackVideo;
-                                            overlayBgPlayer.play();
-                                        }
-                                    }
-                                }
+                        if (rawUrl !== "" && typeof NetworkManager !== "undefined") {
+                            var path = NetworkManager.getLocalPath(rawUrl, blockId);
+                            if (overlayBgPlayer.source.toString() === path && path !== "") {
+                                return;
                             }
 
-                            Connections {
-                                                            target: overlayVideoLoader.parent
-                                                            // ИСПРАВЛЕНО ДЛЯ QT 6: Убран варнинг депрекейта, заменено на синтаксис функции
-                                                            function onVideoSourceUrlChanged() {
-                                                                console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
-                                                                videoInnerItem.updateSource();
-                                                            }
-                                                        }
-
-                            Connections {
-                                target: NetManager
-                                function onFileDownloaded(remoteUrl, localPath, target) {
-                                    var blockId = overlayVideoLoader.parent.blockUniqueId;
-                                    var currentUrl = overlayVideoLoader.parent.videoSourceUrl;
-                                    if (target === blockId && currentUrl === remoteUrl) {
-                                        if (overlayBgPlayer.source.toString() !== localPath) {
-                                            console.log("[OVERLAY-CACHE] Слот", blockId, "считал скачанный файл:", localPath);
-                                            overlayBgPlayer.stop();
-                                            overlayBgPlayer.source = localPath;
-                                            overlayBgPlayer.play();
-                                        }
-                                    }
+                            console.log("[PLAYER-OPTIMIZED]", blockId, "-> Переключение источника на:", path);
+                            if (path !== "") {
+                                overlayBgPlayer.stop();
+                                overlayBgPlayer.source = path;
+                                overlayBgPlayer.play();
+                            } else {
+                                if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
+                                    overlayBgPlayer.stop();
+                                    overlayBgPlayer.source = root.fallbackVideo;
+                                    overlayBgPlayer.play();
                                 }
                             }
-
-                            MediaPlayer {
-                                id: overlayBgPlayer
-                                videoOutput: vOutOverlayBg
-                                audioOutput: AudioOutput { muted: true }
-                                loops: MediaPlayer.Infinite
-
-                                Component.onCompleted: {
-                                    videoInnerItem.updateSource();
-                                }
-
-                                onMediaStatusChanged: {
-                                    var blockId = overlayVideoLoader.parent.blockUniqueId;
-                                    if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
-                                        if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
-                                            overlayBgPlayer.play();
-                                        } else {
-                                            overlayBgPlayer.stop();
-                                        }
-                                    } else if (mediaStatus === MediaPlayer.InvalidMedia) {
-                                        console.log("[PLAYER-ERROR]", blockId, "-> Ошибка кодека. Уход на fallback.");
-                                        overlayBgPlayer.stop();
-                                        if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
-                                            overlayBgPlayer.source = root.fallbackVideo;
-                                            if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
-                                                overlayBgPlayer.play();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            VideoOutput { id: vOutOverlayBg; anchors.fill: parent; fillMode: VideoOutput.PreserveAspectCrop; layer.enabled: false }
                         }
                     }
+
+                    Connections {
+                        target: overlayVideoLoader.parent
+                        function onVideoSourceUrlChanged() {
+                            console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl);
+                            videoInnerItem.updateSource();
+                        }
+                    }
+
+                    Connections {
+                        target: NetworkManager
+                        function onFileDownloaded(remoteUrl, localPath, target) {
+                            var blockId = overlayVideoLoader.parent.blockUniqueId;
+                            var currentUrl = overlayVideoLoader.parent.videoSourceUrl;
+                            if (target === blockId && currentUrl === remoteUrl) {
+                                if (overlayBgPlayer.source.toString() !== localPath) {
+                                    console.log("[OVERLAY-CACHE] Слот", blockId, "считал скачанный файл:", localPath);
+                                    overlayBgPlayer.stop();
+                                    overlayBgPlayer.source = localPath;
+                                    overlayBgPlayer.play();
+                                }
+                            }
+                        }
+                    }
+
+                    MediaPlayer {
+                        id: overlayBgPlayer
+                        videoOutput: vOutOverlayBg
+                        audioOutput: AudioOutput { muted: true }
+                        loops: MediaPlayer.Infinite
+
+                        Component.onCompleted: {
+                            videoInnerItem.updateSource();
+                        }
+
+                        onMediaStatusChanged: {
+                            var blockId = overlayVideoLoader.parent.blockUniqueId;
+                            if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
+                                if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
+                                    overlayBgPlayer.play();
+                                } else {
+                                    overlayBgPlayer.stop();
+                                }
+                            } else if (mediaStatus === MediaPlayer.InvalidMedia) {
+                                console.log("[PLAYER-ERROR]", blockId, "-> Ошибка кодека. Уход на fallback.");
+                                overlayBgPlayer.stop();
+                                if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
+                                    overlayBgPlayer.source = root.fallbackVideo;
+                                    if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
+                                        overlayBgPlayer.play();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    VideoOutput { id: vOutOverlayBg; anchors.fill: parent; fillMode: VideoOutput.PreserveAspectCrop; layer.enabled: false }
                 }
+            }
+        }
     }
 }
