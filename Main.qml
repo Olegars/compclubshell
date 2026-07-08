@@ -34,6 +34,9 @@ Window {
     property string authErrorMessage: ""
     property bool authErrorVisible: false
 
+    // СОХРАНЕНИЕ ТЕЛЕФОНА АКТИВНОЙ СЕССИИ ИГРОКА
+    property string sessionPhone: ""
+
     // ФЛАГ АКТИВНОСТИ ИНДИКАТОРА ЗАГРУЗКИ
     property bool isLoggingIn: false
 
@@ -66,8 +69,8 @@ Window {
         root.authErrorVisible = false;
         root.authErrorMessage = "";
         root.isLoggingIn = false;
+        root.sessionPhone = "";
 
-        // Принудительный сброс фокуса на телефон при логауте
         if (typeof phoneInput !== 'undefined' && phoneInput !== null) {
             phoneInput.forceActiveFocus();
             phoneInput.cursorPosition = 4;
@@ -80,6 +83,8 @@ Window {
         if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
             console.log("[SHELL-STATUS] Сессия изменилась. Запрос фоновых оверлеев...");
             root.fetchOverlays();
+
+            root.isLoggingIn = false;
 
             // 1. ЕСЛИ ЭТО РЕЖИМ ПАУЗЫ (БЛОКИРОВКА ЭКРАНА)
             if (root.sessionUser === "PAUSE") {
@@ -340,21 +345,39 @@ Window {
                                 selectedTextColor: "black"
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: TextInput.AlignVCenter
-                                focus: root.sessionUser === "PAUSE"
+
+                                // Убираем жесткий focus: true, отдаем управление таймеру
+                                focus: false
+
+                                // ИСПРАВЛЕНО: Выделенный микротаймер фокуса ПИНа паузы (запускается с задержкой 80мс)
+                                Timer {
+                                    id: pauseFocusTimer
+                                    interval: 80
+                                    running: false
+                                    repeat: false
+                                    onTriggered: {
+                                        pausePinInput.forceActiveFocus();
+                                        pausePinInput.cursorPosition = 0;
+                                        console.log("[TIMER-PAUSE] Фокус гарантированно передан инпуту паузы.");
+                                    }
+                                }
+
+                                Component.onCompleted: {
+                                    if (root.sessionUser === "PAUSE") pauseFocusTimer.start();
+                                }
+
+                                onVisibleChanged: {
+                                    if (visible && root.sessionUser === "PAUSE") {
+                                        pauseFocusTimer.start();
+                                    }
+                                }
 
                                 onAccepted: {
                                     var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
-                                    var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
-
-                                    if (cleanPin === cleanTarget && cleanTarget !== "") {
-                                        pauseErrorText.visible = false;
+                                    if (cleanPin !== "") {
+                                        console.log("[PAUSE-AUTH] Отправка запроса с сохраненным телефоном:", root.sessionPhone);
+                                        root.loginToServer(root.sessionPhone, pausePinInput.text);
                                         pausePinInput.text = "";
-                                        root.temporaryPausePin = "----";
-                                        root.sessionUser = "PLAYER_1";
-                                        screenSwitcher.sourceComponent = null;
-                                        dashboardLoader.source = "Dashboard.qml";
-                                    } else {
-                                        pauseErrorText.visible = true;
                                     }
                                 }
 
@@ -374,10 +397,10 @@ Window {
 
                             Text {
                                 id: pauseErrorText
-                                text: "Неверный PIN-код"
+                                text: root.authErrorMessage !== "" ? root.authErrorMessage : "Неверный PIN-код"
+                                visible: root.authErrorVisible
                                 color: "#ef4444"
                                 font.pixelSize: 12
-                                visible: false
                                 anchors.horizontalCenter: parent.horizontalCenter
                             }
 
@@ -387,17 +410,10 @@ Window {
                                 text: "Я ВЕРНУЛСЯ"
                                 onClicked: {
                                     var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "");
-                                    var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "");
-
-                                    if (cleanPin === cleanTarget && cleanTarget !== "") {
-                                        pauseErrorText.visible = false;
+                                    if (cleanPin !== "") {
+                                        console.log("[PAUSE-AUTH] Клик по кнопке. Отправка телефона и пина...");
+                                        root.loginToServer(root.sessionPhone, pausePinInput.text);
                                         pausePinInput.text = "";
-                                        root.temporaryPausePin = "----";
-                                        root.sessionUser = "PLAYER_1";
-                                        screenSwitcher.sourceComponent = null;
-                                        dashboardLoader.source = "Dashboard.qml";
-                                    } else {
-                                        pauseErrorText.visible = true;
                                     }
                                 }
                             }
@@ -447,24 +463,27 @@ Window {
                                         running: false
                                         repeat: false
                                         onTriggered: {
-                                            phoneInput.forceActiveFocus();
-                                            phoneInput.cursorPosition = 4;
-                                            console.log("[TIMER-FOCUS] Принудительный фокус и курсор выставлены на позицию 4.");
+                                            // ИСПРАВЛЕНО: Фокусируем телефон только если сессия НЕ в паузе!
+                                            if (root.sessionUser !== "PAUSE" && authCenter.authStep === 1) {
+                                                phoneInput.forceActiveFocus();
+                                                phoneInput.cursorPosition = 4;
+                                                console.log("[TIMER-FOCUS] Фокус успешно выставлен на инпут телефона.");
+                                            }
                                         }
                                     }
 
                                     Component.onCompleted: {
-                                        focusTimer.start();
+                                        if (root.sessionUser !== "PAUSE") focusTimer.start();
                                     }
 
                                     onVisibleChanged: {
-                                        if (visible && authCenter.authStep === 1) {
+                                        if (visible && authCenter.authStep === 1 && root.sessionUser !== "PAUSE") {
                                             focusTimer.start();
                                         }
                                     }
 
                                     onActiveFocusChanged: {
-                                        if (activeFocus && (text === "+7 (   )    -  -  " || text === "")) {
+                                        if (activeFocus && (text === "+7 (   )    -  -  " || text === "") && root.sessionUser !== "PAUSE") {
                                             Qt.callLater(function() {
                                                 phoneInput.cursorPosition = 4;
                                             });
@@ -613,7 +632,7 @@ Window {
                     }
                 }
 
-                // КАСTОМНЫЙ ОВЕРЛЕЙ BusyIndicator ДЛЯ БЛОКИРОВКИ И ОЖИДАНИЯ ОТВЕТА СЕРВЕРА
+                // КАСTОМНЫЙ ОВЕРЛЕЙ BusyIndicator С ДИНАМИЧЕСКИМ ТЕКСТОМ (СИНИЙ/ЗЕЛЕНЫЙ)
                 Rectangle {
                     anchors.fill: parent
                     color: "#cc050a06"
@@ -634,7 +653,7 @@ Window {
                                 implicitWidth: 48
                                 implicitHeight: 48
                                 color: "transparent"
-                                border.color: "#22c55e"
+                                border.color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
                                 border.width: 3
                                 radius: 24
 
@@ -649,8 +668,8 @@ Window {
                         }
 
                         Text {
-                            text: "ЗАПУСК СЕКТOРА..."
-                            color: "#22c55e"
+                            text: root.sessionUser === "PAUSE" ? "ПРОВЕРКА ПИН-КОДА..." : "ЗАПУСК СЕКТOРА..."
+                            color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
                             font.pixelSize: 11
                             font.bold: true
                             font.letterSpacing: 2
@@ -687,7 +706,6 @@ Window {
         var targetUrl = baseUrl + "/api/shell/login";
         console.log("[TRACE-AUTH] Итоговый URL запроса:", targetUrl);
 
-        // ВКЛЮЧАЕМ ИНДИКАТOР ЗАГРУЗКИ ПО КЛИКУ "НАЧАТЬ СЕССИЮ"
         root.isLoggingIn = true;
 
         var xhr = new XMLHttpRequest();
@@ -712,6 +730,8 @@ Window {
                                 Launcher.applyQosPolicies(true);
                             }
 
+                            root.sessionPhone = cleanPhone;
+
                             root.sessionUser = response.user.name || "GUEST";
                             root.sessionBalance = parseFloat(response.user.balance) || 0;
                             root.sessionTime = response.user.time_remaining || "00:00:00";
@@ -723,7 +743,7 @@ Window {
                                 NetworkManager.fetchProducts();
                             }
                         } else {
-                            root.isLoggingIn = false; // ГАСИМ ИНДИКАТOР, ЕСЛИ СЕРВЕР ОТКАЗАЛ
+                            root.isLoggingIn = false;
                             console.log("[TRACE-AUTH] ОШИБКА: Бэкенд вернул 200, но статус в JSON не success:", xhr.responseText);
                         }
                     } catch (e) {
@@ -732,12 +752,12 @@ Window {
                     }
                 } else if (xhr.status === 0) {
                     console.log("[TRACE-AUTH] КРИТИЧЕСКАЯ ОШИБКА: HTTP Status 0! Сервер лежит.");
-                    root.isLoggingIn = false; // ГАСИМ ИНДИКАТOР ПРИ КРАШЕ СЕТИ
+                    root.isLoggingIn = false;
                     root.authErrorMessage = "Ошибка сети: Сервер недоступен";
                     root.authErrorVisible = true;
                 } else {
                     console.log("[TRACE-AUTH] ОШИБКА СЕРВЕРА: Бэкенд отклонил запрос. Код ошибки:", xhr.status);
-                    root.isLoggingIn = false; // ГАСИМ ИНДИКАТOР ПРИ НЕВЕРНОМ ПИНЕ (ОТВЕТ 401/422)
+                    root.isLoggingIn = false;
 
                     try {
                         var errResponse = JSON.parse(xhr.responseText);
