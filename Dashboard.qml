@@ -252,36 +252,31 @@ Item {
                         }
 
                         ActionBtn {
-                                                    text: "ОТОЙТИ (ПАУЗА)"
-                                                    icon: "⏳"
-                                                    baseColor: "#3b82f6"
-                                                    onClicked: {
-                                                        console.log("[DASHBOARD-PAUSE] Старт процедуры паузы для ПК ID:", dashboardRoot.termId);
+                            text: "ОТОЙТИ (ПАУЗА)"
+                            icon: "⏳"
+                            baseColor: "#3b82f6"
+                            onClicked: {
+                                console.log("[DASHBOARD-PAUSE] Старт процедуры паузы для ПК ID:", dashboardRoot.termId);
+                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
+                                var xhr = new XMLHttpRequest();
+                                xhr.open("POST", baseUrl + "/api/shell/games/pause");
+                                xhr.setRequestHeader("Content-Type", "application/json");
+                                xhr.onreadystatechange = function() {
+                                    if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+                                        var res = JSON.parse(xhr.responseText);
+                                        console.log("[DASHBOARD-PAUSE] Бэкенд сгенерировал новый ПИН на паузу:", res.pin_code);
 
-                                                        // Забираем динамический адрес сервера из C++ менеджера
-                                                        var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
-
-                                                        var xhr = new XMLHttpRequest();
-                                                        xhr.open("POST", baseUrl + "/api/shell/games/pause");
-                                                        xhr.setRequestHeader("Content-Type", "application/json");
-                                                        xhr.onreadystatechange = function() {
-                                                            if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
-                                                                var res = JSON.parse(xhr.responseText);
-                                                                console.log("[DASHBOARD-PAUSE] Бэкенд сгенерировал новый ПИН на паузу:", res.pin_code);
-
-                                                                if (res.status === "success") {
-                                                                    if (typeof root !== 'undefined') {
-                                                                        // 1. Сохраняем свежий одноразовый ПИН в корень
-                                                                        root.temporaryPausePin = String(res.pin_code);
-                                                                        // 2. Переводим статус в PAUSE. Триггер в Main.qml всё перестроит!
-                                                                        root.sessionUser = "PAUSE";
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        xhr.send(JSON.stringify({ "computer_id": parseInt(dashboardRoot.termId) }));
-                                                    }
-                                                }
+                                        if (res.status === "success") {
+                                            if (typeof root !== 'undefined') {
+                                                root.temporaryPausePin = String(res.pin_code);
+                                                root.sessionUser = "PAUSE";
+                                            }
+                                        }
+                                    }
+                                }
+                                xhr.send(JSON.stringify({ "computer_id": parseInt(dashboardRoot.termId) }));
+                            }
+                        }
 
                         ActionBtn {
                             text: "ЗАКРЫТЬ СЕССИЮ"
@@ -289,7 +284,6 @@ Item {
                             baseColor: "#525252"
                             onClicked: {
                                 console.log("[DASHBOARD-LOGOUT] Инициация выхода для терминала ID:", dashboardRoot.termId);
-
                                 if (typeof NetworkManager !== "undefined") {
                                     NetworkManager.logoutTerminal(dashboardRoot.termId);
                                 }
@@ -352,7 +346,9 @@ Item {
                             }
 
                             Text {
-                                id: sysClock; text: Qt.formatDateTime(new Date(), "hh:mm"); color: "white"; font.pixelSize: 13; font.bold: true; font.family: "Monospace"
+                                id: sysClock; width: 90; height: 20
+                                text: Qt.formatDateTime(new Date(), "hh:mm"); color: "white"; font.pixelSize: 13; font.bold: true;
+                                font.family: "Monospace"
                                 Timer { interval: 1000; running: true; repeat: true; onTriggered: sysClock.text = Qt.formatDateTime(new Date(), "hh:mm") }
                             }
                         }
@@ -370,7 +366,8 @@ Item {
                 Repeater {
                     model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "БРАУЗЕРЫ", "УТИЛИТЫ"]
                     delegate: Text {
-                        text: modelData; color: filterRow.activeTab === modelData ? accentColor : "#666666"; font.pixelSize: 16; font.bold: true; font.letterSpacing: 1
+                        text: modelData; color: filterRow.activeTab === modelData ? accentColor : "#666666"; font.pixelSize: 16; font.bold: true;
+                        font.letterSpacing: 1
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor;
                             onClicked: {
@@ -383,7 +380,8 @@ Item {
             }
 
             GridView {
-                id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320; clip: true
+                id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320;
+                clip: true
                 model: gamesModel
                 delegate: Item {
                     width: gamesGrid.cellWidth; height: gamesGrid.cellHeight
@@ -404,7 +402,8 @@ Item {
                         }
                         Rectangle {
                             width: parent.width; height: 45; anchors.bottom: parent.bottom; color: gArea.containsMouse ? accentColor : "#050505"
-                            Text { anchors.centerIn: parent; text: model.title || ""; color: gArea.containsMouse ? "black" : "white"; font.bold: true }
+                            Text { anchors.centerIn: parent; text: model.title || ""; color: gArea.containsMouse ? "black" : "white";
+                                font.bold: true }
                         }
                         MouseArea {
                             id: gArea; anchors.fill: parent; hoverEnabled: true
@@ -412,28 +411,51 @@ Item {
                                 var currentGameId = model.id;
                                 var defaultExe = model.exePath;
                                 var defaultArgs = model.args;
-                                console.log("[LAUNCH-TRACE] Запрос клубного аккаунта для Game ID:", currentGameId);
+
+                                if (typeof root !== 'undefined') {
+                                    root.isLoggingIn = true;
+                                }
 
                                 var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
-                                var xhr = new XMLHttpRequest();
-                                xhr.open("POST", baseUrl + "/api/shell/games/take-account");
-                                xhr.setRequestHeader("Content-Type", "application/json");
-                                xhr.onreadystatechange = function() {
-                                    if (xhr.readyState === XMLHttpRequest.DONE) {
-                                        if (xhr.status === 200) {
-                                            var res = JSON.parse(xhr.responseText);
-                                            if (res.status === "success" && res.login) {
-                                                var clubArgs = "-login " + res.login + " " + res.password + " " + (res.args ? res.args : defaultArgs);
-                                                if (typeof Launcher !== 'undefined') Launcher.launch(res.exe_path ? res.exe_path : defaultExe, clubArgs);
-                                            } else {
-                                                if (typeof Launcher !== 'undefined') Launcher.launch(defaultExe, defaultArgs);
+                                var fullRouteUrl = baseUrl + "/api/shell/games/take-account";
+
+                                var EastonXhr = new XMLHttpRequest();
+                                EastonXhr.open("POST", fullRouteUrl);
+                                EastonXhr.setRequestHeader("Content-Type", "application/json");
+
+                                EastonXhr.onreadystatechange = function() {
+                                    if (EastonXhr.readyState === XMLHttpRequest.DONE) {
+                                        console.log("[REACTOR-ROUTE-DEBUG] HTTP Статус-код ответа сервера:", EastonXhr.status);
+                                        console.log("[REACTOR-ROUTE-DEBUG] СЫРОЙ ОТВЕТ СЕРВЕРА:", EastonXhr.responseText);
+
+                                        if (EastonXhr.status === 200) {
+                                            try {
+                                                var res = JSON.parse(EastonXhr.responseText);
+
+                                                if (res.status === "success") {
+                                                    if (typeof Launcher !== 'undefined') {
+                                                        Launcher.launch(
+                                                            res.exe_path ? res.exe_path : defaultExe,
+                                                            res.args,
+                                                            res.login ? res.login : "",
+                                                            res.steam_id ? res.steam_id : "",
+                                                            res.token ? res.token : ""
+                                                        );
+                                                    }
+                                                } else {
+                                                    if (typeof root !== 'undefined') root.isLoggingIn = false;
+                                                    console.log("[REACTOR-QML] Бэкенд отклонил запрос: " + res.message);
+                                                }
+                                            } catch(e) {
+                                                if (typeof root !== 'undefined') root.isLoggingIn = false;
+                                                console.log("[REACTOR-ROUTE-DEBUG] Ошибка парсинга JSON:", e);
                                             }
                                         } else {
-                                            if (typeof Launcher !== 'undefined') Launcher.launch(defaultExe, defaultArgs);
+                                            if (typeof root !== 'undefined') root.isLoggingIn = false;
                                         }
                                     }
                                 }
-                                xhr.send(JSON.stringify({ "game_id": parseInt(currentGameId), "terminal_id": parseInt(dashboardRoot.termId) }));
+                                EastonXhr.send(JSON.stringify({ "game_id": parseInt(currentGameId), "terminal_id": parseInt(dashboardRoot.termId) }));
                             }
                         }
                     }
@@ -682,7 +704,8 @@ Item {
                         Text { text: "⚡"; color: "#eab308" }
                     }
                     MouseArea {
-                        id: sbpMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        id: sbpMouse
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
                             depositPopup.qrSourceUrl = baseUrl + "/api/payments/sbp-mock-qr?amount=" + depositPopup.selectedAmount + "&computer_id=" + dashboardRoot.termId + "&t=" + Date.now();
@@ -731,7 +754,7 @@ Item {
 
             Text { Layout.alignment: Qt.AlignHCenter; text: "⚙️ СИСТЕМА КОНТРОЛЯ ТРАФИКА"; color: accentColor; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1 }
             Text { Layout.alignment: Qt.AlignHCenter; text: "Внимание: Активирован игровой режим сети"; color: "white"; font.pixelSize: 13; font.bold: true }
-            Text { Layout.alignment: Qt.AlignHCenter; text: "Скорость скачивания и обновлений внутри Steam ограничена до 1 МБ/с.\nЭто необходимо для поддержания идеального пинга у всех игроков в клубе."; color: "#a3a3a3"; font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "Скорость скачивания и обновлений внутри Steam ограничена до 1 МБ/с.\nЭто необходимо для поддержания идеаческого пинга у всех игроков в клубе."; color: "#a3a3a3"; font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
 
             Rectangle {
                 Layout.fillWidth: true; Layout.preferredHeight: 70; color: "#1a0505"; border.color: "#dc2626"; border.width: 1; radius: 4

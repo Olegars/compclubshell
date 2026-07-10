@@ -13,6 +13,7 @@ qt_standard_project_setup(REQUIRES 6.10)
 # 2. Объявление исполняемого файла и перечисление базовых исходников ядра
 qt_add_executable(appsector0451
     main.cpp
+    src/core/audiomanager_win.h src/core/audiomanager_win.cpp  # <-- ДОБАВИЛИ СЮДА
     src/core/processmanager.h src/core/processmanager.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
     config.ini
@@ -35,6 +36,9 @@ qt_add_qml_module(appsector0451
         src/models/storemodel.h src/models/storemodel.cpp
         src/core/securitymanager.h
         src/core/securitymanager.cpp
+        SOURCES src/core/audiomanager_win.h
+        SOURCES src/core/audiomanager_win.cpp
+        QML_FILES OverlayBlock.qml
 )
 
 # 4. Свойства сборки под целевые платформы

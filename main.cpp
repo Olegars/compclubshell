@@ -4,10 +4,13 @@
 #include <QDebug>
 #include <QDir>
 #include <QCoreApplication>
+#include <QWindow>
+#include <QQuickStyle>
 
 // Инфраструктура ядра REACTOR
 #include "src/core/networkmanager.h"
 #include "src/core/securitymanager.h"
+#include "src/core/processmanager.h"
 
 // C++ Модели данных для QML слоя
 #include "src/models/gamemodel.h"
@@ -15,15 +18,13 @@
 
 int main(int argc, char *argv[])
 {
-    // Настройка стилей, как было в твоем оригинале
-    qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
-
+    // Настройка базовых атрибутов приложения перед инициализацией QGuiApplication
     QCoreApplication::setOrganizationName("REACTOR");
     QCoreApplication::setOrganizationDomain("reactor.club");
     QCoreApplication::setApplicationName("REACTOR SHELL");
 
     QGuiApplication app(argc, argv);
-
+    QQuickStyle::setStyle("Basic");
     // ==========================================================================
     // ГЛОБАЛЬНЫЙ ФЛАГ РЕЖИМА ПРОДАКШЕНА REACTOR
     // ==========================================================================
@@ -40,37 +41,49 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
 
-    // Инициализация C++ моделей данных
-    GameModel gamesModel;
-    StoreModel storeModel;
+    // 1. Инициализация C++ моделей данных
+    GameModel *gamesModel = new GameModel(&app);
+    StoreModel *storeModel = new StoreModel(&app);
 
-    // Инициализация менеджера сетевой инфраструктуры
-    NetworkManager netManager(&gamesModel, &storeModel);
+    // 2. Инициализация менеджеров ядра REACTOR
+    // Сначала создаем сеть, передавая туда модели игр и маркета
+    NetworkManager *networkManager = new NetworkManager(gamesModel, storeModel, &app);
 
-    // Регистрация C++ контекстных свойств напрямую в QML движок
-    engine.rootContext()->setContextProperty("NetworkManager", &netManager);
-    engine.rootContext()->setContextProperty("networkManager", &netManager);
+    // ИСПРАВЛЕНО: Связываем менеджер процессов с сетевым менеджером для корректного логаута сессий
+    ProcessManager *processManager = new ProcessManager(networkManager, &app);
 
-    engine.rootContext()->setContextProperty("GamesModel", &gamesModel);
-    engine.rootContext()->setContextProperty("gamesModel", &gamesModel);
+    // 3. Регистрация C++ контекстных свойств напрямую в QML движок
+    QQmlContext *rootContext = engine.rootContext();
+    rootContext->setContextProperty("NetworkManager", networkManager);
+    rootContext->setContextProperty("gamesModel", gamesModel);
+    rootContext->setContextProperty("storeModel", storeModel);
 
-    engine.rootContext()->setContextProperty("StoreModel", &storeModel);
-    engine.rootContext()->setContextProperty("storeModel", &storeModel);
+    // НАМЕРТВО СВЯЗЫВАЕМ С КОНТЕНТОМ QML СРАЗУ В ДВУХ РЕГИСТРАХ
+    rootContext->setContextProperty("Launcher", processManager);
+    rootContext->setContextProperty("launcher", processManager);
 
-    // Дополнительная отладочная информация
+    // Дополнительная отладочная информация по путям к ресурсам лаунчера
     qDebug() << "[REACTOR-MAIN] Рабочая директория приложения:" << QDir::currentPath();
-    qDebug() << "[REACTOR-MAIN] Поиск корневого интерфейса в QRC ресурсах...";
+    qDebug() << "[REACTOR-MAIN] Поиск корневого интерфейса в QRCpx ресурсах...";
 
-    // ЖЕЛЕЗОБЕТОННЫЙ СТАРЫЙ ПУТЬ QT 6 К РЕСУРСАМ МОДУЛЯ
+    // 4. Загрузка главного файла интерфейса REACTOR SHELL
     const QUrl url(QStringLiteral("qrc:/qt/qml/sector0451/Main.qml"));
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
-                     &app, [url](QObject *obj, const QUrl &objUrl) {
+                     &app, [url, processManager](QObject *obj, const QUrl &objUrl) {
         if (!obj && url == objUrl) {
             qCritical() << "[REACTOR-MAIN] КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить Main.qml!";
             QCoreApplication::exit(-1);
         } else {
             qDebug() << "[REACTOR-MAIN] Движок QML успешно развернул Main.qml в памяти.";
+            // Связываем менеджер процессов с созданным окном Windows, чтобы иметь возможность его прятать
+            if (obj) {
+                QWindow *mainWindow = qobject_cast<QWindow*>(obj);
+                if (mainWindow) {
+                    processManager->setMainWindow(mainWindow);
+                    qDebug() << "[REACTOR-MAIN] Поток QWindow успешно передан в ProcessManager.";
+                }
+            }
         }
     }, Qt::QueuedConnection);
 

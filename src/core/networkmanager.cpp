@@ -363,7 +363,12 @@ void NetworkManager::fetchProducts() {
 
                 item.id = obj.value("id").toInt();
                 item.name = obj.value("name").toString();
-                item.price = obj.value("price").toDouble();
+                QJsonValue priceVal = obj.value("price");
+                if (priceVal.isString()) {
+                    item.price = priceVal.toString().toDouble(); // Конвертируем из строки "150.00"
+                } else {
+                    item.price = priceVal.toDouble(); // Если пришло чистое число
+                }
                 item.stock = obj.value("stock").toInt();
                 item.image = obj.value("image").toString();
                 item.category = obj.value("category").toString();
