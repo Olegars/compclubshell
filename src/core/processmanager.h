@@ -6,6 +6,7 @@
 #include <QWindow>
 #include <QProcess>
 #include <QTimer>
+#include <QJsonObject>
 #include "networkmanager.h" // Подключаем инфраструктуру сети REACTOR
 
 #ifdef Q_OS_WIN
@@ -18,7 +19,7 @@ class ProcessManager : public QObject
     Q_OBJECT
 
 public:
-    // Конструктор теперь жестко требует указатель на NetworkManager для обработки логаутов
+    // Конструктор жестко требует указатель на NetworkManager для обработки сессий и логаутов
     explicit ProcessManager(NetworkManager *netManager, QObject *parent = nullptr);
     ~ProcessManager();
 
@@ -30,26 +31,17 @@ public:
     Q_INVOKABLE void toggleSystemLanguage();
     Q_INVOKABLE void handleDownloadDecision(bool continueDownload);
 
-    // ЕДИНСТВЕННЫЙ И УНИВЕРСАЛЬНЫЙ МЕТОД LAUNCH
-    // Заменяет старую версию, убирая конфликт двусмысленности при компиляции MOC
-    Q_INVOKABLE void launch(const QString &exePath,
-                            const QString &args,
-                            const QString &login = "",
-                            const QString &steamId = "",
-                            const QString &token = "");
+    // УМНЫЙ АВТОНОМНЫЙ ЗАПУСК С УЧЕТОМ КЭША И WinAPI ИНЖЕКЦИИ
+    Q_INVOKABLE void launchGameWithSmartAuth(const QJsonObject &authData, const QString &steamAppId);
 
     // МЕТОДЫ УПРАВЛЕНИЯ КИОСКОМ И БЕЗОПАСНОСТЬЮ
     void enableKioskMode();
     void disableKioskMode();
     void applyEnterprisePolicies(bool enable);
-    void purgeUserGarbage();
-    void optimizeSystemServices();
-
-    // ИНЖЕКЦИЯ ТОКЕНА АВТOРИЗАЦИИ VALVE
-    void writeSteamToken(const QString &login, const QString &steamId, const QString &token);
 
 signals:
     void gameStarted();
+    void gameStartedSuccessfully(); // Сигнал для QML, чтобы гасить оверлей с часами
     void gameFinished();
     void heavyDownloadDetected(const QString &processName);
 
@@ -61,7 +53,6 @@ private slots:
 private:
     bool isProcessRunning(const QString &processName);
     unsigned long getProcessIdByName(const QString &processName);
-    QString generateSteam2FA(const QString &sharedSecret);
 
     QProcess *m_process;
     QWindow *m_mainWindow;
@@ -70,7 +61,6 @@ private:
     QTimer *m_netWatchTimer;
     bool m_alertActive;
     unsigned long m_offendingPid;
-    QString m_offendingProcessName;
     int m_highActivityCounter;
     int m_currentTerminalId;     // Фиксация текущего ID ПК клуба для логаута
 

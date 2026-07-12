@@ -39,6 +39,8 @@ qt_add_qml_module(appsector0451
         SOURCES src/core/audiomanager_win.h
         SOURCES src/core/audiomanager_win.cpp
         QML_FILES OverlayBlock.qml
+        SOURCES src/core/steamcrypto.h
+        QML_FILES LoadingOverlay.qml
 )
 
 # 4. Свойства сборки под целевые платформы
@@ -59,6 +61,7 @@ target_link_libraries(appsector0451
         Qt6::Qml
         Qt6::Network
         Qt6::Multimedia
+        crypt32
         iphlpapi
         ws2_32
 )

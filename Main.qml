@@ -24,7 +24,7 @@ Window {
     property alias authScreen: screenSwitcher
     property string temporaryPausePin: "----"
     property string pcTypeFromDatabase: "standard"
-
+    property int currentGameId: 0
     property bool isHardwareAdmin: false
 
     property bool hasActiveOrder: false
@@ -67,6 +67,7 @@ Window {
         root.authErrorMessage = ""
         root.isLoggingIn = false
         root.sessionPhone = ""
+
         if (typeof phoneInput !== 'undefined' && phoneInput !== null) {
             phoneInput.forceActiveFocus()
             phoneInput.cursorPosition = 4
@@ -114,56 +115,42 @@ Window {
         }
     }
 
-    // ГЛOБАЛЬНЫЙ КОНТРОЛЬ КРУТИЛКИ В КОРНЕ ШЕЛЛА
-        Connections {
-            target: Launcher
+    Connections {
+        target: Launcher
 
-            function onGameStarted() {
-                console.log("[MAIN-LIFECYCLE] Процесс стартовал в ОС. Запуск 10-секундного страховочного таймера...")
-                hideDelayTimer.start()
-            }
-
-            function onGameFinished() {
-                console.log("[MAIN-LIFECYCLE] Сессия игры завершена. Освобождаем Steam-аккаунт в БД Laravel через POST...")
-                hideDelayTimer.stop()
-                root.isLoggingIn = false
-
-                // Вычисляем базовый URL бэкенда динамически
-                var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl
-                var xhr = new XMLHttpRequest()
-
-                // Стучимся строго через POST по правилам роутинга Laravel web.php
-                var targetPostUrl = baseUrl + "/api/shell/games/free-account"
-
-                xhr.open("POST", targetPostUrl)
-                // Обязательно выставляем заголовок JSON, иначе Laravel не поймет тело запроса
-                xhr.setRequestHeader("Content-Type", "application/json")
-
-                xhr.onreadystatechange = function() {
-                    if (xhr.readyState === XMLHttpRequest.DONE) {
-                        console.log("[MAIN-LIFECYCLE] Ответ бэкенда на освобождение аккаунта. Статус HTTP:", xhr.status)
-                        console.log("[MAIN-LIFECYCLE] Текст ответа бэкенда:", xhr.responseText)
-                    }
-                }
-
-                // Упаковываем terminal_id в JSON-строку
-                var payload = {
-                    "terminal_id": parseInt(root.terminalId)
-                }
-
-                xhr.send(JSON.stringify(payload))
-            }
+        function onGameStarted() {
+            console.log("[MAIN-LIFECYCLE] Стим инициализирован. Зеленый радар на Dashboard.qml продолжает вращение...")
         }
 
-    // СТРАХОВОЧНЫЙ ТАЙМЕР-ПАРАШЮТ (10 СЕКУНД)
+        function onGameFinished() {
+            console.log("[MAIN-LIFECYCLE] Игра закрылась, Стим сделал -shutdown. Возвращаем фокус шелла.")
+            root.isLoggingIn = false
+
+            // Отправляем запрос на освобождение аккаунта в базу клуба
+            var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl
+            var xhr = new XMLHttpRequest()
+            var targetPostUrl = baseUrl + "/api/shell/games/free-account"
+
+            xhr.open("POST", targetPostUrl)
+            xhr.setRequestHeader("Content-Type", "application/json");
+
+            var payload = {
+                "terminal_id": parseInt(root.terminalId),
+                "game_id": parseInt(root.currentGameId)
+            }
+            xhr.send(JSON.stringify(payload))
+        }
+    }
+
     Timer {
         id: hideDelayTimer
-        interval: 10000
+        interval: 30000
         running: false
         repeat: false
         onTriggered: {
-            console.log("[MAIN-LIFECYCLE] Страховочный таймер сработал. Аварийное закрытие оверлея.")
+            console.log("[MAIN-LIFECYCLE] Страховочный таймер таймаута сработал. Аварийное скрытие лоадера.")
             root.isLoggingIn = false
+            gameLoadingOverlay.opacity = 0.0
             root.hide()
         }
     }
@@ -176,11 +163,7 @@ Window {
         NetworkManager.checkTerminalStatus()
     }
 
-    Loader {
-        id: setupScreenLoader
-        anchors.fill: parent
-        z: 100
-    }
+    Loader { id: setupScreenLoader; anchors.fill: parent; z: 100 }
 
     Loader {
         id: overlaysContainer
@@ -214,27 +197,9 @@ Window {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 20
 
-                    OverlayBlock {
-                        id: blockTopLeft
-                        blockUniqueId: "b1"
-                        title: "CAM_01 / TOP_LEFT"
-                        width: root.blockWidth
-                        height: root.blockHeight
-                    }
-                    OverlayBlock {
-                        id: blockMidLeft
-                        blockUniqueId: "b3"
-                        title: "DAT_02 / MID_LEFT"
-                        width: root.blockWidth
-                        height: root.blockHeight
-                    }
-                    OverlayBlock {
-                        id: blockBottomLeft
-                        width: root.blockWidth
-                        height: root.blockHeight
-                        blockUniqueId: "b4"
-                        title: "INF_03 / BOTTOM_LEFT"
-                    }
+                    OverlayBlock { id: blockTopLeft; blockUniqueId: "b1"; title: "CAM_01 / TOP_LEFT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: blockMidLeft; blockUniqueId: "b3"; title: "DAT_02 / MID_LEFT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: blockBottomLeft; width: root.blockWidth; height: root.blockHeight; blockUniqueId: "b4"; title: "INF_03 / BOTTOM_LEFT" }
                 }
 
                 Column {
@@ -244,45 +209,16 @@ Window {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 20
 
-                    OverlayBlock {
-                        id: blockTopRight
-                        blockUniqueId: "b2"
-                        title: "CAM_04 / TOP_RIGHT"
-                        width: root.blockWidth
-                        height: root.blockHeight
-                    }
-                    OverlayBlock {
-                        id: blockMidRight
-                        blockUniqueId: "b5"
-                        title: "DAT_05 / MID_RIGHT"
-                        width: root.blockWidth
-                        height: root.blockHeight
-                    }
-                    OverlayBlock {
-                        id: blockBottomRight
-                        width: root.blockWidth
-                        height: root.blockHeight
-                        blockUniqueId: "b6"
-                        title: "INF_06 / BOTTOM_RIGHT"
-                    }
+                    OverlayBlock { id: blockTopRight; blockUniqueId: "b2"; title: "CAM_04 / TOP_RIGHT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: blockMidRight; blockUniqueId: "b5"; title: "DAT_05 / MID_RIGHT"; width: root.blockWidth; height: root.blockHeight }
+                    OverlayBlock { id: blockBottomRight; width: root.blockWidth; height: root.blockHeight; blockUniqueId: "b6"; title: "INF_06 / BOTTOM_RIGHT" }
                 }
             }
         }
     }
 
-    Loader {
-        id: dashboardLoader
-        anchors.fill: parent
-        source: ""
-        visible: dashboardLoader.status === Loader.Ready
-        z: 10
-    }
-
-    Loader {
-        id: screenSwitcher
-        anchors.fill: parent
-        z: 20
-    }
+    Loader { id: dashboardLoader; anchors.fill: parent; source: ""; visible: dashboardLoader.status === Loader.Ready; z: 10 }
+    Loader { id: screenSwitcher; anchors.fill: parent; z: 20 }
 
     Component {
         id: loginScreenComponent
@@ -302,15 +238,10 @@ Window {
                 Shape {
                     anchors.fill: parent
                     layer.enabled: true
-                    layer.effect: MultiEffect {
-                        blurEnabled: true
-                        blur: 0.3
-                    }
+                    layer.effect: MultiEffect { blurEnabled: true; blur: 0.3 }
                     ShapePath {
                         fillGradient: RadialGradient {
-                            centerX: 1920 / 2
-                            centerY: 1080 / 2
-                            centerRadius: 1920 / 1.2
+                            centerX: 1920 / 2; centerY: 1080 / 2; centerRadius: 1920 / 1.2
                             GradientStop { position: 0.0; color: "transparent" }
                             GradientStop { position: 1.0; color: "black" }
                         }
@@ -321,181 +252,90 @@ Window {
 
             Item {
                 id: logoArea
-                width: 800
-                height: 120
-                anchors.top: parent.top
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.topMargin: 40
+                width: 800; height: 120; anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; anchors.topMargin: 40
                 Row {
-                    anchors.centerIn: parent
-                    spacing: 20
-                    Text {
-                        text: "REACTOR"
-                        color: "#000"
-                        font.pixelSize: 80
-                        style: Text.Outline
-                        styleColor: "#22c55e"
-                    }
-                    Text {
-                        text: "0 4 5 1"
-                        color: "#22c55e"
-                        font.pixelSize: 60
-                        font.bold: true
-                        opacity: 0.8
-                    }
+                    anchors.centerIn: parent; spacing: 20
+                    Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
+                    Text { text: "0 4 5 1"; color: "#22c55e"; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
                 }
             }
 
             Rectangle {
                 id: authCenter
-                width: 420
-                height: 520
-                anchors.centerIn: parent
-                color: "#050a06"
+                width: 420; height: 520; anchors.centerIn: parent; color: "#050a06"
                 border.color: root.sessionUser === "PAUSE" ? "#1d4ed8" : "#1a4d29"
-                border.width: 2
-                radius: 4
-                opacity: 0.95
+                border.width: 2; radius: 4; opacity: 0.95
                 property int authStep: 1
 
                 Column {
-                    anchors.fill: parent
-                    anchors.margins: 40
-                    spacing: 25
+                    anchors.fill: parent; anchors.margins: 40; spacing: 25
 
                     Column {
                         anchors.horizontalCenter: parent.horizontalCenter
+                        Text { text: "TERMINAL_ID"; color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"; font.pixelSize: 12; opacity: 0.6; anchors.horizontalCenter: parent.horizontalCenter }
                         Text {
-                            text: "TERMINAL_ID"
-                            color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
-                            font.pixelSize: 12
-                            opacity: 0.6
-                            anchors.horizontalCenter: parent.horizontalCenter
-                        }
-                        Text {
-                            text: root.pcNameString
-                            color: "white"
-                            font.pixelSize: 54
-                            font.bold: true
-                            anchors.horizontalCenter: parent.horizontalCenter
-
+                            text: root.pcNameString;
+                            color: "white"; font.pixelSize: 54; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter
                             MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                acceptedButtons: Qt.LeftButton
-                                onClicked: {
-                                    if (mouse.modifiers & Qt.ControlModifier) {
-                                        screenSwitcher.sourceComponent = null
-                                        setupScreenLoader.source = "SetupScreen.qml"
-                                    }
-                                }
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor; acceptedButtons: Qt.LeftButton
+                                onClicked: { if (mouse.modifiers & Qt.ControlModifier) { screenSwitcher.sourceComponent = null; setupScreenLoader.source = "SetupScreen.qml" } }
                             }
                         }
                     }
 
-                    Rectangle {
-                        width: parent.width
-                        height: 1
-                        color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
-                        opacity: 0.3
-                    }
+                    Rectangle { width: parent.width; height: 1; color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"; opacity: 0.3 }
 
                     Item {
-                        width: parent.width
-                        height: 230
+                        width: parent.width; height: 230
 
                         Column {
                             visible: root.sessionUser === "PAUSE"
-                            width: parent.width
-                            spacing: 15
+                            width: parent.width; spacing: 15
 
-                            Text {
-                                text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"
-                                color: "#3b82f6"
-                                font.pixelSize: 20
-                                font.bold: true
-                                font.letterSpacing: 1
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-                            Text {
-                                text: "Введите PIN-код для разблокировки"
-                                color: "#a3a3a3"
-                                font.pixelSize: 12
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
+                            Text { text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"; color: "#3b82f6"; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
+                            Text { text: "Введите PIN-код для разблокировки"; color: "#a3a3a3"; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
 
                             TextField {
-                                id: pausePinInput
-                                width: parent.width
-                                height: 55
-                                font.pixelSize: 22
-                                font.bold: false
-                                font.family: "Roboto"
-                                font.letterSpacing: 4
-                                inputMask: "0000;_"
-                                echoMode: TextInput.Normal
-                                color: "white"
-                                selectionColor: "#3b82f6"
-                                selectedTextColor: "black"
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: TextInput.AlignVCenter
+                                id: pausePinInput;
+                                width: parent.width; height: 55; font.pixelSize: 22; font.bold: false; font.family: "Roboto"; font.letterSpacing: 4; inputMask: "0000;_";
+                                echoMode: TextInput.Normal; color: "white"; selectionColor: "#3b82f6"; selectedTextColor: "black"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: TextInput.AlignVCenter;
                                 focus: false
 
-                                Timer {
-                                    id: pauseFocusTimer
-                                    interval: 80
-                                    running: false
-                                    repeat: false
-                                    onTriggered: {
-                                        pausePinInput.forceActiveFocus()
-                                        pausePinInput.cursorPosition = 0
-                                    }
-                                }
-                                Component.onCompleted: {
-                                    if (root.sessionUser === "PAUSE") pauseFocusTimer.start()
-                                }
-                                onVisibleChanged: {
-                                    if (visible && root.sessionUser === "PAUSE") pauseFocusTimer.start()
-                                }
+                                Timer { id: pauseFocusTimer; interval: 80; running: false; repeat: false; onTriggered: { pausePinInput.forceActiveFocus(); pausePinInput.cursorPosition = 0 } }
+                                Component.onCompleted: { if (root.sessionUser === "PAUSE") pauseFocusTimer.start() }
+                                onVisibleChanged: { if (visible && root.sessionUser === "PAUSE") pauseFocusTimer.start() }
                                 onAccepted: {
                                     var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "")
-                                    if (cleanPin !== "") {
-                                        root.loginToServer(root.sessionPhone, pausePinInput.text)
+                                    var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "")
+                                    if (cleanPin === cleanTarget && cleanTarget !== "") {
+                                        pauseErrorText.visible = false
                                         pausePinInput.text = ""
+                                        root.temporaryPausePin = "----"
+                                        root.sessionUser = "PLAYER_1"
+                                        screenSwitcher.sourceComponent = null
+                                        dashboardLoader.source = "Dashboard.qml"
+                                    } else {
+                                        pauseErrorText.visible = true
                                     }
                                 }
-                                background: Rectangle {
-                                    color: pausePinInput.activeFocus ? "#08162a" : "#0d1117"
-                                    border.color: pausePinInput.activeFocus ? "#3b82f6" : "#1d4ed8"
-                                    border.width: pausePinInput.activeFocus ? 2 : 1
-                                    radius: 4
-                                    layer.enabled: pausePinInput.activeFocus
-                                    layer.effect: MultiEffect {
-                                        blurEnabled: true
-                                        blur: 0.2
-                                        brightness: 0.1
-                                    }
-                                }
+                                background: Rectangle { color: pausePinInput.activeFocus ? "#08162a" : "#0d1117"; border.color: pausePinInput.activeFocus ? "#3b82f6" : "#1d4ed8"; border.width: pausePinInput.activeFocus ? 2 : 1; radius: 4 }
                             }
 
-                            Text {
-                                id: pauseErrorText
-                                text: root.authErrorMessage !== "" ? root.authErrorMessage : "Неверный PIN-код"
-                                visible: root.authErrorVisible
-                                color: "#ef4444"
-                                font.pixelSize: 12
-                                anchors.horizontalCenter: parent.horizontalCenter
-                            }
-
+                            Text { id: pauseErrorText; text: "Неверный PIN-код"; visible: false; color: "#ef4444"; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
                             Button {
-                                width: parent.width
-                                height: 50
-                                text: "Я ВЕРНУЛСЯ"
+                                width: parent.width; height: 50; text: "Я ВЕРНУЛСЯ"
                                 onClicked: {
                                     var cleanPin = pausePinInput.text.trim().replace(/[^0-9]/g, "")
-                                    if (cleanPin !== "") {
-                                        root.loginToServer(root.sessionPhone, pausePinInput.text)
+                                    var cleanTarget = root.temporaryPausePin.trim().replace(/[^0-9]/g, "")
+                                    if (cleanPin === cleanTarget && cleanTarget !== "") {
+                                        pauseErrorText.visible = false
                                         pausePinInput.text = ""
+                                        root.temporaryPausePin = "----"
+                                        root.sessionUser = "PLAYER_1"
+                                        screenSwitcher.sourceComponent = null
+                                        dashboardLoader.source = "Dashboard.qml"
+                                    } else {
+                                        pauseErrorText.visible = true
                                     }
                                 }
                             }
@@ -503,179 +343,46 @@ Window {
 
                         Column {
                             visible: root.sessionUser !== "PAUSE"
-                            width: parent.width
-                            spacing: 12
+                            width: parent.width; spacing: 12
 
                             Column {
-                                visible: authCenter.authStep === 1
-                                width: parent.width
-                                spacing: 12
-                                Text {
-                                    text: "НОМЕР ТЕЛЕФОНА"
-                                    color: "#22c55e"
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                    font.letterSpacing: 2
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
+                                visible: authCenter.authStep === 1; width: parent.width; spacing: 12
+                                Text { text: "НОМЕР ТЕЛЕФОНА"; color: "#22c55e"; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
                                 TextField {
-                                    id: phoneInput
-                                    width: parent.width
-                                    height: 55
-                                    font.pixelSize: 22
-                                    font.bold: false
-                                    font.family: "Roboto"
-                                    font.letterSpacing: 1
-                                    inputMask: "+7 (999) 999-99-99;_"
-                                    focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: TextInput.AlignVCenter
-                                    color: "white"
-                                    selectionColor: "#22c55e"
-                                    selectedTextColor: "black"
-
-                                    Timer {
-                                        id: focusTimer
-                                        interval: 50
-                                        running: false
-                                        repeat: false
-                                        onTriggered: {
-                                            if (root.sessionUser !== "PAUSE" && authCenter.authStep === 1) {
-                                                phoneInput.forceActiveFocus()
-                                                phoneInput.cursorPosition = 4
-                                            }
-                                        }
-                                    }
-
-                                    Component.onCompleted: {
-                                        if (root.sessionUser !== "PAUSE") focusTimer.start()
-                                    }
-                                    onVisibleChanged: {
-                                        if (visible && authCenter.authStep === 1 && root.sessionUser !== "PAUSE") {
-                                            focusTimer.start()
-                                        }
-                                    }
-                                    onActiveFocusChanged: {
-                                        if (activeFocus && (text === "+7 (   )    -  -  " || text === "") && root.sessionUser !== "PAUSE") {
-                                            Qt.callLater(function() {
-                                                phoneInput.cursorPosition = 4
-                                            })
-                                        }
-                                    }
-                                    onAccepted: {
-                                        authCenter.authStep = 2
-                                    }
-                                    background: Rectangle {
-                                        color: phoneInput.activeFocus ? "#08120a" : "#0d130e"
-                                        border.color: phoneInput.activeFocus ? "#22c55e" : "#1a4d29"
-                                        border.width: phoneInput.activeFocus ? 2 : 1
-                                        radius: 4
-                                        layer.enabled: phoneInput.activeFocus
-                                        layer.effect: MultiEffect {
-                                            blurEnabled: true
-                                            blur: 0.2
-                                            brightness: 0.1
-                                        }
-                                    }
+                                    id: phoneInput;
+                                    width: parent.width; height: 55; font.pixelSize: 22; font.bold: false; font.family: "Roboto"; font.letterSpacing: 1; inputMask: "+7 (999) 999-99-99;_";
+                                    focus: authCenter.authStep === 1 && root.sessionUser !== "PAUSE"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: TextInput.AlignVCenter; color: "white"; selectionColor: "#22c55e"; selectedTextColor: "black"
+                                    Timer { id: focusTimer; interval: 50; running: false; repeat: false; onTriggered: { if (root.sessionUser !== "PAUSE" && authCenter.authStep === 1) { phoneInput.forceActiveFocus(); phoneInput.cursorPosition = 4 } } }
+                                    Component.onCompleted: { if (root.sessionUser !== "PAUSE") focusTimer.start() }
+                                    onVisibleChanged: { if (visible && authCenter.authStep === 1 && root.sessionUser !== "PAUSE") focusTimer.start() }
+                                    onActiveFocusChanged: { if (activeFocus && (text === "+7 (   )    -  -  " || text === "")) { Qt.callLater(function() { phoneInput.cursorPosition = 4 }) } }
+                                    onAccepted: { authCenter.authStep = 2 }
+                                    background: Rectangle { color: phoneInput.activeFocus ? "#08120a" : "#0d130e"; border.color: phoneInput.activeFocus ? "#22c55e" : "#1a4d29"; border.width: phoneInput.activeFocus ? 2 : 1; radius: 4 }
                                 }
                             }
 
                             Column {
-                                visible: authCenter.authStep === 2
-                                width: parent.width
-                                spacing: 12
-                                Text {
-                                    text: "PIN-КОД"
-                                    color: "#22c55e"
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                    font.letterSpacing: 2
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                }
+                                visible: authCenter.authStep === 2; width: parent.width; spacing: 12
+                                Text { text: "PIN-КОД"; color: "#22c55e"; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
                                 TextField {
-                                    id: pinInput
-                                    width: parent.width
-                                    height: 55
-                                    font.pixelSize: 22
-                                    font.bold: false
-                                    font.family: "Roboto"
-                                    font.letterSpacing: 4
-                                    inputMask: "0000;_"
-                                    echoMode: TextInput.Normal
-                                    focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: TextInput.AlignVCenter
-                                    color: "white"
-                                    selectionColor: "#22c55e"
-                                    selectedTextColor: "black"
-
-                                    onActiveFocusChanged: {
-                                        if (activeFocus) {
-                                            Qt.callLater(function() {
-                                                pinInput.cursorPosition = 0
-                                            })
-                                        }
-                                    }
-                                    onAccepted: {
-                                        loginToServer(phoneInput.text, pinInput.text)
-                                    }
-                                    background: Rectangle {
-                                        color: pinInput.activeFocus ? "#08120a" : "#0d130e"
-                                        border.color: pinInput.activeFocus ? "#22c55e" : "#1a4d29"
-                                        border.width: pinInput.activeFocus ? 2 : 1
-                                        radius: 4
-                                        layer.enabled: pinInput.activeFocus
-                                        layer.effect: MultiEffect {
-                                            blurEnabled: true
-                                            blur: 0.2
-                                            brightness: 0.1
-                                        }
-                                    }
+                                    id: pinInput;
+                                    width: parent.width; height: 55; font.pixelSize: 22; font.bold: false; font.family: "Roboto"; font.letterSpacing: 4; inputMask: "0000;_"; echoMode: TextInput.Normal;
+                                    focus: authCenter.authStep === 2 && root.sessionUser !== "PAUSE"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: TextInput.AlignVCenter; color: "white"; selectionColor: "#22c55e"; selectedTextColor: "black"
+                                    onActiveFocusChanged: { if (activeFocus) { Qt.callLater(function() { pinInput.cursorPosition = 0 }) } }
+                                    onAccepted: { loginToServer(phoneInput.text, pinInput.text) }
+                                    background: Rectangle { color: pinInput.activeFocus ? "#08120a" : "#0d130e"; border.color: pinInput.activeFocus ? "#22c55e" : "#1a4d29"; border.width: pinInput.activeFocus ? 2 : 1; radius: 4 }
                                 }
                             }
 
-                            // СТРОКА 211 ФИКСИРОВАНА: Построчно разделены Connections, полностью убраны ";"
                             Text {
-                                id: authErrorText
-                                text: root.authErrorMessage
-                                visible: root.authErrorVisible
-                                color: "#ef4444"
-                                font.bold: true
-                                anchors.horizontalCenter: parent.horizontalCenter
-
-                                Connections {
-                                    target: pinInput
-                                    function onTextChanged() {
-                                        root.authErrorVisible = false
-                                    }
-                                }
-
-                                Connections {
-                                    target: phoneInput
-                                    function onTextChanged() {
-                                        root.authErrorVisible = false
-                                    }
-                                }
+                                id: authErrorText;
+                                text: root.authErrorMessage; visible: root.authErrorVisible; color: "#ef4444"; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter
+                                Connections { target: pinInput; function onTextChanged() { root.authErrorVisible = false } }
+                                Connections { target: phoneInput; function onTextChanged() { root.authErrorVisible = false } }
                             }
 
-                            Item {
-                                height: 5
-                                width: 1
-                            }
-
-                            Button {
-                                width: parent.width
-                                height: 55
-                                text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"
-                                onClicked: {
-                                    if (authCenter.authStep === 1) {
-                                        authCenter.authStep = 2
-                                    } else {
-                                        loginToServer(phoneInput.text, pinInput.text)
-                                    }
-                                }
-                            }
-
+                            Item { height: 5; width: 1 }
+                            Button { width: parent.width; height: 55; text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"; onClicked: { if (authCenter.authStep === 1) { authCenter.authStep = 2 } else { loginToServer(phoneInput.text, pinInput.text) } } }
                             Text {
                                 id: backBtn
                                 text: "НАЗАД"
@@ -713,7 +420,6 @@ Window {
     }
 
     function loginToServer(phone, pin) {
-        console.log("[TRACE-AUTH] === СТАРТ ПРОЦЕССА АВТОРИЗАЦИИ ===")
         if (typeof NetworkManager === "undefined") return
         var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl
         var cleanPhone = phone.replace(/[^0-9]/g, "")
@@ -763,14 +469,18 @@ Window {
 
     function fetchOverlays() {
         if (typeof NetworkManager === "undefined" || root.terminalId === 0) return
-        var baseUrl = (typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : NetworkManager.serverUrl
+        var baseUrl = typeof NetworkManager.serverUrl === "function" ? NetworkManager.serverUrl() : NetworkManager.serverUrl
         var xhr = new XMLHttpRequest()
-        xhr.open("GET", baseUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime())
+        var fullGetUrl = baseUrl + "/api/shell/overlays?terminal_id=" + root.terminalId + "&t=" + new Date().getTime()
+
+        xhr.open("GET", fullGetUrl)
         xhr.onreadystatechange = function() {
             if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
                 try {
                     updateOverlaysToScreen(JSON.parse(xhr.responseText))
-                } catch(e) {}
+                } catch(e) {
+                    console.log("[QML-ERROR] Ошибка парсинга JSON оверлеев")
+                }
             }
         }
         xhr.send()
@@ -809,67 +519,93 @@ Window {
         }
     }
 
-    // ГЛOБАЛЬНЫЙ НЕОНОВЫЙ ОВЕРЛЕЙ ЗАГРУЗКИ: ДУГА КРУТИТСЯ БЕЗ СТОРОННИХ КВАДРАТНЫХ РАМОК
+    // =============================================================================
+    // ПОЛНОЭКРАННЫЙ ОВЕРЛЕЙ ЗАГРУЗКИ ИГРЫ (REACTOR LOADING SYSTEM)
+    // =============================================================================
     Rectangle {
+        id: gameLoadingOverlay
         anchors.fill: parent
-        color: "#cc020202"
-        visible: root.isLoggingIn
+        color: "#020202"
         z: 99999
+        opacity: 0.0
+        visible: opacity > 0.0
 
-        ColumnLayout {
+        Behavior on opacity {
+            NumberAnimation { duration: 250 }
+        }
+
+        Image {
+            anchors.fill: parent
+            source: "images/hex_bg.png"
+            fillMode: Image.Tile
+            opacity: 0.08
+        }
+
+        Column {
             anchors.centerIn: parent
-            spacing: 20
+            spacing: 30
 
-            Item {
-                id: customSpinnerItem
-                Layout.alignment: Qt.AlignHCenter
-                width: 60
-                height: 60
+            BusyIndicator {
+                id: loadingSpinner
+                anchors.horizontalCenter: parent.horizontalCenter
+                running: gameLoadingOverlay.visible
 
-                Shape {
-                    anchors.fill: parent
-                    layer.enabled: true
-                    layer.effect: MultiEffect {
-                        blurEnabled: true
-                        blur: 0.15
-                        brightness: 0.1
+                contentItem: Item {
+                    implicitWidth: 64
+                    implicitHeight: 64
+
+                    RotationAnimator {
+                        target: loadingSpinnerItem
+                        running: loadingSpinner.running
+                        from: 0
+                        to: 360
+                        loops: Animation.Infinite
+                        duration: 1200
                     }
 
-                    ShapePath {
-                        strokeColor: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
-                        strokeWidth: 4
-                        fillColor: "transparent"
-                        capStyle: ShapePath.RoundCap
+                    Item {
+                        id: loadingSpinnerItem
+                        anchors.fill: parent
 
-                        PathAngleArc {
-                            centerX: 30
-                            centerY: 30
-                            radiusX: 26
-                            radiusY: 26
-                            startAngle: 0
-                            sweepAngle: 280
+                        Shape {
+                            anchors.fill: parent
+                            ShapePath {
+                                strokeColor: "#22c55e"
+                                strokeWidth: 4
+                                capStyle: ShapePath.RoundCap
+                                PathAngleArc {
+                                    centerX: 32; centerY: 32
+                                    radiusX: 28; radiusY: 28
+                                    startAngle: 0
+                                    sweepAngle: 280
+                                }
+                            }
                         }
                     }
                 }
-
-                RotationAnimator {
-                    target: customSpinnerItem
-                    running: root.isLoggingIn
-                    from: 0
-                    to: 360
-                    loops: Animation.Infinite
-                    duration: 900
-                }
             }
 
-            Text {
-                text: root.sessionUser === "PAUSE" ? "ПРОВЕРКА ПИН-КОДА..." :
-                      (dashboardLoader.status === Loader.Ready ? "ПОДГОТОВКА ИГРЫ..." : "ЗАПУСК СЕКТOРА...")
-                color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"
-                font.pixelSize: 14
-                font.bold: true
-                font.letterSpacing: 2
-                Layout.alignment: Qt.AlignHCenter
+            Column {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 8
+
+                Text {
+                    text: "ЗАПУСК ИГРОВОЙ СЕССИИ"
+                    color: "#22c55e"
+                    font.pixelSize: 24
+                    font.bold: true
+                    font.letterSpacing: 3
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+
+                Text {
+                    id: loadingSubText
+                    text: "Синхронизация токенов Steam Cloud..."
+                    color: "#666666"
+                    font.pixelSize: 14
+                    font.letterSpacing: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
             }
         }
     }

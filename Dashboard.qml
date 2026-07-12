@@ -9,6 +9,13 @@ Item {
     id: dashboardRoot
     anchors.fill: parent
 
+    // БУФЕР ДЛЯ ХРАНЕНИЯ ТОКЕНОВ СЕТЕВОЙ СЕССИИ (ОБЪЯВЛЕН СТРОГО ОДИН РАЗ)
+    property string lastToken: ""
+    property string lastLogin: ""
+    property string lastId: ""
+    property string lastPersonaName: ""
+
+    // Данные текущей сессии пользователя
     property string userName: (typeof root !== 'undefined') ? root.sessionUser : "PLAYER_1"
     property real userBalance: (typeof root !== 'undefined') ? root.sessionBalance : 0.0
     property string timeRemaining: (typeof root !== 'undefined') ? root.sessionTime : "00:00:00"
@@ -16,16 +23,16 @@ Item {
     property int termId: (typeof root !== 'undefined' && root !== null) ? root.terminalId : 0
     property string pcType: (typeof root !== 'undefined' && root !== null) ? root.pcTypeFromDatabase : "standard"
 
-    property bool isProBootcamp: {
-        var typeLower = pcType.toLowerCase();
-        return typeLower === "pro" || typeLower === "bootcamp" || typeLower === "trio" || typeLower === "vip";
-    }
+    // Чистое декларативное выражение без многострочного JS-блока с return
+    property bool isProBootcamp: (pcType.toLowerCase() === "pro" ||
+                                  pcType.toLowerCase() === "bootcamp" ||
+                                  pcType.toLowerCase() === "trio" ||
+                                  pcType.toLowerCase() === "vip")
 
-    property string zoneTitle: {
-        if (pcType.toLowerCase() === "trio") return "TRIO ZONE"
-        if (pcType.toLowerCase() === "vip") return "VIP ZONE"
-        return isProBootcamp ? "PRO BOOTCAMP ZONE" : "STANDARD ZONE"
-    }
+    // Чистое тернарное выражение, понятное движку QML
+    property string zoneTitle: (pcType.toLowerCase() === "trio") ? "TRIO ZONE" :
+                               (pcType.toLowerCase() === "vip") ? "VIP ZONE" :
+                               isProBootcamp ? "PRO BOOTCAMP ZONE" : "STANDARD ZONE"
 
     property string accentColor: isProBootcamp ? "#a855f7" : "#22c55e"
     property string darkBg: "#030704"
@@ -69,6 +76,7 @@ Item {
         }
     }
 
+    // Задний фон с Hex-сеткой и радиальным градиентом затухания
     Rectangle {
         id: bgContainer
         anchors.fill: parent
@@ -99,7 +107,7 @@ Item {
         anchors.margins: 40
         spacing: 40
 
-        // ЛЕВАЯ ПАНЕЛЬ С КНОПКАМИ И ИНДИКАТОРОМ ЗАКАЗА
+        // ЛЕВАЯ ИНФОРМАЦИОННАЯ ПАНЕЛЬ ШЕЛЛА
         Rectangle {
             Layout.preferredWidth: 380
             Layout.fillHeight: true
@@ -112,6 +120,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 30
 
+                // АВАРИЙНАЯ КНОПКА SOS ДЛЯ ТЕСТИРОВАНИЯ ИНЖЕКЦИИ КЭША VALVE
                 Rectangle {
                     id: sosBtn
                     width: 60
@@ -145,8 +154,22 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
+
                         onClicked: {
-                            if (typeof NetworkManager !== 'undefined') NetworkManager.callAdmin(dashboardRoot.termId);
+                            console.log("[QML-SOS] НАЖАТА КНОПКА SOS! Запуск тестовой генерации ConnectCache...");
+                            if (typeof Launcher !== 'undefined') {
+                                console.log("[QML-SOS-TRACE] Передача закешированных параметров в C++... Токен присутствует:", (dashboardRoot.lastToken !== ""));
+
+                                // Передаем строго локальные закешированные свойства из dashboardRoot
+                                Launcher.executeSosTestInject(
+                                    dashboardRoot.lastToken,
+                                    dashboardRoot.lastLogin,
+                                    dashboardRoot.lastId,
+                                    dashboardRoot.lastPersonaName
+                                );
+                            } else {
+                                console.log("[QML-ERROR] Объект Launcher не найден в контексте QML!");
+                            }
                         }
                     }
                 }
@@ -205,7 +228,11 @@ Item {
                     Text {
                         text: "БЫСТРЫЙ ЗАПУСК ПЛАТФОРМ"
                         color: accentColor
-                        font.pixelSize: 10; font.bold: true; font.letterSpacing: 2; opacity: 0.6; Layout.alignment: Qt.AlignHCenter
+                        font.pixelSize: 10
+                        font.bold: true
+                        font.letterSpacing: 2
+                        opacity: 0.6
+                        Layout.alignment: Qt.AlignHCenter
                     }
 
                     GridLayout {
@@ -215,16 +242,25 @@ Item {
                         PlatformSquareBtn {
                             btnText: "STEAM"; iconText: "󰓓"; brandColor: "#00adef";
                             onClicked: {
-                                steamLimitAlertPopup.targetExe = "C:\\Program Files (x86)\\Steam\\steam.exe";
-                                steamLimitAlertPopup.targetArgs = "";
-                                steamLimitAlertPopup.open();
+                                authLoader.visible = true;
+                                authLoader.running = true;
+
+                                // Создаем пустой конфиг-объект для запуска чистого клиента
+                                var mockAuth = {
+                                    "login": "",
+                                    "password": "",
+                                    "args": "-silent -shutdown" // Просто запускаем чистый Стим в фоне
+                                };
+                                if (typeof Launcher !== 'undefined') {
+                                    Launcher.launchGameWithSmartAuth(mockAuth);
+                                }
                             }
                         }
-                        PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", ""); } }
-                        PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", ""); } }
-                        PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", ""); } }
-                        PlatformSquareBtn { btnText: "EA APP"; iconText: "󰓡"; brandColor: "#ff5722"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", ""); } }
-                        PlatformSquareBtn { btnText: "VK PLAY"; iconText: "󰕼"; brandColor: "#ff3347"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", ""); } }
+                        PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", "", "", "", ""); } }
+                        PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", "", "", "", ""); } }
+                        PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "", "", "", ""); } }
+                        PlatformSquareBtn { btnText: "EA APP"; iconText: "󰓡"; brandColor: "#ff5722"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", "", "", "", ""); } }
+                        PlatformSquareBtn { btnText: "VK PLAY"; iconText: "󰕼"; brandColor: "#ff3347"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", "", "", "", ""); } }
                     }
 
                     Item { height: 5; width: 1 }
@@ -287,7 +323,6 @@ Item {
                                 if (typeof NetworkManager !== "undefined") {
                                     NetworkManager.logoutTerminal(dashboardRoot.termId);
                                 }
-
                                 if (typeof root !== 'undefined') {
                                     root.sessionUser = "";
                                 }
@@ -298,6 +333,7 @@ Item {
 
                     Item { height: 10; width: 1 }
 
+                    // ПАНЕЛЬ УПРАВЛЕНИЯ ЗВУКОМ, ЯЗЫКОМ И ЧАСЫ
                     Rectangle {
                         Layout.fillWidth: true; Layout.preferredHeight: 40
                         color: "#0a0f0b"; border.color: "#162e1a"; radius: 4
@@ -347,8 +383,8 @@ Item {
 
                             Text {
                                 id: sysClock; width: 90; height: 20
-                                text: Qt.formatDateTime(new Date(), "hh:mm"); color: "white"; font.pixelSize: 13; font.bold: true;
-                                font.family: "Monospace"
+                                text: Qt.formatDateTime(new Date(), "hh:mm");
+                                color: "white"; font.pixelSize: 13; font.bold: true; font.family: "Monospace"
                                 Timer { interval: 1000; running: true; repeat: true; onTriggered: sysClock.text = Qt.formatDateTime(new Date(), "hh:mm") }
                             }
                         }
@@ -357,7 +393,7 @@ Item {
             }
         }
 
-        // ПРАВАЯ ПАНЕЛЬ (БИБЛИОТЕКА ИГР)
+        // ПРАВАЯ ПАНЕЛЬ С ИГРОВОЙ БИБЛИОТЕКОЙ (GRIDVIEW)
         ColumnLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 25
             Text { text: "БИБЛИОТЕКА ИГР"; color: "white"; font.pixelSize: 24; font.bold: true; font.letterSpacing: 2 }
@@ -366,8 +402,8 @@ Item {
                 Repeater {
                     model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "БРАУЗЕРЫ", "УТИЛИТЫ"]
                     delegate: Text {
-                        text: modelData; color: filterRow.activeTab === modelData ? accentColor : "#666666"; font.pixelSize: 16; font.bold: true;
-                        font.letterSpacing: 1
+                        text: modelData;
+                        color: filterRow.activeTab === modelData ? accentColor : "#666666"; font.pixelSize: 16; font.bold: true; font.letterSpacing: 1
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor;
                             onClicked: {
@@ -380,8 +416,7 @@ Item {
             }
 
             GridView {
-                id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320;
-                clip: true
+                id: gamesGrid; Layout.fillWidth: true; Layout.fillHeight: true; cellWidth: 230; cellHeight: 320; clip: true
                 model: gamesModel
                 delegate: Item {
                     width: gamesGrid.cellWidth; height: gamesGrid.cellHeight
@@ -402,56 +437,62 @@ Item {
                         }
                         Rectangle {
                             width: parent.width; height: 45; anchors.bottom: parent.bottom; color: gArea.containsMouse ? accentColor : "#050505"
-                            Text { anchors.centerIn: parent; text: model.title || ""; color: gArea.containsMouse ? "black" : "white";
-                                font.bold: true }
+                            Text { anchors.centerIn: parent; text: model.title || ""; color: gArea.containsMouse ? "black" : "white"; font.bold: true }
                         }
                         MouseArea {
-                            id: gArea; anchors.fill: parent; hoverEnabled: true
+                            id: gArea;
+                            anchors.fill: parent; hoverEnabled: true
                             onClicked: {
                                 var currentGameId = model.id;
                                 var defaultExe = model.exePath;
-                                var defaultArgs = model.args;
 
                                 if (typeof root !== 'undefined') {
                                     root.isLoggingIn = true;
+                                    root.currentGameId = parseInt(currentGameId);
                                 }
 
-                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ? NetworkManager.serverUrl() : "http://192.168.222.2:22222";
+                                // Включаем наш двухстрелочный механический лоадер (он у тебя объявлен внизу Dashboard.qml)
+                                authLoader.visible = true;
+                                authLoader.running = true;
+
+                                var baseUrl = (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl === "function") ?
+                                               NetworkManager.serverUrl() : "http://192.168.222.2:22222";
                                 var fullRouteUrl = baseUrl + "/api/shell/games/take-account";
 
                                 var EastonXhr = new XMLHttpRequest();
                                 EastonXhr.open("POST", fullRouteUrl);
                                 EastonXhr.setRequestHeader("Content-Type", "application/json");
-
                                 EastonXhr.onreadystatechange = function() {
                                     if (EastonXhr.readyState === XMLHttpRequest.DONE) {
-                                        console.log("[REACTOR-ROUTE-DEBUG] HTTP Статус-код ответа сервера:", EastonXhr.status);
-                                        console.log("[REACTOR-ROUTE-DEBUG] СЫРОЙ ОТВЕТ СЕРВЕРА:", EastonXhr.responseText);
-
                                         if (EastonXhr.status === 200) {
                                             try {
                                                 var res = JSON.parse(EastonXhr.responseText);
 
                                                 if (res.status === "success") {
+                                                    // Сохраняем данные для истории / кнопки SOS
+                                                    dashboardRoot.lastToken = res.token ? String(res.token) : "";
+                                                    dashboardRoot.lastLogin = res.login ? String(res.login) : "";
+                                                    dashboardRoot.lastSteamId = res.steam_id ? String(res.steam_id) : "";
+                                                    dashboardRoot.lastPersonaName = res.persona_name ? String(res.persona_name) : "";
+
                                                     if (typeof Launcher !== 'undefined') {
-                                                        Launcher.launch(
-                                                            res.exe_path ? res.exe_path : defaultExe,
-                                                            res.args,
-                                                            res.login ? res.login : "",
-                                                            res.steam_id ? res.steam_id : "",
-                                                            res.token ? res.token : ""
-                                                        );
+                                                        // ВЫЗЫВАЕМ НАШ СВЕЖИЙ ЧИСТЫЙ МЕТОД
+                                                        Launcher.launchGameWithSmartAuth(res);
                                                     }
                                                 } else {
                                                     if (typeof root !== 'undefined') root.isLoggingIn = false;
-                                                    console.log("[REACTOR-QML] Бэкенд отклонил запрос: " + res.message);
+                                                    authLoader.visible = false;
+                                                    authLoader.running = false;
                                                 }
                                             } catch(e) {
                                                 if (typeof root !== 'undefined') root.isLoggingIn = false;
-                                                console.log("[REACTOR-ROUTE-DEBUG] Ошибка парсинга JSON:", e);
+                                                authLoader.visible = false;
+                                                authLoader.running = false;
                                             }
                                         } else {
                                             if (typeof root !== 'undefined') root.isLoggingIn = false;
+                                            authLoader.visible = false;
+                                            authLoader.running = false;
                                         }
                                     }
                                 }
@@ -465,7 +506,7 @@ Item {
     }
 
     // ==========================================
-    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА
+    // ВСПЛЫВАЮЩЕЕ ОКНО МАРКЕТА (REACTOR MARKET)
     // ==========================================
     Popup {
         id: storePopup
@@ -563,6 +604,7 @@ Item {
                     }
                 }
 
+                // ПАНЕЛЬ КОРЗИНЫ МАРКЕТА
                 Rectangle {
                     Layout.preferredWidth: 400; Layout.fillHeight: true; color: "#0a0a0a"; border.color: "#1c1c1c"; radius: 8
                     ColumnLayout {
@@ -640,7 +682,7 @@ Item {
     }
 
     // ==========================================
-    // МОДАЛЬНОЕ ОКНО ОНЛАЙН-ПОПОЛНЕНИЯ БАЛАНСА ПО QR
+    // ОКНО ПОПОЛНЕНИЯ БАЛАНСА ПО QR-КОДУ СБП
     // ==========================================
     Popup {
         id: depositPopup
@@ -684,7 +726,7 @@ Item {
                         delegate: Rectangle {
                             Layout.fillWidth: true; Layout.preferredHeight: 45; radius: 4
                             color: depositPopup.selectedAmount === modelData ? "#eab308" : "#0d0d0d"
-                            border.color: depositPopup.selectedAmount === modelData ? "#eab308" : "#222"
+                            border.color: depositPopup.selectedAmount === modelData ? "#222" : "#222"
                             Text { anchors.centerIn: parent; text: modelData + " ₽"; color: depositPopup.selectedAmount === modelData ? "black" : "white"; font.bold: true; font.pixelSize: 13 }
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: depositPopup.selectedAmount = modelData }
                         }
@@ -737,7 +779,7 @@ Item {
     }
 
     // ==========================================
-    // ПОПАП ПРЕДУПРЕЖДЕНИЯ О ЛИМИТЕ СКАЧИВАНИЯ STEAM
+    // ПОПАП ПРЕДУПРЕЖДЕНИЯ О ЛИМИТЕ СКАЧИВАНИЯ
     // ==========================================
     Popup {
         id: steamLimitAlertPopup
@@ -775,7 +817,7 @@ Item {
                 MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                        if (typeof Launcher !== 'undefined') Launcher.launch(steamLimitAlertPopup.targetExe, steamLimitAlertPopup.targetArgs);
+                        if (typeof Launcher !== 'undefined') Launcher.launch(steamLimitAlertPopup.targetExe, steamLimitAlertPopup.targetArgs, "", "", "");
                         steamLimitAlertPopup.close();
                     }
                 }
@@ -784,7 +826,7 @@ Item {
     }
 
     // ==========================================
-    // СТИЛИЗОВАННЫЕ КОМПОНЕНТЫ КНОПОК
+    // ВНУТРЕННИЕ СТИЛИЗОВАННЫЕ КОМПОНЕНТЫ КНОПОК
     // ==========================================
     component ActionBtn : Rectangle {
         id: controlRoot
@@ -826,4 +868,15 @@ Item {
         }
         MouseArea { id: pMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: parent.clicked() }
     }
+    LoadingOverlay {
+        id: authLoader
+    }
+    Connections {
+            target: Launcher
+            function onGameStartedSuccessfully() {
+                authLoader.running = false;
+                authLoader.visible = false;
+                if (typeof root !== 'undefined') root.isLoggingIn = false;
+            }
+        }
 }

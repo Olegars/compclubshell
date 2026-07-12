@@ -1,102 +1,101 @@
-// Путь: src/core/processmanager.cpp
 #include "processmanager.h"
-#include "audiomanager_win.h"
-#include <QDebug>
-#include <QDir>
-#include <QFileInfo>
-#include <QSettings>
 #include <QProcess>
-#include <QTimer>
-#include <QRegularExpression>
-#include <QTextStream>
-#include <QMessageAuthenticationCode>
-#include <QTimeZone>
 #include <QDateTime>
-#include <windows.h>
+#include <QDir>
+#include <QSettings>
+#include <QFile>
+#include <QTextStream>
+#include <QFileInfo>
+#include <QDebug>
+#include <QThread>
+#include <QTimer>
+#include <QJsonObject>
 
 #ifdef Q_OS_WIN
-HHOOK ProcessManager::keyboardHook = nullptr;
+#include <windows.h>
+#include <shellapi.h>
 
-LRESULT CALLBACK ProcessManager::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION) {
-        KBDLLHOOKSTRUCT *p = (KBDLLHOOKSTRUCT *)lParam;
-        bool bCtrlDown = GetAsyncKeyState(VK_CONTROL) >> ((sizeof(SHORT) * 8) - 1);
-        bool bAltDown = p->flags & LLKHF_ALTDOWN;
+// Глобальные указатели для работы системного хука WinAPI
+HWINEVENTHOOK g_pGameHook = nullptr;
+ProcessManager* g_pProcessManagerInstance = nullptr;
 
-        if ((p->vkCode == VK_LWIN || p->vkCode == VK_RWIN) ||
-            (p->vkCode == VK_TAB && bAltDown) ||
-            (p->vkCode == VK_ESCAPE && bAltDown) ||
-            (p->vkCode == VK_ESCAPE && bCtrlDown))
-        {
-            return 1;
-        }
-    }
-    return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
-}
-
-// Структура для передачи параметров внутрь Callback-функции Win32
-struct TargetWindowData {
-    DWORD processId;
-    HWND foundHwnd;
-    bool isBorderless;
-};
-
-// Callback-функция Win32 для поиска Borderless-окна игры
-BOOL CALLBACK FindBorderlessWindowCallback(HWND hwnd, LPARAM lParam) {
-    TargetWindowData *data = reinterpret_cast<TargetWindowData*>(lParam);
-    DWORD windowPid = 0;
-    GetWindowThreadProcessId(hwnd, &windowPid);
-
-    // Если окно принадлежит процессу нашей игры и оно видимое
-    if (windowPid == data->processId && IsWindowVisible(hwnd)) {
+// Системный колбэк: вызывается ядром Windows при смене фокуса окон
+void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd,
+                           LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
+{
+    if (event == EVENT_SYSTEM_FOREGROUND && hwnd) {
         RECT rect;
         if (GetWindowRect(hwnd, &rect)) {
             int width = rect.right - rect.left;
             int height = rect.bottom - rect.top;
 
-            // Получаем разрешение текущего рабочего стола
             int screenWidth = GetSystemMetrics(SM_CXSCREEN);
             int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-            // Читаем Win32 стили окна
-            LONG style = GetWindowLong(hwnd, GWL_STYLE);
+            // Проверяем, что окно развернулось на весь экран
+            if (width >= screenWidth && height >= screenHeight) {
+                char className[256];
+                GetClassNameA(hwnd, className, sizeof(className));
+                QString clsStr(className);
 
-            // ДЕТЕКТ БOРДЕРЛЕССА: Размеры окна равны или больше экрана,
-            // при этом у окна НЕТ классического заголовка (WS_CAPTION)
-            if (width >= screenWidth && height >= screenHeight && !(style & WS_CAPTION)) {
-                data->foundHwnd = hwnd;
-                data->isBorderless = true;
-                return FALSE; // Окно без рамки найдено, прекращаем перебор!
+                // Отсекаем интерфейс шелла, системные слои и само окно логина Steam
+                if (clsStr != "Qt662Window" && clsStr != "Progman" && clsStr != "WorkerW" && clsStr != "SDL_app") {
+                    qDebug() << "[REACTOR-WINAPI] Обнаружено полноэкранное окно игры (" << clsStr << "). Снимаем хук.";
+
+                    UnhookWinEvent(hWinEventHook);
+                    g_pGameHook = nullptr;
+
+                    if (g_pProcessManagerInstance) {
+                        emit g_pProcessManagerInstance->gameStartedSuccessfully();
+                    }
+                }
             }
         }
     }
-    return TRUE; // Продолжаем перебор окон
 }
 #endif
 
+// Вспомогательная функция для сохранения актуального кэша VDF на диск перед стартом
+void saveVdfFiles(const QString &steamPath, const QJsonObject &vdfData) {
+    QString configDir = steamPath + "/config";
+    QDir().mkpath(configDir);
+
+    auto saveFile = [](const QString &path, const QString &content) {
+        if (content.isEmpty()) return;
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QTextStream out(&file);
+            out << content;
+            file.close();
+        }
+    };
+
+    if (vdfData.contains("config_vdf")) saveFile(configDir + "/config.vdf", vdfData["config_vdf"].toString());
+    if (vdfData.contains("loginusers_vdf")) saveFile(configDir + "/loginusers.vdf", vdfData["loginusers_vdf"].toString());
+    if (vdfData.contains("local_vdf")) saveFile(configDir + "/local.vdf", vdfData["local_vdf"].toString());
+}
+
 ProcessManager::ProcessManager(NetworkManager *netManager, QObject *parent)
     : QObject(parent)
+    , m_process(new QProcess(this))
     , m_mainWindow(nullptr)
     , m_netManager(netManager)
+    , m_netWatchTimer(new QTimer(this))
     , m_alertActive(false)
     , m_offendingPid(0)
     , m_highActivityCounter(0)
     , m_currentTerminalId(1)
 {
-    m_process = new QProcess(this);
     connect(m_process, &QProcess::errorOccurred, this, &ProcessManager::onProcessError);
+    connect(m_netWatchTimer, &QTimer::timeout, this, &ProcessManager::monitorNetworkTraffic);
+    m_netWatchTimer->start(5000);
 }
 
 ProcessManager::~ProcessManager()
 {
-    disableKioskMode();
-    applyEnterprisePolicies(false);
-}
-
-QString ProcessManager::generateSteam2FA(const QString &refreshToken)
-{
-    if (refreshToken.isEmpty()) return "";
-    return refreshToken.trimmed();
+#ifdef Q_OS_WIN
+    if (g_pGameHook) UnhookWinEvent(g_pGameHook);
+#endif
 }
 
 void ProcessManager::setMainWindow(QWindow *window)
@@ -104,335 +103,247 @@ void ProcessManager::setMainWindow(QWindow *window)
     m_mainWindow = window;
 }
 
-void ProcessManager::enableKioskMode()
+// УМНЫЙ АВТОНОМНЫЙ ЗАПУСК С УЧЕТОМ КЭША И WinAPI ИНЖЕКЦИИ
+void ProcessManager::launchGameWithSmartAuth(const QJsonObject &authData, const QString &steamAppId)
 {
+    qDebug() << "[SMART-LAUNCH] Запуск игрового конвейера. AppID:" << steamAppId;
 #ifdef Q_OS_WIN
-    if (!keyboardHook) {
-        keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(nullptr), 0);
-        qDebug() << "[KIOSK] Блокировка системных клавиш АКТИВИРОВАНА";
-    }
-#endif
-}
+    g_pProcessManagerInstance = this;
 
-void ProcessManager::disableKioskMode()
-{
-#ifdef Q_OS_WIN
-    if (keyboardHook) {
-        UnhookWindowsHookEx(keyboardHook);
-        keyboardHook = nullptr;
-        qDebug() << "[KIOSK] Блокировка системных клавиш ОТКЛЮЧЕНА";
-    }
-#endif
-}
+    QSettings settings("REACTOR", "REACTOR SHELL");
+    QString steamPath = settings.value("Paths/steam_path", "C:/Program Files (x86)/Steam").toString();
 
-void ProcessManager::applyEnterprisePolicies(bool enable)
-{
-#ifdef Q_OS_WIN
-    QSettings system("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", QSettings::NativeFormat);
-    QSettings explorer("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", QSettings::NativeFormat);
-    QSettings wu("HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", QSettings::NativeFormat);
-    QSettings telemetry("HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection", QSettings::NativeFormat);
-    QSettings search("HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Search", QSettings::NativeFormat);
-
-    if (enable) {
-        system.setValue("DisableTaskMgr", 1);
-        system.setValue("DisableRegistryTools", 1);
-        system.setValue("DisableCMD", 1);
-        explorer.setValue("NoControlPanel", 1);
-        explorer.setValue("NoRun", 1);
-        explorer.setValue("NoDesktop", 1);
-        explorer.setValue("NoContextMenus", 1);
-        wu.setValue("NoAutoUpdate", 1);
-        wu.setValue("AUOptions", 2);
-        telemetry.setValue("AllowTelemetry", 0);
-        search.setValue("AllowCortana", 0);
-        search.setValue("DisableWebSearch", 1);
-    } else {
-        system.remove("DisableTaskMgr");
-        system.remove("DisableRegistryTools");
-        system.remove("DisableCMD");
-        explorer.remove("NoControlPanel");
-        explorer.remove("NoRun");
+    // 1. Загружаем VDF файлы авторизации, если бэкенд их передал
+    if (authData.contains("vdf_files")) {
+        saveVdfFiles(steamPath, authData["vdf_files"].toObject());
+        qDebug() << "[SMART-LAUNCH] Свежие VDF-конфиги развернуты на диск.";
     }
-#else
-    Q_UNUSED(enable);
+
+    // 2. Жестко убиваем старый экземпляр, чтобы применить конфигурацию
+    if (isProcessRunning("steam.exe")) {
+        QProcess killProcess;
+        killProcess.start("taskkill", QStringList() << "/F" << "/IM" << "steam.exe");
+        killProcess.waitForFinished(3000);
+        QThread::msleep(400);
+    }
+
+    // 3. Взводим WinAPI хук на отслеживание фокуса полноэкранной игры
+    if (g_pGameHook) UnhookWinEvent(g_pGameHook);
+    g_pGameHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+        NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT
+    );
+
+    // 4. Запуск Steam с прямой инструкцией на открытие игры
+    QProcess *steamProc = new QProcess(this);
+    QString steamExe = steamPath + "/steam.exe";
+    steamProc->setWorkingDirectory(steamPath);
+
+    QStringList args;
+    if (!steamAppId.isEmpty() && steamAppId != "0") {
+        args << "-applaunch" << steamAppId;
+    }
+    steamProc->start(steamExe, args);
+    emit gameStarted();
+
+    // 5. Изолированный быстрый скаут на случай, если кэш протух и выскочит окно ввода
+    QTimer *authScoutTimer = new QTimer(this);
+    authScoutTimer->setInterval(150);
+
+    QString login = authData["login"].toString();
+    QString password = authData["password"].toString();
+
+    connect(authScoutTimer, &QTimer::timeout, this, [authScoutTimer, login, password]() {
+        // Если игра перехватила экран быстрее (кэш валиден), уничтожаем скаут авторизации
+        if (!g_pGameHook) {
+            authScoutTimer->stop();
+            authScoutTimer->deleteLater();
+            return;
+        }
+
+        HWND authHwnd = FindWindowA("SDL_app", NULL);
+        if (authHwnd && IsWindowVisible(authHwnd)) {
+            char windowTitle[256];
+            GetWindowTextA(authHwnd, windowTitle, sizeof(windowTitle));
+            QString titleStr = QString::fromUtf8(windowTitle);
+
+            if (titleStr.contains("Steam") && (titleStr.contains("Вход") || titleStr.contains("Sign In") || titleStr.contains("Login"))) {
+                qDebug() << "[SMART-LAUNCH] Кэш не подошел, обнаружено окно авторизации. Инжектируем...";
+
+                authScoutTimer->stop();
+                authScoutTimer->deleteLater();
+
+                // Моментально депортируем окно за границы видимости монитора
+                SetWindowPos(authHwnd, NULL, -2000, -2000, 705, 440, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetForegroundWindow(authHwnd);
+                SetFocus(authHwnd);
+                QThread::msleep(400);
+
+                // Буферный симулятор ввода клавиш
+                auto pasteText = [](const QString &text) {
+                    if (OpenClipboard(NULL)) {
+                        EmptyClipboard();
+                        QByteArray bytes = text.toUtf8();
+                        HGLOBAL hGlob = GlobalAlloc(GMEM_FIXED, bytes.size() + 1);
+                        strcpy_s(reinterpret_cast<char*>(hGlob), bytes.size() + 1, bytes.constData());
+                        SetClipboardData(CF_TEXT, hGlob);
+                        CloseClipboard();
+                        keybd_event(VK_CONTROL, 0, 0, 0); keybd_event('V', 0, 0, 0);
+                        keybd_event('V', 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+                        QThread::msleep(100);
+                    }
+                };
+
+                pasteText(login);
+                keybd_event(VK_TAB, 0, 0, 0); keybd_event(VK_TAB, 0, KEYEVENTF_KEYUP, 0); QThread::msleep(200);
+                pasteText(password);
+                keybd_event(VK_RETURN, 0, 0, 0); keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0);
+
+                // TODO: Добавить сюда асинхронный сбор свежих файлов VDF для отправки на Laravel
+                ShowWindow(authHwnd, SW_HIDE);
+            }
+        }
+    });
+
+    authScoutTimer->start();
 #endif
 }
 
 void ProcessManager::applyQosPolicies(bool enable)
 {
-    qDebug() << "[SHELL-CORE] ВЫЗОВ applyQosPolicies С ПАРАМЕТРОМ:" << enable;
-
+    qDebug() << "[SHELL-CORE] Настройка сетевых политик приоритезации трафика (QoS):" << enable;
 #ifdef Q_OS_WIN
-    if (!enable) {
-        qDebug() << "[SHELL-CORE] Выход из метода: enable == false";
-        return;
-    }
-
-    QSettings steamReg("HKEY_CURRENT_USER\\Software\\Valve\\Steam", QSettings::NativeFormat);
-    QString steamPath = steamReg.value("SteamPath").toString();
-
-    if (steamPath.isEmpty()) {
-        steamPath = "C:/Program Files (x86)/Steam";
-    }
-
-    QString configPath = steamPath + "/config/config.vdf";
-    QFile configFile(configPath);
-    if (!configFile.exists()) return;
-
-    DWORD attributes = GetFileAttributesW((const wchar_t*)configPath.utf16());
-    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_READONLY)) {
-        SetFileAttributesW((const wchar_t*)configPath.utf16(), attributes & ~FILE_ATTRIBUTE_READONLY);
-    }
-
-    if (!configFile.open(QIODevice::ReadOnly | QIODevice::Text)) return;
-    QString content = configFile.readAll();
-    configFile.close();
-
-    QRegularExpression re("\"DownloadThrottleKbps\"\\s+\"(\\d+)\"");
-    QRegularExpressionMatch match = re.match(content);
-
-    if (match.hasMatch()) {
-        content.replace(re, "\"DownloadThrottleKbps\"		\"8000\"");
+    QProcess qosProc;
+    if (enable) {
+        qosProc.start("powershell", QStringList() << "-Command" << "New-NetQosPolicy -Name 'ReactorGameTraffic' -AppPathNameMatchCondition 'steam.exe' -DSCPAction 46 -Confirm:$false");
     } else {
-        QRegularExpression steamBlockRe("\"Steam\"\\s*\\n\\s*\\{");
-        QRegularExpressionMatch steamMatch = steamBlockRe.match(content);
-        if (steamMatch.hasMatch()) {
-            int insertPos = steamMatch.capturedEnd();
-            content.insert(insertPos, "\n\t\t\"DownloadThrottleKbps\"		\"8000\"");
-        }
+        qosProc.start("powershell", QStringList() << "-Command" << "Remove-NetQosPolicy -Name 'ReactorGameTraffic' -Confirm:$false");
     }
-
-    if (configFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QTextStream out(&configFile);
-        out << content;
-        configFile.close();
-        SetFileAttributesW((const wchar_t*)configPath.utf16(), FILE_ATTRIBUTE_READONLY);
-    }
-#else
-    Q_UNUSED(enable);
+    qosProc.waitForFinished(3000);
 #endif
-}
-
-bool ProcessManager::isProcessRunning(const QString &processName)
-{
-#ifdef Q_OS_WIN
-    QProcess checkProcess;
-    checkProcess.start("tasklist", QStringList() << "/FI" << "IMAGENAME eq " + processName);
-    checkProcess.waitForFinished(2000);
-    QString output = QString::fromLocal8Bit(checkProcess.readAllStandardOutput());
-    return output.contains(processName, Qt::CaseInsensitive);
-#else
-    Q_UNUSED(processName);
-    return false;
-#endif
-}
-
-void ProcessManager::purgeUserGarbage()
-{
-#ifdef Q_OS_WIN
-    qDebug() << "[SHELL-CORE] Очистка сессионного мусора (процессы, DNS, Temp)...";
-
-    QProcess::execute("taskkill /F /IM hl2.exe /T");
-    QProcess::execute("taskkill /F /IM steam.exe /T");
-    QProcess::execute("taskkill /F /IM chrome.exe /T");
-    QProcess::execute("taskkill /F /IM msedge.exe /T");
-    QProcess::execute("taskkill /F /IM discord.exe /T");
-    QProcess::execute("taskkill /F /IM spotify.exe /T");
-    QProcess::execute("ipconfig /flushdns");
-
-    QDir tempDir(QDir::tempPath());
-    tempDir.removeRecursively();
-#endif
-}
-
-void ProcessManager::optimizeSystemServices()
-{
-#ifdef Q_OS_WIN
-    QStringList services = { "SysMain", "DiagTrack", "wuauserv", "WalletService" };
-    for (const QString &svc : services) {
-        QProcess::execute("sc stop " + svc);
-        QProcess::execute("sc config " + svc + " start= disabled");
-    }
-#endif
-}
-
-void ProcessManager::launch(const QString &exePath, const QString &args, const QString &login, const QString &steamId, const QString &token)
-{
-    qDebug() << "[LAUNCHER-DEBUG] === СТАРТ ЗАПУСКА REACTOR ===";
-    qDebug() << "[LAUNCHER-DEBUG] Исполняемый файл:" << exePath;
-    qDebug() << "[LAUNCHER-DEBUG] Входящие аргументы от Laravel:" << args;
-
-    bool isSteam = exePath.contains("steam.exe", Qt::CaseInsensitive);
-
-    disconnect(m_process, &QProcess::started, nullptr, nullptr);
-    disconnect(m_process, &QProcess::finished, nullptr, nullptr);
-
-    if (isSteam && !token.isEmpty() && !steamId.isEmpty()) {
-        qDebug() << "[SHELL-CORE] Обнаружен запуск Steam. Вызываем запись токена сессии...";
-        writeSteamToken(login, steamId, token);
-    }
-
-    QStringList finalArgs = args.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-    if (m_process->state() != QProcess::NotRunning) m_process->close();
-
-    QFileInfo fileInfo(exePath);
-    if (!fileInfo.exists()) {
-        qCritical() << "[LAUNCHER-ERROR] Файл не найден:" << exePath;
-        return;
-    }
-    m_process->setWorkingDirectory(fileInfo.absolutePath());
-
-    if (!isSteam) {
-        connect(m_process, &QProcess::finished, this, &ProcessManager::onProcessFinished, Qt::UniqueConnection);
-    }
-
-    connect(m_process, &QProcess::started, this, [this, isSteam]() {
-        emit gameStarted();
-
-        qDebug() << "[SHELL-CORE] Запуск Win32-сканирования бесшовных Borderless окон...";
-
-        QTimer *windowCheckTimer = new QTimer(this);
-        windowCheckTimer->setInterval(150); // Проверяем 7 раз в секунду
-
-        connect(windowCheckTimer, &QTimer::timeout, this, [this, windowCheckTimer, isSteam]() {
-#ifdef Q_OS_WIN
-            TargetWindowData winData;
-            winData.foundHwnd = nullptr;
-            winData.isBorderless = false;
-
-            if (isSteam) {
-                // Если это Стим, сначала чекаем появление базового окна коннекта vguiPopupWindow
-                HWND steamHwnd = FindWindowW(L"USWindow", NULL);
-                if (!steamHwnd) steamHwnd = FindWindowW(L"vguiPopupWindow", NULL);
-
-                if (steamHwnd && IsWindowVisible(steamHwnd)) {
-                    winData.foundHwnd = steamHwnd;
-                    winData.isBorderless = true;
-                }
-            } else {
-                // Для одиночных игр / Epic / Riot сканируем окна этого PID на Borderless Fullscreen
-                winData.processId = m_process->processId();
-                EnumWindows(FindBorderlessWindowCallback, reinterpret_cast<LPARAM>(&winData));
-            }
-
-            // Как только окно без рамки заняло весь экран рабочего стола — прячем REACTOR
-            if (winData.foundHwnd && winData.isBorderless) {
-                qDebug() << "[SHELL-CORE] НАTИВНЫЙ ДЕТЕКТ: Игровое Borderless-окно развернуто!";
-
-                windowCheckTimer->stop();
-                windowCheckTimer->deleteLater();
-
-                if (m_mainWindow) {
-                    m_mainWindow->hide(); // Мгновенно скрываем шелл под игру
-                }
-            }
-#endif
-        });
-        windowCheckTimer->start();
-
-        // Фоновый мониторинг закрытия игры
-        QTimer::singleShot(15000, this, [this, windowCheckTimer, isSteam]() {
-            if (windowCheckTimer->isActive()) {
-                windowCheckTimer->stop();
-                windowCheckTimer->deleteLater();
-                if (m_mainWindow) m_mainWindow->hide();
-            }
-
-            QTimer *gameMonitorTimer = new QTimer(this);
-            connect(gameMonitorTimer, &QTimer::timeout, this, [this, gameMonitorTimer]() {
-                bool isGameRunning = isProcessRunning("hl2.exe") || isProcessRunning("steam.exe");
-                if (!isGameRunning) {
-                    qDebug() << "[SHELL-CORE] Мониторинг: Игровой процесс полностью закрыт пользователем!";
-                    gameMonitorTimer->stop();
-                    gameMonitorTimer->deleteLater();
-                    this->onProcessFinished(0, QProcess::NormalExit);
-                }
-            });
-            gameMonitorTimer->start(3000);
-        });
-    });
-
-    m_process->start(exePath, finalArgs);
-}
-
-void ProcessManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
-{
-    Q_UNUSED(exitCode); Q_UNUSED(exitStatus);
-    qDebug() << "[SHELL-CORE] Сессия игры завершена. Возврат шелла REACTOR на экран...";
-
-    emit gameFinished();
-
-    QTimer::singleShot(300, this, [this]() {
-        if (m_mainWindow) {
-            m_mainWindow->showFullScreen();
-            m_mainWindow->requestActivate();
-        }
-        purgeUserGarbage();
-    });
-}
-
-void ProcessManager::onProcessError(QProcess::ProcessError error)
-{
-    qCritical() << "[LAUNCHER-ERROR] Нативная ошибка процесса QProcess, код:" << error;
-    if (m_mainWindow) {
-        m_mainWindow->showFullScreen();
-    }
-    emit gameFinished();
 }
 
 void ProcessManager::setSystemVolume(int level)
 {
-    win32_set_master_volume(level);
+    qDebug() << "[SHELL-CORE] Изменение мастер-громкости системы на:" << level << "%";
+#ifdef Q_OS_WIN
+    HMODULE hWinmm = GetModuleHandleA("winmm.dll");
+    if (!hWinmm) hWinmm = LoadLibraryA("winmm.dll");
+
+    if (hWinmm) {
+        typedef MMRESULT (WINAPI *WaveOutSetVolumeProto)(HWAVEOUT, DWORD);
+        WaveOutSetVolumeProto pWaveOutSetVolume = reinterpret_cast<WaveOutSetVolumeProto>(GetProcAddress(hWinmm, "waveOutSetVolume"));
+
+        if (pWaveOutSetVolume) {
+            DWORD winVol = (0xFFFF * level) / 100;
+            pWaveOutSetVolume(nullptr, DWORD(winVol | (winVol << 16)));
+        }
+    }
+#endif
 }
 
 void ProcessManager::toggleSystemLanguage()
 {
 #ifdef Q_OS_WIN
-    ActivateKeyboardLayout((HKL)HKL_NEXT, KLF_SETFORPROCESS);
-    keybd_event(VK_SHIFT, 0, 0, 0);
-    keybd_event(VK_LMENU, 0, 0, 0);
-    keybd_event(VK_LMENU, 0, KEYEVENTF_KEYUP, 0);
-    keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0);
-    qDebug() << "[LANG-API] Выполнена эмуляция хоткея Alt+Shift.";
-#endif
-}
-
-void ProcessManager::writeSteamToken(const QString &login, const QString &steamId, const QString &token)
-{
-#ifdef Q_OS_WIN
-    QSettings steamReg("HKEY_CURRENT_USER\\Software\\Valve\\Steam", QSettings::NativeFormat);
-    QString steamPath = steamReg.value("SteamPath").toString();
-    if (steamPath.isEmpty()) steamPath = "C:/Program Files (x86)/Steam";
-
-    QString configDir = steamPath + "/config";
-    QDir().mkpath(configDir);
-
-    QString vdfPath = configDir + "/loginusers.vdf";
-    QFile file(vdfPath);
-
-    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QTextStream out(&file);
-        out.setEncoding(QStringConverter::Utf8);
-
-        out << "\"users\"\n"
-            << "{\n"
-            << "    \"" << steamId << "\"\n"
-            << "    {\n"
-            << "        \"AccountName\"		\"" << login << "\"\n"
-            << "        \"PersonaName\"		\"" << login << "\"\n"
-            << "        \"RememberPassword\"		\"1\"\n"
-            << "        \"MostRecent\"		\"1\"\n"
-            << "        \"Timestamp\"			\"" << QString::number(QDateTime::currentDateTime().toSecsSinceEpoch()) << "\"\n"
-            << "        \"RefreshToken\"		\"" << token << "\"\n"
-            << "    }\n"
-            << "}\n";
-        file.close();
-        qDebug() << "[SHELL-CORE] Токен авторизации успешно инжектирован в loginusers.vdf";
+    HWND activeWnd = GetForegroundWindow();
+    if (activeWnd) {
+        PostMessageA(activeWnd, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)HKL_NEXT);
     }
 #endif
 }
 
-void ProcessManager::handleDownloadDecision(bool continueDownload) { Q_UNUSED(continueDownload); }
-void ProcessManager::monitorNetworkTraffic() {}
-unsigned long ProcessManager::getProcessIdByName(const QString &processName) { Q_UNUSED(processName); return 0; }
+void ProcessManager::handleDownloadDecision(bool continueDownload)
+{
+    if (!continueDownload && m_offendingPid != 0) {
+#ifdef Q_OS_WIN
+        QProcess killProc;
+        killProc.start("taskkill", QStringList() << "/F" << "/PID" << QString::number(m_offendingPid));
+        killProc.waitForFinished(2000);
+#endif
+    }
+    m_alertActive = false;
+    m_offendingPid = 0;
+    m_highActivityCounter = 0;
+}
+
+void ProcessManager::applyEnterprisePolicies(bool enable)
+{
+#ifdef Q_OS_WIN
+    QSettings systemReg("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", QSettings::NativeFormat);
+    if (enable) {
+        systemReg.setValue("DisableTaskMgr", 1);
+        systemReg.setValue("DisableRegistryTools", 1);
+    } else {
+        systemReg.remove("DisableTaskMgr");
+        systemReg.remove("DisableRegistryTools");
+    }
+#endif
+}
+
+void ProcessManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    qDebug() << "[SHELL-CORE] Игровой процесс завершен. Код:" << exitCode;
+    if (m_mainWindow) {
+        m_mainWindow->show();
+        m_mainWindow->raise();
+        m_mainWindow->requestActivate();
+    }
+    emit gameFinished();
+}
+
+void ProcessManager::onProcessError(QProcess::ProcessError error)
+{
+    qCritical() << "[SHELL-CORE] Ошибка QProcess:" << error;
+    emit gameFinished();
+}
+
+bool ProcessManager::isProcessRunning(const QString &processName)
+{
+#ifdef Q_OS_WIN
+    QProcess proc;
+    proc.start("tasklist", QStringList() << "/FI" << QString("IMAGENAME eq %1").arg(processName));
+    proc.waitForFinished(1000);
+    return QString::fromUtf8(proc.readAllStandardOutput()).contains(processName, Qt::CaseInsensitive);
+#else
+    return false;
+#endif
+}
+
+unsigned long ProcessManager::getProcessIdByName(const QString &processName)
+{
+#ifdef Q_OS_WIN
+    QProcess proc;
+    proc.start("powershell", QStringList() << "-Command" << QString("Get-Process -Name %1 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id").arg(processName.split('.').first()));
+    proc.waitForFinished(1000);
+    bool ok;
+    unsigned long pid = QString::fromUtf8(proc.readAllStandardOutput()).trimmed().toULong(&ok);
+    return ok ? pid : 0;
+#else
+    return 0;
+#endif
+}
+
+void ProcessManager::monitorNetworkTraffic()
+{
+    if (m_alertActive) return;
+#ifdef Q_OS_WIN
+    if (isProcessRunning("steam.exe")) {
+        QProcess netCheck;
+        netCheck.start("powershell", QStringList() << "-Command" << "Get-Counter '\\Network Interface(*)\\Bytes Received/sec' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Select-Object -ExpandProperty CookedValue");
+        netCheck.waitForFinished(1500);
+
+        bool ok;
+        double bytesPerSec = QString::fromUtf8(netCheck.readAllStandardOutput()).trimmed().toDouble(&ok);
+        if (ok && bytesPerSec > 40000000) {
+            m_highActivityCounter++;
+            if (m_highActivityCounter >= 3) {
+                m_alertActive = true;
+                m_offendingPid = getProcessIdByName("steam.exe");
+                emit heavyDownloadDetected("Steam Update");
+            }
+        } else {
+            m_highActivityCounter = 0;
+        }
+    }
+#endif
+}
