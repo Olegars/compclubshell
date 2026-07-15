@@ -6,9 +6,10 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSettings>
-#include <QStringList>
-#include <QUrl>
 #include <QDebug>
+#include <QUrl>
+#include <QJsonObject>
+#include <QVariantMap>
 
 class GameModel;
 class StoreModel;
@@ -16,51 +17,65 @@ class StoreModel;
 class NetworkManager : public QObject
 {
     Q_OBJECT
-
+    Q_PROPERTY(QString serverUrl READ serverUrl CONSTANT)
+    Q_PROPERTY(int computerId READ computerId NOTIFY computerIdChanged)
+    Q_PROPERTY(int lastBookingId READ lastBookingId NOTIFY lastBookingIdChanged)
 public:
     explicit NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent = nullptr);
 
     bool isPcRegistered() const;
+    QString serverUrl() const;
+    int computerId() const;
+    int lastBookingId() const { return m_lastBookingId; }
 
-    // Регистрация корневого QML объекта для QMetaObject::invokeMethod
-    void setRootQmlObject(QObject* root) { m_rootQml = root; }
+    QNetworkAccessManager* networkAccessManager() const { return m_networkManager; }
+    void setRootQmlObject(QObject* rootObj) { m_rootQml = rootObj; }
 
-    // === СИСТЕМНЫЕ МЕТОДЫ, ДОСТУПНЫЕ ДЛЯ ВЫЗОВА ИЗ QML ЧЕРЕЗ Q_INVOKABLE ===
-    Q_INVOKABLE QString serverUrl() const; // ИСПРАВЛЕНО: Теперь метод виден в JS как функция!
+    Q_INVOKABLE QString getMachineHwid() const;
     Q_INVOKABLE void fetchTerminalConfig(const QString &hwid);
     Q_INVOKABLE void checkTerminalStatus();
-    Q_INVOKABLE void registerStation(const QString &zoneType, const QString &pcName);
-    Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target = "");
-    Q_INVOKABLE int getLatency(const QString &host);
     Q_INVOKABLE QString getCurrentPcName();
-    Q_INVOKABLE QStringList getAvailableZones();
+    Q_INVOKABLE void registerStation(const QString &zoneType, const QString &pcName);
     Q_INVOKABLE void logoutTerminal(int terminalId);
-    // Заглушки синхронизации игровых сессий
+    Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target);
+    Q_INVOKABLE int getLatency(const QString &host);
+    Q_INVOKABLE QStringList getAvailableZones();
     Q_INVOKABLE void fetchGames();
     Q_INVOKABLE void fetchProducts();
+    Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
+    Q_INVOKABLE void fetchOverlays(int terminalId);
+    Q_INVOKABLE void freeGameAccount(int terminalId, int gameId);
 
 signals:
     void pcRegistrationChanged();
     void authRequired();
     void setupRequired();
-
-    // Сигнал кэширования для оверлеев
-    void fileDownloaded(const QString &remoteUrl, const QString &localPath, const QString &target);
+    void fileDownloaded(const QString &remotePath, const QString &localPath, const QString &target);
+    void loginSucceeded(const QString &userName, double balance, const QString &timeRemaining, const QString &phone);
+    void loginFailed(const QString &message);
+    void loginRequestFinished();
+    void overlaysReady(const QVariantMap &data);
+    void freeAccountFinished(bool success);
+    void computerIdChanged();
+    void lastBookingIdChanged();
 
 private:
+    static QString cleanDigits(const QString &value);
+
     QNetworkAccessManager *m_networkManager;
-    QString m_configFilePath;
+    bool m_isPcRegistered;
     QString m_serverUrl;
+    QString m_configFilePath;
+    QString m_cachePath;
     QString m_hwid;
     QString m_pcNameString;
-    bool m_isPcRegistered;
+    int m_computerId;
+    int m_lastBookingId;
+    QStringList m_activeDownloads;
 
-    QString m_cachePath;
-    QStringList m_activeDownloads; // Защита от параллельного скачивания
-
-    QObject* m_rootQml;
     GameModel* m_gamesModel;
     StoreModel* m_storeModel;
+    QObject* m_rootQml;
 };
 
 #endif // NETWORKMANAGER_H

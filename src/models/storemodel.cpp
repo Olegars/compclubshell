@@ -18,11 +18,6 @@ QVariant StoreModel::data(const QModelIndex &index, int role) const
 
     const StoreItem &item = m_displayProducts.at(index.row());
 
-    // ТРАССИРОВКА: Логируем, что C++ отдает в QML при обращении к цене
-    if (role == PriceRole) {
-        qDebug() << "[CPP-MODEL-TRACE] Товар:" << item.name << "| Запрос цены. Значение double:" << item.price;
-    }
-
     switch (role) {
     case IdRole:       return item.id;
     case NameRole:     return item.name;

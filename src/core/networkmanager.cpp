@@ -1,4 +1,5 @@
 #include "networkmanager.h"
+#include "hwidprovider.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
 #include <QCoreApplication>
@@ -10,10 +11,13 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QJsonArray>
+#include <QDateTime>
 
 NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent)
     : QObject(parent)
     , m_isPcRegistered(false)
+    , m_computerId(0)
+    , m_lastBookingId(0)
     , m_gamesModel(gamesModel)
     , m_storeModel(storeModel)
     , m_rootQml(nullptr)
@@ -52,6 +56,23 @@ bool NetworkManager::isPcRegistered() const {
 
 QString NetworkManager::serverUrl() const {
     return m_serverUrl;
+}
+
+QString NetworkManager::getMachineHwid() const
+{
+    return HwidProvider::machineHwid();
+}
+
+QString NetworkManager::cleanDigits(const QString &value)
+{
+    QString digits;
+    digits.reserve(value.size());
+    for (const QChar ch : value) {
+        if (ch.isDigit()) {
+            digits.append(ch);
+        }
+    }
+    return digits;
 }
 
 void NetworkManager::fetchTerminalConfig(const QString &hwid) {
@@ -94,23 +115,21 @@ void NetworkManager::checkTerminalStatus() {
         QJsonObject responseObj = responseDoc.object();
 
         if (responseObj.value("status").toString() == "success") {
-            int computerId = responseObj.value("computer_id").toInt();
+            m_computerId = responseObj.value("computer_id").toInt();
+            emit computerIdChanged();
 
-            // ИСПРАВЛЕНО: Забираем реальное текстовое имя из базы (например, "PC-1" или "VIP-03"), а не генерим по ID
             QString dbName = responseObj.value("name").toString().trimmed();
-            m_pcNameString = dbName.isEmpty() ? ("PC-" + QString::number(computerId)) : dbName;
+            m_pcNameString = dbName.isEmpty() ? ("PC-" + QString::number(m_computerId)) : dbName;
 
             m_isPcRegistered = true;
 
-            qDebug() << "[REACTOR-SHELL] Терминал авторизован под именем:" << m_pcNameString << "| ID записи в БД:" << computerId;
+            qDebug() << "[REACTOR-SHELL] Терминал авторизован под именем:" << m_pcNameString << "| ID записи в БД:" << m_computerId;
 
             emit pcRegistrationChanged();
             emit authRequired();
 
-            if (m_rootQml) {
-                qDebug() << "[NET] Успешная авторизация железа. Принудительно вызываем fetchOverlays()...";
-                QMetaObject::invokeMethod(m_rootQml, "fetchOverlays");
-            }
+            const int overlayTerminalId = m_computerId > 0 ? m_computerId : 1;
+            fetchOverlays(overlayTerminalId);
         } else {
             qDebug() << "[REACTOR-SHELL] Оборудование не зарегистрировано. Переключение на Setup.";
             m_pcNameString = "PC-UNKNOWN";
@@ -123,6 +142,10 @@ void NetworkManager::checkTerminalStatus() {
 
 QString NetworkManager::getCurrentPcName() {
     return m_pcNameString.isEmpty() ? "PC-UNKNOWN" : m_pcNameString;
+}
+
+int NetworkManager::computerId() const {
+    return m_computerId;
 }
 
 void NetworkManager::registerStation(const QString &zoneType, const QString &pcName) {
@@ -209,7 +232,10 @@ void NetworkManager::logoutTerminal(int terminalId) {
 
             if (responseJson["status"].toString() == "success") {
                 qDebug() << "[DEBUG-C++ LOGOUT] <--- СЕССИЯ УСПЕШНО ЗАКРЫТА НА БЭКЕНДЕ";
-
+                if (m_lastBookingId != 0) {
+                    m_lastBookingId = 0;
+                    emit lastBookingIdChanged();
+                }
                 // Сбрасываем кэш-имя и принудительно обновляем статус харда
                 this->checkTerminalStatus();
             } else {
@@ -286,8 +312,6 @@ QStringList NetworkManager::getAvailableZones() {
 
 
 void NetworkManager::fetchGames() {
-    qDebug() << "[NET] Синхронизация списка игр с бэкенда...";
-
     if (m_serverUrl.isEmpty()) return;
 
     QUrl url(m_serverUrl + "/api/shell/games");
@@ -306,8 +330,6 @@ void NetworkManager::fetchGames() {
             // ИСПРАВЛЕНО: Твой Laravel возвращает прямой массив объектов, а не словарь!
             QJsonArray gamesArray = doc.array();
 
-            qDebug() << "[NET] Получено сырых игр из JSON массива:" << gamesArray.count();
-
             std::vector<GameItem> gamesVector;
             for (const QJsonValue &value : gamesArray) {
                 QJsonObject obj = value.toObject();
@@ -324,7 +346,6 @@ void NetworkManager::fetchGames() {
 
             if (m_gamesModel) {
                 m_gamesModel->setGames(gamesVector);
-                qDebug() << "[NET] Модель игр успешно обновлена. Элементов в векторе:" << gamesVector.size();
             }
         } else {
             qWarning() << "[NET] Ошибка получения списка игр:" << reply->errorString();
@@ -333,8 +354,6 @@ void NetworkManager::fetchGames() {
 }
 
 void NetworkManager::fetchProducts() {
-    qDebug() << "[NET] Синхронизация товаров маркета...";
-
     if (m_serverUrl.isEmpty()) return;
 
     // Стучимся на прямой роут /api/shell/products, который прописан в web.php
@@ -353,8 +372,6 @@ void NetworkManager::fetchProducts() {
 
             // ИСПРАВЛЕНО: Маркет тоже отдает чистый массив объектов без ключей
             QJsonArray productsArray = doc.array();
-
-            qDebug() << "[NET] Получено сырых товаров из JSON массива:" << productsArray.count();
 
             std::vector<StoreItem> productsVector;
             for (const QJsonValue &value : productsArray) {
@@ -378,10 +395,154 @@ void NetworkManager::fetchProducts() {
 
             if (m_storeModel) {
                 m_storeModel->setProducts(productsVector);
-                qDebug() << "[NET] Модель маркета успешно обновлена. Элементов в векторе:" << productsVector.size();
             }
         } else {
             qWarning() << "[NET] Ошибка получения товаров маркета:" << reply->errorString();
         }
+    });
+}
+
+void NetworkManager::login(const QString &phone, const QString &pin, int terminalId)
+{
+    if (m_serverUrl.isEmpty()) {
+        emit loginFailed(tr("Сервер не настроен"));
+        emit loginRequestFinished();
+        return;
+    }
+
+    const QString cleanPhone = cleanDigits(phone);
+    const QString cleanPin = cleanDigits(pin);
+    if (cleanPhone.isEmpty() || cleanPin.isEmpty()) {
+        emit loginFailed(tr("Заполните телефон и PIN-код"));
+        emit loginRequestFinished();
+        return;
+    }
+
+    QUrl url(m_serverUrl + "/api/shell/login");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
+
+    QJsonObject json;
+    json["phone"] = cleanPhone;
+    json["pin"] = cleanPin;
+    json["terminal_id"] = terminalId;
+
+    qDebug() << "[NET] Login →" << url.toString();
+
+    QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cleanPhone]() {
+        reply->deleteLater();
+
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray responseData = reply->readAll();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[NET] Ошибка авторизации:" << reply->errorString();
+            emit loginFailed(tr("Сервер не отвечает (%1)").arg(httpStatus > 0 ? httpStatus : reply->error()));
+            emit loginRequestFinished();
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(responseData);
+        const QJsonObject response = doc.object();
+
+        if (httpStatus == 200 && response.value("status").toString() == "success") {
+            const QJsonObject user = response.value("user").toObject();
+            const int bookingId = response.value("booking_id").toInt(0);
+            if (m_lastBookingId != bookingId) {
+                m_lastBookingId = bookingId;
+                emit lastBookingIdChanged();
+            }
+            emit loginSucceeded(
+                user.value("name").toString("GUEST"),
+                user.value("balance").toDouble(0.0),
+                user.value("time_remaining").toString("00:00:00"),
+                cleanPhone);
+        } else {
+            emit loginFailed(response.value("message").toString(
+                tr("Неверный логин или PIN-код")));
+        }
+
+        emit loginRequestFinished();
+    });
+}
+
+void NetworkManager::fetchOverlays(int terminalId)
+{
+    if (m_serverUrl.isEmpty()) {
+        return;
+    }
+
+    const int targetId = terminalId > 0 ? terminalId : (m_computerId > 0 ? m_computerId : 1);
+    QUrl url(m_serverUrl + "/api/shell/overlays?terminal_id=" + QString::number(targetId)
+             + "&t=" + QString::number(QDateTime::currentMSecsSinceEpoch()));
+
+    qDebug() << "[NET] Запрос оверлеев:" << url.toString();
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
+
+    QNetworkReply *reply = m_networkManager->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, targetId]() {
+        reply->deleteLater();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[NET] Ошибка загрузки оверлеев:" << reply->errorString();
+            return;
+        }
+
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (httpStatus != 200) {
+            qWarning() << "[NET] Бэкенд вернул HTTP" << httpStatus << "для оверлеев";
+            return;
+        }
+
+        const QByteArray raw = reply->readAll();
+        const QJsonDocument doc = QJsonDocument::fromJson(raw);
+        const QJsonObject rootObject = doc.object();
+        const QJsonObject payload = rootObject.contains("data")
+            ? rootObject.value("data").toObject()
+            : rootObject;
+
+        qDebug() << "[NET] Оверлеи получены для terminal_id=" << targetId
+                 << "| ключи:" << payload.keys()
+                 << "| байт:" << raw.size();
+
+        emit overlaysReady(payload.toVariantMap());
+    });
+}
+
+void NetworkManager::freeGameAccount(int terminalId, int gameId)
+{
+    if (m_serverUrl.isEmpty() || terminalId <= 0 || gameId <= 0) {
+        emit freeAccountFinished(false);
+        return;
+    }
+
+    QUrl url(m_serverUrl + "/api/shell/games/free-account");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
+
+    QJsonObject json;
+    json["terminal_id"] = terminalId;
+    json["game_id"] = gameId;
+
+    QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const bool success = reply->error() == QNetworkReply::NoError
+            && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200;
+
+        if (!success) {
+            qWarning() << "[NET] Не удалось освободить игровой аккаунт:" << reply->errorString();
+        }
+
+        emit freeAccountFinished(success);
     });
 }

@@ -10,6 +10,8 @@ Rectangle {
     property bool isActive: true
     property var content: null
     property string videoSourceUrl: ""
+    property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
+    property bool playbackAllowed: true
 
     color: "#0a0a0a"
     border.color: isActive ? "#1a4d29" : "#050505"
@@ -70,48 +72,55 @@ Rectangle {
                 property string currentPlayingPath: ""
 
                 function updateSource() {
-                    var rawUrl = overlayVideoLoader.parent.videoSourceUrl
-                    var blockId = overlayVideoLoader.parent.blockUniqueId
-                    if (rawUrl !== "" && typeof NetworkManager !== "undefined") {
-                        var path = NetworkManager.getLocalPath(rawUrl, blockId)
-                        if (overlayBgPlayer.source.toString() === path && path !== "") {
-                            return
-                        }
+                    var rawUrl = overlayBlockRoot.videoSourceUrl
+                    var blockId = overlayBlockRoot.blockUniqueId
+                    if (rawUrl === "" || typeof NetworkManager === "undefined")
+                        return
 
-                        console.log("[PLAYER-OPTIMIZED]", blockId, "-> Переключение источника на:", path)
-                        if (path !== "") {
-                            overlayBgPlayer.stop()
-                            overlayBgPlayer.source = path
+                    var path = NetworkManager.getLocalPath(rawUrl, blockId)
+                    if (overlayBgPlayer.source.toString() === path && path !== "")
+                        return
+
+                    console.log("[PLAYER-OPTIMIZED]", blockId, "-> Переключение источника на:", path)
+                    if (path !== "") {
+                        overlayBgPlayer.stop()
+                        overlayBgPlayer.source = path
+                        if (overlayBlockRoot.playbackAllowed)
                             overlayBgPlayer.play()
-                        } else {
-                            if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
-                                overlayBgPlayer.stop()
-                                overlayBgPlayer.source = root.fallbackVideo
-                                overlayBgPlayer.play()
-                            }
-                        }
+                    } else if (overlayBgPlayer.source.toString() !== overlayBlockRoot.fallbackVideo) {
+                        overlayBgPlayer.stop()
+                        overlayBgPlayer.source = overlayBlockRoot.fallbackVideo
+                        if (overlayBlockRoot.playbackAllowed)
+                            overlayBgPlayer.play()
                     }
                 }
 
                 Connections {
-                    target: overlayVideoLoader.parent
+                    target: overlayBlockRoot
                     function onVideoSourceUrlChanged() {
-                        console.log("[PLAYER-SIGNAL]", overlayVideoLoader.parent.blockUniqueId, "-> Смена URL бэкенда:", overlayVideoLoader.parent.videoSourceUrl)
+                        console.log("[PLAYER-SIGNAL]", overlayBlockRoot.blockUniqueId, "-> Смена URL бэкенда:", overlayBlockRoot.videoSourceUrl)
                         videoInnerItem.updateSource()
+                    }
+                    function onPlaybackAllowedChanged() {
+                        if (overlayBlockRoot.playbackAllowed)
+                            overlayBgPlayer.play()
+                        else
+                            overlayBgPlayer.stop()
                     }
                 }
 
                 Connections {
                     target: NetworkManager
                     function onFileDownloaded(remoteUrl, localPath, target) {
-                        var blockId = overlayVideoLoader.parent.blockUniqueId
-                        var currentUrl = overlayVideoLoader.parent.videoSourceUrl
+                        var blockId = overlayBlockRoot.blockUniqueId
+                        var currentUrl = overlayBlockRoot.videoSourceUrl
                         if (target === blockId && currentUrl === remoteUrl) {
                             if (overlayBgPlayer.source.toString() !== localPath) {
                                 console.log("[OVERLAY-CACHE] Слот", blockId, "считал скачанный файл:", localPath)
                                 overlayBgPlayer.stop()
                                 overlayBgPlayer.source = localPath
-                                overlayBgPlayer.play()
+                                if (overlayBlockRoot.playbackAllowed)
+                                    overlayBgPlayer.play()
                             }
                         }
                     }
@@ -128,21 +137,19 @@ Rectangle {
                     }
 
                     onMediaStatusChanged: {
-                        var blockId = overlayVideoLoader.parent.blockUniqueId
+                        var blockId = overlayBlockRoot.blockUniqueId
                         if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
-                            if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
+                            if (overlayBlockRoot.playbackAllowed)
                                 overlayBgPlayer.play()
-                            } else {
+                            else
                                 overlayBgPlayer.stop()
-                            }
                         } else if (mediaStatus === MediaPlayer.InvalidMedia) {
                             console.log("[PLAYER-ERROR]", blockId, "-> Ошибка кодека. Уход на fallback.")
                             overlayBgPlayer.stop()
-                            if (overlayBgPlayer.source.toString() !== root.fallbackVideo) {
-                                overlayBgPlayer.source = root.fallbackVideo
-                                if (root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE") {
+                            if (overlayBgPlayer.source.toString() !== overlayBlockRoot.fallbackVideo) {
+                                overlayBgPlayer.source = overlayBlockRoot.fallbackVideo
+                                if (overlayBlockRoot.playbackAllowed)
                                     overlayBgPlayer.play()
-                                }
                             }
                         }
                     }
