@@ -14,6 +14,10 @@ qt_add_executable(appsector0451
     src/core/hwidprovider.h src/core/hwidprovider.cpp
     src/core/audiomanager_win.h src/core/audiomanager_win.cpp
     src/core/processmanager.h src/core/processmanager.cpp
+    src/core/iplatformauth.h
+    src/core/steamauth.h src/core/steamauth.cpp
+    src/core/epicauth.h src/core/epicauth.cpp
+    src/core/directlaunchauth.h src/core/directlaunchauth.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
     config.ini
 )
@@ -55,6 +59,9 @@ target_link_libraries(appsector0451
         crypt32
         iphlpapi
         ws2_32
+        ole32
+        oleaut32
+        uiautomationcore
 )
 
 install(TARGETS appsector0451

@@ -1,96 +1,59 @@
 import QtQuick
-import QtQuick.Window
 
-// Отдельное topmost-окно: вспышка Steam-логина остаётся ПОД заставкой
-Window {
+// Заставка внутри главного окна (z поверх Dashboard).
+// RotationAnimator крутится на render thread — не замирает при занятости UI.
+Item {
     id: overlay
-    title: "REACTOR"
-    color: "#020202"
+    anchors.fill: parent
     visible: false
-    // Не привязываем к главному окну шелла — иначе заставка оказывается под Dashboard
-    transientParent: null
-    flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-    visibility: Window.Hidden
+    z: 1000000
 
-    property alias running: spinLoop.running
-    property string statusText: statusModel[statusIndex]
+    property bool running: false
+    property string platformName: "LAUNCHER"
+    property string gameTitle: "ИГРЫ"
     property int statusIndex: 0
+
+    readonly property string platformLabel: {
+        var p = (platformName || "").toString().trim().toUpperCase()
+        if (p === "EPIC" || p.indexOf("EPIC") >= 0)
+            return "EPIC"
+        if (p === "STEAM" || p.indexOf("STEAM") >= 0)
+            return "STEAM"
+        if (p === "DIRECT" || p === "PC")
+            return "LAUNCHER"
+        if (p.length > 0)
+            return p
+        return "LAUNCHER"
+    }
+
+    readonly property string gameLabel: {
+        var t = (gameTitle || "").toString().trim()
+        if (t.length > 0)
+            return t.toUpperCase()
+        return "ИГРЫ"
+    }
+
     readonly property var statusModel: [
-        "ПОДГОТОВКА STEAM…",
+        "ПОДГОТОВКА " + platformLabel + "…",
         "ПРОВЕРКА СЕССИИ…",
-        "ЗАПУСК ИГРЫ…"
+        "НАСТРАИВАЕМ " + gameLabel + "…"
     ]
+
+    property string statusText: statusModel[statusIndex]
 
     onVisibleChanged: {
         if (visible) {
-            width = Screen.width
-            height = Screen.height
-            x = Screen.virtualX
-            y = Screen.virtualY
-            visibility = Window.FullScreen
             statusIndex = 0
             appear.restart()
             statusTicker.restart()
-            raiseTimer.start()
-            Qt.callLater(function() { overlay.raise() })
         } else {
-            visibility = Window.Hidden
             statusTicker.stop()
-            raiseTimer.stop()
-            spinLoop.stop()
-            counterSpin.stop()
         }
-    }
-
-    onRunningChanged: {
-        if (running) {
-            spinLoop.start()
-            counterSpin.start()
-        } else {
-            spinLoop.stop()
-            counterSpin.stop()
-        }
-    }
-
-    // Держим поверх Steam, даже если он пытается вылезти
-    Timer {
-        id: raiseTimer
-        interval: 150
-        repeat: true
-        onTriggered: overlay.raise()
     }
 
     Rectangle {
         anchors.fill: parent
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: "#06140a" }
-            GradientStop { position: 0.55; color: "#020202" }
-            GradientStop { position: 1.0; color: "#010101" }
-        }
-    }
-
-    Rectangle {
-        id: glowCore
-        width: 520
-        height: 520
-        radius: 260
-        anchors.centerIn: parent
-        color: "#22c55e"
-        opacity: 0.06
-        scale: 0.92
-
-        SequentialAnimation on opacity {
-            running: overlay.visible
-            loops: Animation.Infinite
-            NumberAnimation { to: 0.11; duration: 1600; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 0.05; duration: 1600; easing.type: Easing.InOutSine }
-        }
-        SequentialAnimation on scale {
-            running: overlay.visible
-            loops: Animation.Infinite
-            NumberAnimation { to: 1.04; duration: 2200; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 0.92; duration: 2200; easing.type: Easing.InOutSine }
-        }
+        color: "#000000"
     }
 
     Item {
@@ -120,71 +83,79 @@ Window {
             opacity: 0.7
         }
 
-        Canvas {
-            id: arcPrimary
+        Item {
+            id: outerArc
             anchors.fill: parent
-            onPaint: {
-                var ctx = getContext("2d")
-                var cx = width / 2
-                var cy = height / 2
-                var r = Math.min(cx, cy) - 8
-                ctx.reset()
-                ctx.lineWidth = 4
-                ctx.lineCap = "round"
-                ctx.strokeStyle = "#22c55e"
-                ctx.beginPath()
-                ctx.arc(cx, cy, r, -Math.PI * 0.55, Math.PI * 0.85)
-                ctx.stroke()
-                ctx.strokeStyle = "#4ade80"
-                ctx.lineWidth = 2
-                ctx.beginPath()
-                ctx.arc(cx, cy, r, -Math.PI * 0.55, -Math.PI * 0.15)
-                ctx.stroke()
-            }
-            Component.onCompleted: requestPaint()
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
 
-            NumberAnimation on rotation {
-                id: spinLoop
-                from: 0; to: 360
+            Canvas {
+                anchors.fill: parent
+                onPaint: {
+                    var ctx = getContext("2d")
+                    var cx = width / 2
+                    var cy = height / 2
+                    var r = Math.min(cx, cy) - 8
+                    ctx.reset()
+                    ctx.lineWidth = 4
+                    ctx.lineCap = "round"
+                    ctx.strokeStyle = "#22c55e"
+                    ctx.beginPath()
+                    ctx.arc(cx, cy, r, -Math.PI * 0.55, Math.PI * 0.85)
+                    ctx.stroke()
+                    ctx.strokeStyle = "#4ade80"
+                    ctx.lineWidth = 2
+                    ctx.beginPath()
+                    ctx.arc(cx, cy, r, -Math.PI * 0.55, -Math.PI * 0.15)
+                    ctx.stroke()
+                }
+                Component.onCompleted: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+            }
+
+            RotationAnimator {
+                target: outerArc
+                from: 0
+                to: 360
                 duration: 1400
                 loops: Animation.Infinite
-                running: false
-                easing.type: Easing.Linear
+                running: overlay.visible && overlay.running
             }
         }
 
-        Canvas {
-            id: arcCounter
+        Item {
+            id: innerArc
             anchors.centerIn: parent
             width: 150
             height: 150
-            onPaint: {
-                var ctx = getContext("2d")
-                var cx = width / 2
-                var cy = height / 2
-                var r = Math.min(cx, cy) - 6
-                ctx.reset()
-                ctx.lineWidth = 2.5
-                ctx.lineCap = "round"
-                ctx.strokeStyle = "#86efac"
-                ctx.globalAlpha = 0.55
-                ctx.beginPath()
-                ctx.arc(cx, cy, r, Math.PI * 0.2, Math.PI * 1.1)
-                ctx.stroke()
-            }
-            Component.onCompleted: requestPaint()
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
 
-            NumberAnimation on rotation {
-                id: counterSpin
-                from: 360; to: 0
+            Canvas {
+                anchors.fill: parent
+                onPaint: {
+                    var ctx = getContext("2d")
+                    var cx = width / 2
+                    var cy = height / 2
+                    var r = Math.min(cx, cy) - 6
+                    ctx.reset()
+                    ctx.lineWidth = 2.5
+                    ctx.lineCap = "round"
+                    ctx.strokeStyle = "#86efac"
+                    ctx.globalAlpha = 0.55
+                    ctx.beginPath()
+                    ctx.arc(cx, cy, r, Math.PI * 0.2, Math.PI * 1.1)
+                    ctx.stroke()
+                }
+                Component.onCompleted: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+            }
+
+            RotationAnimator {
+                target: innerArc
+                from: 360
+                to: 0
                 duration: 2200
                 loops: Animation.Infinite
-                running: false
-                easing.type: Easing.Linear
+                running: overlay.visible && overlay.running
             }
         }
 
@@ -194,7 +165,6 @@ Window {
             height: 18
             radius: 9
             color: "#22c55e"
-            opacity: 0.95
             Rectangle {
                 anchors.centerIn: parent
                 width: 34
@@ -207,26 +177,32 @@ Window {
             }
         }
 
-        Repeater {
-            model: 6
-            Rectangle {
-                required property int index
-                width: 6
-                height: 6
-                radius: 3
-                color: "#4ade80"
-                opacity: 0.35 + (index % 3) * 0.2
-                property real angle: index * 60
-                x: stage.width / 2 + Math.cos(angle * Math.PI / 180) * 98 - width / 2
-                y: stage.height / 2 + Math.sin(angle * Math.PI / 180) * 98 - height / 2
-                NumberAnimation on angle {
-                    from: index * 60
-                    to: index * 60 + 360
-                    duration: 3200 + index * 120
-                    loops: Animation.Infinite
-                    running: overlay.visible
-                    easing.type: Easing.Linear
+        Item {
+            id: orbit
+            anchors.fill: parent
+
+            Repeater {
+                model: 6
+                Rectangle {
+                    required property int index
+                    width: 6
+                    height: 6
+                    radius: 3
+                    color: "#4ade80"
+                    opacity: 0.35 + (index % 3) * 0.2
+                    property real ang: index * 60
+                    x: stage.width / 2 + Math.cos(ang * Math.PI / 180) * 98 - width / 2
+                    y: stage.height / 2 + Math.sin(ang * Math.PI / 180) * 98 - height / 2
                 }
+            }
+
+            RotationAnimator {
+                target: orbit
+                from: 0
+                to: 360
+                duration: 3200
+                loops: Animation.Infinite
+                running: overlay.visible && overlay.running
             }
         }
     }

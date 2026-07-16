@@ -189,11 +189,16 @@ Item {
                             brandColor: "#00adef"
                             onClicked: {
                                 if (typeof root !== 'undefined')
-                                    root.showSteamLoading()
-                                var mockAuth = { "login": "", "password": "", "args": "-silent -shutdown" }
+                                    root.showGameLoading()
+                                var mockAuth = {
+                                    "platform": "steam",
+                                    "login": "",
+                                    "password": "",
+                                    "args": "-silent -shutdown"
+                                }
                                 if (typeof Launcher !== 'undefined') {
                                     console.log("[QML-CLICK] Быстрый запуск чистого Steam...");
-                                    Launcher.launchGameWithSmartAuth(mockAuth, "")
+                                    Launcher.launchPlatformSession(mockAuth, "")
                                 }
                             }
                         }
@@ -428,7 +433,7 @@ Item {
                                 if (typeof root !== 'undefined') {
                                     root.isLoggingIn = true
                                     root.currentGameId = parseInt(currentGameId)
-                                    root.showSteamLoading()
+                                    root.showGameLoading(model.platform || "", model.title || "")
                                 }
 
                                 var baseUrl = "http://192.168.222.2:22222"
@@ -454,31 +459,61 @@ Item {
                                                     res["terminal_id"] = parseInt(dashboardRoot.termId)
                                                     res["game_id"] = parseInt(currentGameId)
 
+                                                    var modelPlatform = String(model.platform || "").toLowerCase()
+                                                    if (!res.platform)
+                                                        res.platform = modelPlatform || "steam"
+
+                                                    var argsStr = String(res.args || "")
+                                                    var exeStr = String(res.exe_path || "")
+                                                    var looksEpic = argsStr.toLowerCase().indexOf("com.epicgames.launcher") >= 0
+                                                            || exeStr.toLowerCase().indexOf("epicgameslauncher") >= 0
+                                                            || exeStr.toLowerCase().indexOf("epic games") >= 0
+                                                    if (looksEpic && res.platform !== "epic") {
+                                                        console.warn("[SESSION] QML override platform", res.platform, "→ epic (по exe/args)")
+                                                        res.platform = "epic"
+                                                        res.platform_source = (res.platform_source || "") + "+qml_override_epic"
+                                                    }
+
+                                                    console.log("[SESSION] ===== take-account DEBUG =====")
+                                                    console.log("[SESSION] game_id:", res.game_id, "| model.id:", currentGameId, "| title:", res.game_title || model.title)
+                                                    console.log("[SESSION] platform_raw:", res.platform_raw, "| platform:", res.platform, "| source:", res.platform_source)
+                                                    console.log("[SESSION] model.platform:", modelPlatform, "| looksEpic:", looksEpic)
+                                                    console.log("[SESSION] exe_path:", exeStr || "(empty)")
+                                                    console.log("[SESSION] args:", argsStr || "(empty)")
+                                                    console.log("[SESSION] login:", res.login, "| account_id:", res.account_id)
+                                                    console.log("[SESSION] auth.mode:", (res.auth && res.auth.mode) ? res.auth.mode : "(n/a)")
+                                                    console.log("[SESSION] ================================")
+
+                                                    if (!res.game_title)
+                                                        res.game_title = model.title || ""
+                                                    if (typeof root !== 'undefined' && root.updateGameLoading)
+                                                        root.updateGameLoading(res.platform || "", res.game_title || model.title || "")
+
                                                     if (typeof Launcher !== 'undefined') {
-                                                        console.log("[STEAM] take-account OK:", res.login, "→ launch")
-                                                        Launcher.launchGameWithSmartAuthString(JSON.stringify(res), String(model.steamAppId || ""))
+                                                        console.log("[SESSION] take-account OK:", res.platform, res.login, "→ launch")
+                                                        Launcher.launchPlatformSessionString(JSON.stringify(res), String(res.platform_app_id || ""))
                                                     } else {
-                                                        console.error("[STEAM] Launcher не найден")
+                                                        console.error("[SESSION] Launcher не найден")
                                                     }
                                                 } else {
-                                                    console.warn("[STEAM] take-account:", res.message || "ошибка")
+                                                    console.warn("[SESSION] take-account:", res.message || "ошибка")
                                                     if (typeof root !== 'undefined') {
                                                         root.isLoggingIn = false
-                                                        root.hideSteamLoading()
+                                                        root.hideGameLoading()
                                                     }
                                                 }
                                             } catch(e) {
-                                                console.error("[STEAM] parse error:", e.toString())
+                                                console.error("[SESSION] parse error:", e.toString())
                                                 if (typeof root !== 'undefined') {
                                                     root.isLoggingIn = false
-                                                    root.hideSteamLoading()
+                                                    root.hideGameLoading()
                                                 }
                                             }
                                         } else {
-                                            console.error("[STEAM] take-account HTTP", EastonXhr.status)
+                                            console.error("[SESSION] take-account HTTP", EastonXhr.status)
                                             if (typeof root !== 'undefined') {
                                                 root.isLoggingIn = false
-                                                root.hideSteamLoading()
+                                                root.hideGameLoading()
                                             }
                                         }
                                     }

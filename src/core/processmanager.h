@@ -6,8 +6,9 @@
 #include <QTimer>
 #include <QJsonObject>
 #include <QWindow>
-#include <QRegularExpression>
 #include "networkmanager.h"
+
+class IPlatformAuth;
 
 class ProcessManager : public QObject
 {
@@ -18,16 +19,34 @@ public:
 
     void setMainWindow(QWindow *window);
     void onGameWindowFound(quintptr hwnd, const QString &className);
+    Q_INVOKABLE void setShellTopmost(bool enabled);
+    Q_INVOKABLE void hideShellForGame();
+    Q_INVOKABLE void showShellAfterGame();
 
 public slots:
-    void launchGameWithSmartAuth(const QJsonObject &authData, const QString &steamAppId = "");
+    // Универсальный вход: authData.platform = steam|epic|direct|…
+    void launchPlatformSession(const QJsonObject &authData, const QString &appIdHint = QString());
+    Q_INVOKABLE void launchPlatformSessionString(const QString &jsonString,
+                                                 const QString &appIdHint = QString());
+
+    // Совместимость со старым QML
+    void launchGameWithSmartAuth(const QJsonObject &authData, const QString &steamAppId = QString());
+    Q_INVOKABLE void launchGameWithSmartAuthString(const QString &jsonString,
+                                                   const QString &steamAppId = QString());
+
+    // Быстрый старт exe без take-account (кнопки EPIC/RIOT в Dashboard)
+    Q_INVOKABLE void launch(const QString &exePath,
+                            const QString &args = QString(),
+                            const QString &a = QString(),
+                            const QString &b = QString(),
+                            const QString &c = QString());
+
     void backupAndSendVdfPayload();
     void applyQosPolicies(bool enable);
     void setSystemVolume(int level);
     void toggleSystemLanguage();
     void handleDownloadDecision(bool continueDownload);
     void applyEnterprisePolicies(bool enable);
-    Q_INVOKABLE void launchGameWithSmartAuthString(const QString &jsonString, const QString &steamAppId = "");
 
 signals:
     void gameStarted();
@@ -40,26 +59,26 @@ private slots:
     void onProcessError(QProcess::ProcessError error);
     void monitorNetworkTraffic();
     void checkGameExit();
+    void pollForGameWindow();
 
 private:
+    IPlatformAuth *createPlatformAuth(const QString &platform);
     bool isProcessRunning(const QString &processName);
     unsigned long getProcessIdByName(const QString &processName);
-    void killSteamProcesses();
-    bool applySteamAuthFiles(const QJsonObject &authData, const QString &steamPath);
-    QString localAppDataSteamVdfPath() const;
-    QString buildLoginUsersVdf(const QString &steamId, const QString &login, const QString &persona, const QString &existing) const;
-    void startAuthScout(const QString &login, const QString &password);
-    void stopAuthScout();
+    void startGameFindPoll();
     void startGameExitWatch(quintptr hwnd, const QString &className);
+    void acceptGameWindow(quintptr hwnd, const QString &className);
     void finishGameSession(const QString &reason);
     bool isGameWindowAlive() const;
+    bool findAliveGameWindow(quintptr *outHwnd = nullptr) const;
 
     QProcess *m_process;
     QWindow *m_mainWindow;
     NetworkManager *m_netManager;
+    IPlatformAuth *m_platformAuth;
     QTimer *m_netWatchTimer;
     QTimer *m_gameExitTimer;
-    QTimer *m_authScoutTimer;
+    QTimer *m_gameFindTimer;
 
     bool m_alertActive;
     unsigned long m_offendingPid;
@@ -67,15 +86,21 @@ private:
 
     int m_currentTerminalId;
     int m_currentGameId;
-    QString m_currentSteamLogin;
+    QString m_currentLogin;
+    QString m_currentPlatform;
 
     bool m_gameSessionActive;
     quintptr m_gameHwnd;
     QString m_gameWindowClass;
+    quint32 m_gamePid = 0;
+    QString m_gameProcessImage;
     int m_gameGoneTicks;
-    bool m_needVdfBackup; // true только после интерактивного логина (scout) / нет кэша
-    int m_scoutTicks;
-    bool m_scoutInjected;
+    qint64 m_gameAcceptedAtMs = 0;
+    // Окно игры, пришедшее во время логина Epic (пока allowsGameDetect=false)
+    quintptr m_pendingGameHwnd = 0;
+    QString m_pendingGameClass;
+    bool m_shellHiddenForGame = false;
+    int m_hideShellGeneration = 0;
 };
 
 #endif // PROCESSMANAGER_H

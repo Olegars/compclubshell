@@ -340,6 +340,8 @@ void NetworkManager::fetchGames() {
                 item.exePath = obj.value("exe_path").toString();
                 item.args = obj.value("args").toString();
                 item.poster = obj.value("poster").toString();
+                item.category = obj.value("category").toString();
+                item.platform = obj.value("platform").toString();
 
                 gamesVector.push_back(item);
             }

@@ -15,6 +15,7 @@ Window {
     visible: true
     title: "REACTOR SHELL Sector 0451"
     color: "#020202"
+    flags: Qt.Window | Qt.FramelessWindowHint
     visibility: Window.FullScreen
 
     property int terminalId: 0
@@ -39,23 +40,52 @@ Window {
     property string sessionUserBeforePause: ""
     property bool isLoggingIn: false
     property var pendingOverlaysData: null
+    property string loadingPlatform: ""
+    property string loadingGameTitle: ""
 
-    function showSteamLoading() {
-        hideSteamLoadingTimer.stop()
+    function showGameLoading(platform, gameTitle) {
+        hideGameLoadingTimer.stop()
+        if (typeof platform === "string" && platform.length > 0)
+            root.loadingPlatform = platform
+        if (typeof gameTitle === "string" && gameTitle.length > 0)
+            root.loadingGameTitle = gameTitle
+        steamLoadingOverlay.platformName = root.loadingPlatform || "LAUNCHER"
+        steamLoadingOverlay.gameTitle = root.loadingGameTitle || "ИГРЫ"
         steamLoadingOverlay.running = true
         steamLoadingOverlay.visible = true
+        if (typeof Launcher !== "undefined")
+            Launcher.setShellTopmost(true)
+        root.raise()
+        root.requestActivate()
     }
 
-    function hideSteamLoading() {
-        hideSteamLoadingTimer.stop()
+    function updateGameLoading(platform, gameTitle) {
+        if (typeof platform === "string" && platform.length > 0) {
+            root.loadingPlatform = platform
+            steamLoadingOverlay.platformName = platform
+        }
+        if (typeof gameTitle === "string" && gameTitle.length > 0) {
+            root.loadingGameTitle = gameTitle
+            steamLoadingOverlay.gameTitle = gameTitle
+        }
+    }
+
+    function hideGameLoading() {
+        hideGameLoadingTimer.stop()
         steamLoadingOverlay.running = false
         steamLoadingOverlay.visible = false
         root.isLoggingIn = false
+        // Только оверлей. Shell hide/show — только из C++ (hideShellForGame / showShellAfterGame).
     }
 
-    function scheduleHideSteamLoading() {
-        hideSteamLoadingTimer.restart()
+    function scheduleHideGameLoading() {
+        hideGameLoadingTimer.restart()
     }
+
+    // Совместимость со старыми именами
+    function showSteamLoading() { showGameLoading() }
+    function hideSteamLoading() { hideGameLoading() }
+    function scheduleHideSteamLoading() { scheduleHideGameLoading() }
 
     readonly property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
 
@@ -202,26 +232,25 @@ Window {
         }
 
         function onGameStartedSuccessfully() {
-            // 3с поверх всего, чтобы дашборд не моргнул до игры
-            root.scheduleHideSteamLoading()
+            // Оверлей держим, пока C++ не спрячет shell (~2.5с) — без мигания рабочего стола
+            hideGameLoadingTimer.interval = 2500
+            hideGameLoadingTimer.restart()
         }
 
         function onGameFinished() {
-            root.hideSteamLoading()
+            // Не вызывать hideGameLoading→hide shell: C++ уже showShellAfterGame()
+            steamLoadingOverlay.running = false
+            steamLoadingOverlay.visible = false
+            root.isLoggingIn = false
             NetworkManager.freeGameAccount(parseInt(root.terminalId), parseInt(root.currentGameId))
         }
     }
 
     Timer {
-        id: hideSteamLoadingTimer
+        id: hideGameLoadingTimer
         interval: 3000
         repeat: false
-        onTriggered: root.hideSteamLoading()
-    }
-
-    // Topmost-заставка Steam (не внутри Dashboard — иначе оказывается под шеллом)
-    LoadingOverlay {
-        id: steamLoadingOverlay
+        onTriggered: root.hideGameLoading()
     }
 
     Timer {
@@ -775,8 +804,26 @@ Window {
                 anchors.horizontalCenter: parent.horizontalCenter
                 spacing: 8
                 Text { text: "ЗАПУСК ИГРОВОЙ СЕССИИ"; color: "#22c55e"; font.pixelSize: 24; font.bold: true; font.letterSpacing: 3; anchors.horizontalCenter: parent.horizontalCenter }
-                Text { id: loadingSubText; text: "Синхронизация токенов Steam Cloud..."; color: "#666666"; font.pixelSize: 14; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
+                Text {
+                    id: loadingSubText
+                    text: root.loadingGameTitle
+                          ? ("Подготовка: " + root.loadingGameTitle)
+                          : ("Платформа: " + (root.loadingPlatform || "…"))
+                    color: "#666666"
+                    font.pixelSize: 14
+                    font.letterSpacing: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
             }
         }
+    }
+
+    // Поверх Dashboard/Loader — тот же Window, не отдельный HWND
+    LoadingOverlay {
+        id: steamLoadingOverlay
+        anchors.fill: parent
+        z: 1000000
+        platformName: root.loadingPlatform
+        gameTitle: root.loadingGameTitle
     }
 }
