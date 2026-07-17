@@ -12,24 +12,35 @@ DirectLaunchAuth::DirectLaunchAuth(const QString &platformId, QObject *parent)
     : IPlatformAuth(parent)
     , m_platformId(platformId.isEmpty() ? QStringLiteral("direct") : platformId.toLower())
 {
+    if (m_platformId == QLatin1String("riot"))
+        m_launcherImage = QStringLiteral("RiotClientServices.exe");
 }
 
 void DirectLaunchAuth::killLauncher()
 {
-    // Пока не убиваем чужие лаунчеры агрессивно — только при явном образе
-    if (m_launcherImage.isEmpty())
-        return;
 #ifdef Q_OS_WIN
-    auto *p = new QProcess;
-    p->setProgram(QStringLiteral("taskkill"));
-    p->setArguments({QStringLiteral("/F"), QStringLiteral("/T"),
-                     QStringLiteral("/IM"), m_launcherImage});
-    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
-        args->flags |= CREATE_NO_WINDOW;
-    });
-    QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                     p, &QObject::deleteLater);
-    p->start();
+    QStringList images;
+    if (m_platformId == QLatin1String("riot")) {
+        images << QStringLiteral("RiotClientServices.exe")
+               << QStringLiteral("RiotClient.exe")
+               << QStringLiteral("RiotClientCrashHandler.exe");
+    } else if (!m_launcherImage.isEmpty()) {
+        images << m_launcherImage;
+    }
+    for (const QString &image : images) {
+        auto *p = new QProcess;
+        p->setProgram(QStringLiteral("taskkill"));
+        p->setArguments({QStringLiteral("/F"), QStringLiteral("/T"),
+                         QStringLiteral("/IM"), image});
+        p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+            args->flags |= CREATE_NO_WINDOW;
+        });
+        QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                         p, &QObject::deleteLater);
+        p->start();
+    }
+#else
+    Q_UNUSED(m_launcherImage);
 #endif
 }
 

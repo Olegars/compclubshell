@@ -19,6 +19,8 @@ Item {
             return "EPIC"
         if (p === "STEAM" || p.indexOf("STEAM") >= 0)
             return "STEAM"
+        if (p === "EA" || p === "ORIGIN" || p.indexOf("EAAPP") >= 0 || p.indexOf("EA APP") >= 0)
+            return "EA"
         if (p === "DIRECT" || p === "PC")
             return "LAUNCHER"
         if (p.length > 0)

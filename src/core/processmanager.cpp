@@ -2,6 +2,7 @@
 #include "iplatformauth.h"
 #include "steamauth.h"
 #include "epicauth.h"
+#include "eaauth.h"
 #include "directlaunchauth.h"
 
 #include <QDateTime>
@@ -390,7 +391,15 @@ IPlatformAuth *ProcessManager::createPlatformAuth(const QString &platform)
     if (p == QLatin1String("epic") || p == QLatin1String("epicgames"))
         return new EpicAuth(this);
 
-    // Riot / EA / Battle.net / VK — пока direct exe
+    if (p == QLatin1String("ea")
+        || p == QLatin1String("origin")
+        || p == QLatin1String("eadesktop")
+        || p == QLatin1String("ea app")
+        || p == QLatin1String("eaapp")
+        || p == QLatin1String("electronic arts"))
+        return new EaAuth(this);
+
+    // Riot / Battle.net / VK — пока direct exe
     return new DirectLaunchAuth(p, this);
 }
 
@@ -449,15 +458,61 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
         || argsStr.contains(QStringLiteral("steam://"), Qt::CaseInsensitive)
         || argsStr.contains(QStringLiteral("-applaunch"), Qt::CaseInsensitive);
 
+    const bool looksEa =
+        exeFi.fileName().compare(QStringLiteral("EADesktop.exe"), Qt::CaseInsensitive) == 0
+        || exePath.contains(QStringLiteral("EA Desktop"), Qt::CaseInsensitive)
+        || argsStr.contains(QStringLiteral("origin2://"), Qt::CaseInsensitive)
+        || argsStr.contains(QStringLiteral("origin://"), Qt::CaseInsensitive)
+        || argsStr.contains(QStringLiteral("eadm://"), Qt::CaseInsensitive);
+
+    const bool looksRiot =
+        exeFi.fileName().compare(QStringLiteral("RiotClientServices.exe"), Qt::CaseInsensitive) == 0
+        || exePath.contains(QStringLiteral("Riot Client"), Qt::CaseInsensitive)
+        || exePath.contains(QStringLiteral("Riot Games"), Qt::CaseInsensitive)
+        || argsStr.contains(QStringLiteral("valorant"), Qt::CaseInsensitive)
+        || argsStr.contains(QStringLiteral("league_of_legends"), Qt::CaseInsensitive)
+        || gameTitle.contains(QStringLiteral("Valorant"), Qt::CaseInsensitive)
+        || gameTitle.contains(QStringLiteral("League of Legends"), Qt::CaseInsensitive)
+        || platform.contains(QStringLiteral("riot"));
+
     if (looksEpic && (platform.isEmpty()
                       || platform == QLatin1String("steam")
                       || platform == QLatin1String("pc")
                       || platform == QLatin1String("direct")
-                      || platform == QLatin1String("lesta"))) {
+                      || platform == QLatin1String("lesta")
+                      || platform == QLatin1String("ea")
+                      || platform == QLatin1String("riot"))) {
         resolveNote = QStringLiteral("override_to_epic_from_exe_args (was '%1')").arg(platformRaw);
         platform = QStringLiteral("epic");
+    } else if (looksEa && platform != QLatin1String("ea")
+               && platform != QLatin1String("epic")
+               && platform != QLatin1String("steam")
+               && platform != QLatin1String("riot")) {
+        resolveNote = QStringLiteral("override_to_ea_from_exe (was '%1')").arg(platformRaw);
+        platform = QStringLiteral("ea");
+    } else if (platform == QLatin1String("origin")
+               || platform == QLatin1String("eadesktop")
+               || platform == QLatin1String("eaapp")
+               || platform == QLatin1String("ea app")
+               || platform == QLatin1String("electronic arts")) {
+        resolveNote = QStringLiteral("normalized_ea (was '%1')").arg(platformRaw);
+        platform = QStringLiteral("ea");
+    } else if (looksRiot && platform != QLatin1String("riot")
+               && platform != QLatin1String("epic")
+               && platform != QLatin1String("ea")
+               && platform != QLatin1String("steam")) {
+        resolveNote = QStringLiteral("override_to_riot_from_exe (was '%1')").arg(platformRaw);
+        platform = QStringLiteral("riot");
+    } else if (platform == QLatin1String("riot games")
+               || platform == QLatin1String("riotgames")
+               || platform == QLatin1String("valorant")
+               || platform == QLatin1String("league of legends")) {
+        resolveNote = QStringLiteral("normalized_riot (was '%1')").arg(platformRaw);
+        platform = QStringLiteral("riot");
     } else if (looksSteam && platform != QLatin1String("steam")
-               && platform != QLatin1String("epic")) {
+               && platform != QLatin1String("epic")
+               && platform != QLatin1String("ea")
+               && platform != QLatin1String("riot")) {
         // Lesta/Wargaming в клубе часто крутятся через Steam.exe — нужен SteamAuth + VDF
         resolveNote = QStringLiteral("override_to_steam_from_exe (was '%1')").arg(platformRaw);
         platform = QStringLiteral("steam");
@@ -487,7 +542,8 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
     qWarning().noquote() << "[SESSION] args:" << (argsStr.isEmpty() ? QStringLiteral("(empty)") : argsStr);
     qWarning().noquote() << "[SESSION] appIdHint:" << (appIdHint.isEmpty() ? QStringLiteral("(empty)") : appIdHint);
     qWarning().noquote() << "[SESSION] auth.mode:" << (authMode.isEmpty() ? QStringLiteral("(n/a)") : authMode)
-                         << "| looksEpic:" << looksEpic << "| looksSteam:" << looksSteam;
+                         << "| looksEpic:" << looksEpic << "| looksSteam:" << looksSteam
+                         << "| looksEa:" << looksEa << "| looksRiot:" << looksRiot;
     qWarning().noquote() << "[SESSION] ==================================";
 
     if (m_platformAuth) {
@@ -514,7 +570,8 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
     m_platformAuth->killLauncher();
 
     const int killDelayMs = (platform == QLatin1String("steam")
-                             || platform == QLatin1String("epic")) ? 700 : 100;
+                             || platform == QLatin1String("epic")) ? 700
+                          : (platform == QLatin1String("ea") ? 1500 : 100);
 
     QTimer::singleShot(killDelayMs, this, [this, authData, appIdHint, platform]() {
         if (!m_gameSessionActive || !m_platformAuth)
@@ -676,15 +733,15 @@ void ProcessManager::acceptGameWindow(quintptr hwnd, const QString &className)
         hideShellForGame();
     });
 
-    // Epic: бэкап всегда после детекта игры (даже если scout не нашёл окно логина —
-    // на ПК уже была сессия, ini всё равно нужно сохранить в БД).
-    const bool epicAlwaysBackup = (m_currentPlatform == QLatin1String("epic"));
-    if (m_platformAuth && (m_platformAuth->needsCacheBackup() || epicAlwaysBackup)) {
+    // Epic/EA: бэкап всегда после детекта игры (даже если scout не нашёл окно логина).
+    const bool platformAlwaysBackup = (m_currentPlatform == QLatin1String("epic")
+                                       || m_currentPlatform == QLatin1String("ea"));
+    if (m_platformAuth && (m_platformAuth->needsCacheBackup() || platformAlwaysBackup)) {
         const int delayMs = 3000;
-        QTimer::singleShot(delayMs, this, [this, epicAlwaysBackup]() {
+        QTimer::singleShot(delayMs, this, [this, platformAlwaysBackup]() {
             if (!m_platformAuth)
                 return;
-            if (!m_gameSessionActive && !epicAlwaysBackup)
+            if (!m_gameSessionActive && !platformAlwaysBackup)
                 return;
             qWarning() << "[" << m_currentPlatform.toUpper()
                        << "] cache backup → сервер";
@@ -874,7 +931,8 @@ void ProcessManager::finishGameSession(const QString &reason)
 
     if (m_platformAuth
         && (m_platformAuth->needsCacheBackup()
-            || m_currentPlatform == QLatin1String("epic"))) {
+            || m_currentPlatform == QLatin1String("epic")
+            || m_currentPlatform == QLatin1String("ea"))) {
         const QString login = m_currentLogin;
         const int termId = m_currentTerminalId;
         IPlatformAuth *auth = m_platformAuth;
@@ -905,6 +963,15 @@ void ProcessManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitSt
         if (m_gameHwnd != 0)
             return;
 
+        // EA/Riot: parent QProcess часто отваливается, лаунчер/игра живут отдельно.
+        if (m_currentPlatform == QLatin1String("ea")
+            || m_currentPlatform == QLatin1String("riot")) {
+            qWarning() << "[SESSION]" << m_currentPlatform.toUpper()
+                       << "parent QProcess finished — сессию не трогаем"
+                       << "(ждём окно игры / выход пользователя)";
+            return;
+        }
+
         // Parent часто умирает сразу (Epic/Steam bootstrap) — не трогаем scout
         if (m_platformAuth && !m_platformAuth->allowsGameDetect()) {
             qWarning() << "[SESSION] parent QProcess finished во время логина — игнор"
@@ -921,7 +988,7 @@ void ProcessManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitSt
                 ? m_platformAuth->launcherProcessName()
                 : QStringLiteral("steam.exe");
             if (!image.isEmpty() && isProcessRunning(image)) {
-                qWarning() << "[SESSION] parent exited, but" << image << "still running";
+                qWarning() << "[SESSION] parent exited, but" << image << "still running — keep session";
                 return;
             }
             finishGameSession(QStringLiteral("launcher exited before game window"));

@@ -36,6 +36,185 @@ Item {
     property string darkBg: "#030704"
     property string currentLanguage: "RU"
 
+    // Riot: выбор личного / клубного аккаунта перед запуском
+    property int pendingRiotGameId: 0
+    property string pendingRiotTitle: ""
+    property string pendingRiotExe: ""
+    property string pendingRiotArgs: ""
+    property string pendingRiotPlatform: "riot"
+
+    readonly property string defaultRiotClient: "C:\\Riot Games\\Riot Client\\RiotClientServices.exe"
+
+    function looksLikeRiot(platform, exePath, args, title) {
+        var p = String(platform || "").toLowerCase()
+        var e = String(exePath || "").toLowerCase()
+        var a = String(args || "").toLowerCase()
+        var t = String(title || "").toLowerCase()
+        return p === "riot" || p.indexOf("riot") >= 0
+            || e.indexOf("riotclient") >= 0 || e.indexOf("riot games") >= 0
+            || a.indexOf("valorant") >= 0 || a.indexOf("league_of_legends") >= 0
+            || a.indexOf("league of legends") >= 0
+            || t.indexOf("valorant") >= 0 || t.indexOf("league of legends") >= 0
+            || t.indexOf("legends") >= 0 && t.indexOf("league") >= 0
+    }
+
+    function resolveRiotExe(exePath) {
+        var e = String(exePath || "").toLowerCase()
+        if (e.indexOf("riotclient") >= 0 || e.indexOf("riot games") >= 0
+                || e.indexOf("valorant") >= 0 || e.indexOf("league") >= 0)
+            return exePath
+        return defaultRiotClient
+    }
+
+    function launchRiotPersonal() {
+        var exe = resolveRiotExe(pendingRiotExe)
+        var args = pendingRiotArgs || ""
+        var title = pendingRiotTitle || "Riot"
+        riotAccountPopup.close()
+        if (typeof root !== 'undefined') {
+            root.isLoggingIn = true
+            root.currentGameId = pendingRiotGameId
+            root.showGameLoading("riot", title)
+        }
+        if (typeof Launcher === 'undefined') {
+            console.error("[RIOT] Launcher не найден")
+            if (typeof root !== 'undefined') {
+                root.isLoggingIn = false
+                root.hideGameLoading()
+            }
+            return
+        }
+        var payload = {
+            "platform": "riot",
+            "platform_source": "personal_account",
+            "exe_path": exe,
+            "args": args,
+            "login": "",
+            "password": "",
+            "game_id": pendingRiotGameId,
+            "game_title": title,
+            "terminal_id": parseInt(dashboardRoot.termId),
+            "auth": { "mode": "personal" }
+        }
+        console.log("[RIOT] личный аккаунт → Riot Client", exe, args)
+        Launcher.launchPlatformSessionString(JSON.stringify(payload), "")
+        if (typeof root !== 'undefined')
+            root.scheduleHideGameLoading()
+    }
+
+    function launchRiotClub() {
+        var gameId = pendingRiotGameId
+        var title = pendingRiotTitle || "Riot"
+        riotAccountPopup.close()
+        if (typeof root !== 'undefined') {
+            root.isLoggingIn = true
+            root.currentGameId = gameId
+            root.showGameLoading("riot", title)
+        }
+        startClubTakeAccount(gameId, "riot", title, pendingRiotExe, pendingRiotArgs)
+    }
+
+    function startClubTakeAccount(gameId, modelPlatform, modelTitle, modelExe, modelArgs) {
+        var baseUrl = "http://192.168.222.2:22222"
+        if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
+            baseUrl = NetworkManager.serverUrl
+
+        var EastonXhr = new XMLHttpRequest()
+        EastonXhr.open("POST", baseUrl + "/api/shell/games/take-account")
+        EastonXhr.setRequestHeader("Content-Type", "application/json")
+        EastonXhr.onreadystatechange = function() {
+            if (EastonXhr.readyState !== XMLHttpRequest.DONE)
+                return
+            if (EastonXhr.status === 200) {
+                try {
+                    var res = JSON.parse(EastonXhr.responseText)
+                    if (res.status === "success") {
+                        dashboardRoot.lastToken = ""
+                        dashboardRoot.lastLogin = res.login ? String(res.login) : ""
+                        dashboardRoot.lastId = res.steam_id ? String(res.steam_id) : ""
+                        dashboardRoot.lastPersonaName = res.persona_name ? String(res.persona_name) : ""
+
+                        res["terminal_id"] = parseInt(dashboardRoot.termId)
+                        res["game_id"] = parseInt(gameId)
+
+                        var plat = String(res.platform || modelPlatform || "").toLowerCase()
+                        if (!res.platform)
+                            res.platform = plat || "steam"
+
+                        var argsStr = String(res.args || modelArgs || "")
+                        var exeStr = String(res.exe_path || modelExe || "")
+                        var looksEpic = argsStr.toLowerCase().indexOf("com.epicgames.launcher") >= 0
+                                || exeStr.toLowerCase().indexOf("epicgameslauncher") >= 0
+                                || exeStr.toLowerCase().indexOf("epic games") >= 0
+                        var looksEa = exeStr.toLowerCase().indexOf("eadesktop.exe") >= 0
+                                || exeStr.toLowerCase().indexOf("ea desktop") >= 0
+                                || argsStr.toLowerCase().indexOf("origin2://") >= 0
+                                || argsStr.toLowerCase().indexOf("origin://") >= 0
+                                || argsStr.toLowerCase().indexOf("eadm://") >= 0
+                        var looksRiot = dashboardRoot.looksLikeRiot(res.platform, exeStr, argsStr, res.game_title || modelTitle)
+                        if (looksEpic && res.platform !== "epic") {
+                            res.platform = "epic"
+                            res.platform_source = (res.platform_source || "") + "+qml_override_epic"
+                        } else if (looksEa && res.platform !== "ea" && res.platform !== "epic") {
+                            res.platform = "ea"
+                            res.platform_source = (res.platform_source || "") + "+qml_override_ea"
+                        } else if (looksRiot && res.platform !== "riot") {
+                            res.platform = "riot"
+                            res.platform_source = (res.platform_source || "") + "+qml_override_riot"
+                        }
+
+                        if (!res.game_title)
+                            res.game_title = modelTitle || ""
+                        if (!res.exe_path && modelExe)
+                            res.exe_path = modelExe
+                        if (!res.args && modelArgs)
+                            res.args = modelArgs
+                        if (looksRiot || res.platform === "riot") {
+                            res.platform = "riot"
+                            res.exe_path = dashboardRoot.resolveRiotExe(res.exe_path || modelExe || "")
+                        }
+
+                        if (typeof root !== 'undefined' && root.updateGameLoading)
+                            root.updateGameLoading(res.platform || "", res.game_title || modelTitle || "")
+
+                        if (typeof Launcher !== 'undefined') {
+                            console.log("[SESSION] take-account OK:", res.platform, res.login, "→ launch")
+                            Launcher.launchPlatformSessionString(JSON.stringify(res), String(res.platform_app_id || ""))
+                        } else {
+                            console.error("[SESSION] Launcher не найден")
+                        }
+                    } else {
+                        console.warn("[SESSION] take-account:", res.message || "ошибка")
+                        if (String(res.message || "").indexOf("занят") >= 0
+                            && dashboardRoot.looksLikeRiot(modelPlatform, modelExe, modelArgs, modelTitle)) {
+                            riotBusyHintPopup.open()
+                        }
+                        if (typeof root !== 'undefined') {
+                            root.isLoggingIn = false
+                            root.hideGameLoading()
+                        }
+                    }
+                } catch (e) {
+                    console.error("[SESSION] parse error:", e.toString())
+                    if (typeof root !== 'undefined') {
+                        root.isLoggingIn = false
+                        root.hideGameLoading()
+                    }
+                }
+            } else {
+                console.error("[SESSION] take-account HTTP", EastonXhr.status)
+                if (typeof root !== 'undefined') {
+                    root.isLoggingIn = false
+                    root.hideGameLoading()
+                }
+            }
+        }
+        EastonXhr.send(JSON.stringify({
+            "game_id": parseInt(gameId),
+            "terminal_id": parseInt(dashboardRoot.termId)
+        }))
+    }
+
     Component.onCompleted: {
         if (typeof NetworkManager !== 'undefined') {
             NetworkManager.fetchProducts()
@@ -75,11 +254,13 @@ Item {
         color: "#020202"
         Image {
             anchors.fill: parent
-            source: "images/hex_bg.png"
+            source: Qt.resolvedUrl("images/hex_bg.png")
             fillMode: Image.Tile
-            opacity: 0.15
+            opacity: 0.35
             horizontalAlignment: Image.AlignHCenter
             verticalAlignment: Image.AlignVCenter
+            onStatusChanged: if (status === Image.Error)
+                console.warn("[BG] hex_bg load failed:", source)
         }
         RadialGradient {
             anchors.fill: parent
@@ -360,7 +541,7 @@ Item {
                 spacing: 30
                 property string activeTab: "ВСЕ ИГРЫ"
                 Repeater {
-                    model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "БРАУЗЕРЫ", "УТИЛИТЫ"]
+                    model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "EA", "RIOT", "БРАУЗЕРЫ", "УТИЛИТЫ"]
                     delegate: Text {
                         text: modelData
                         color: filterRow.activeTab === modelData ? accentColor : "#666666"
@@ -429,96 +610,28 @@ Item {
                             hoverEnabled: true
                             onClicked: {
                                 var currentGameId = model.id
+                                var mPlat = model.platform || ""
+                                var mTitle = model.title || ""
+                                var mExe = model.exePath || ""
+                                var mArgs = model.args || ""
+
+                                if (dashboardRoot.looksLikeRiot(mPlat, mExe, mArgs, mTitle)) {
+                                    dashboardRoot.pendingRiotGameId = parseInt(currentGameId)
+                                    dashboardRoot.pendingRiotTitle = mTitle
+                                    dashboardRoot.pendingRiotExe = mExe
+                                    dashboardRoot.pendingRiotArgs = mArgs
+                                    dashboardRoot.pendingRiotPlatform = mPlat || "riot"
+                                    riotAccountPopup.open()
+                                    return
+                                }
 
                                 if (typeof root !== 'undefined') {
                                     root.isLoggingIn = true
                                     root.currentGameId = parseInt(currentGameId)
-                                    root.showGameLoading(model.platform || "", model.title || "")
+                                    root.showGameLoading(mPlat, mTitle)
                                 }
-
-                                var baseUrl = "http://192.168.222.2:22222"
-                                if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined') {
-                                    baseUrl = NetworkManager.serverUrl
-                                }
-
-                                var fullRouteUrl = baseUrl + "/api/shell/games/take-account"
-                                var EastonXhr = new XMLHttpRequest()
-                                EastonXhr.open("POST", fullRouteUrl)
-                                EastonXhr.setRequestHeader("Content-Type", "application/json")
-                                EastonXhr.onreadystatechange = function() {
-                                    if (EastonXhr.readyState === XMLHttpRequest.DONE) {
-                                        if (EastonXhr.status === 200) {
-                                            try {
-                                                var res = JSON.parse(EastonXhr.responseText)
-                                                if (res.status === "success") {
-                                                    dashboardRoot.lastToken = ""
-                                                    dashboardRoot.lastLogin = res.login ? String(res.login) : ""
-                                                    dashboardRoot.lastId = res.steam_id ? String(res.steam_id) : ""
-                                                    dashboardRoot.lastPersonaName = res.persona_name ? String(res.persona_name) : ""
-
-                                                    res["terminal_id"] = parseInt(dashboardRoot.termId)
-                                                    res["game_id"] = parseInt(currentGameId)
-
-                                                    var modelPlatform = String(model.platform || "").toLowerCase()
-                                                    if (!res.platform)
-                                                        res.platform = modelPlatform || "steam"
-
-                                                    var argsStr = String(res.args || "")
-                                                    var exeStr = String(res.exe_path || "")
-                                                    var looksEpic = argsStr.toLowerCase().indexOf("com.epicgames.launcher") >= 0
-                                                            || exeStr.toLowerCase().indexOf("epicgameslauncher") >= 0
-                                                            || exeStr.toLowerCase().indexOf("epic games") >= 0
-                                                    if (looksEpic && res.platform !== "epic") {
-                                                        console.warn("[SESSION] QML override platform", res.platform, "→ epic (по exe/args)")
-                                                        res.platform = "epic"
-                                                        res.platform_source = (res.platform_source || "") + "+qml_override_epic"
-                                                    }
-
-                                                    console.log("[SESSION] ===== take-account DEBUG =====")
-                                                    console.log("[SESSION] game_id:", res.game_id, "| model.id:", currentGameId, "| title:", res.game_title || model.title)
-                                                    console.log("[SESSION] platform_raw:", res.platform_raw, "| platform:", res.platform, "| source:", res.platform_source)
-                                                    console.log("[SESSION] model.platform:", modelPlatform, "| looksEpic:", looksEpic)
-                                                    console.log("[SESSION] exe_path:", exeStr || "(empty)")
-                                                    console.log("[SESSION] args:", argsStr || "(empty)")
-                                                    console.log("[SESSION] login:", res.login, "| account_id:", res.account_id)
-                                                    console.log("[SESSION] auth.mode:", (res.auth && res.auth.mode) ? res.auth.mode : "(n/a)")
-                                                    console.log("[SESSION] ================================")
-
-                                                    if (!res.game_title)
-                                                        res.game_title = model.title || ""
-                                                    if (typeof root !== 'undefined' && root.updateGameLoading)
-                                                        root.updateGameLoading(res.platform || "", res.game_title || model.title || "")
-
-                                                    if (typeof Launcher !== 'undefined') {
-                                                        console.log("[SESSION] take-account OK:", res.platform, res.login, "→ launch")
-                                                        Launcher.launchPlatformSessionString(JSON.stringify(res), String(res.platform_app_id || ""))
-                                                    } else {
-                                                        console.error("[SESSION] Launcher не найден")
-                                                    }
-                                                } else {
-                                                    console.warn("[SESSION] take-account:", res.message || "ошибка")
-                                                    if (typeof root !== 'undefined') {
-                                                        root.isLoggingIn = false
-                                                        root.hideGameLoading()
-                                                    }
-                                                }
-                                            } catch(e) {
-                                                console.error("[SESSION] parse error:", e.toString())
-                                                if (typeof root !== 'undefined') {
-                                                    root.isLoggingIn = false
-                                                    root.hideGameLoading()
-                                                }
-                                            }
-                                        } else {
-                                            console.error("[SESSION] take-account HTTP", EastonXhr.status)
-                                            if (typeof root !== 'undefined') {
-                                                root.isLoggingIn = false
-                                                root.hideGameLoading()
-                                            }
-                                        }
-                                    }
-                                }
-                                EastonXhr.send(JSON.stringify({ "game_id": parseInt(currentGameId), "terminal_id": parseInt(dashboardRoot.termId) }))
+                                dashboardRoot.startClubTakeAccount(
+                                    currentGameId, mPlat, mTitle, mExe, mArgs)
                             }
                         }
                     }
@@ -935,6 +1048,171 @@ Item {
             anchors.fill: parent; anchors.margins: 30; spacing: 15
             Text { text: "⚙️ СИСТЕМА КОНТРОЛЯ ТРАФИКА"; color: accentColor; font.bold: true; Layout.alignment: Qt.AlignHCenter }
             Button { text: "ПОНЯТНО, ЗАПУСТИТЬ"; Layout.alignment: Qt.AlignHCenter; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch(steamLimitAlertPopup.targetExe, steamLimitAlertPopup.targetArgs, "", "", ""); steamLimitAlertPopup.close() } }
+        }
+    }
+
+    Popup {
+        id: riotAccountPopup
+        width: Math.min(640, parent.width - 40)
+        height: 420
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            color: "#0a0505"
+            border.color: "#d32f2f"
+            radius: 10
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 28
+            spacing: 16
+
+            Text {
+                text: "RIOT GAMES"
+                color: "#d32f2f"
+                font.pixelSize: 22
+                font.bold: true
+                font.letterSpacing: 2
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                text: dashboardRoot.pendingRiotTitle.length > 0
+                      ? dashboardRoot.pendingRiotTitle : "Игра Riot"
+                color: "#aaaaaa"
+                font.pixelSize: 14
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                color: "#e5e5e5"
+                font.pixelSize: 16
+                lineHeight: 1.35
+                text: "У вас есть личный аккаунт Riot?\n\n"
+                      + "Личный — сохранит ранг, скины и прогресс.\n"
+                      + "Клубный — гостевой вход из пула клуба (если свободны)."
+            }
+            Item { Layout.fillHeight: true }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    color: "#d32f2f"
+                    Text {
+                        anchors.centerIn: parent
+                        text: "СВОЙ АККАУНТ"
+                        color: "white"
+                        font.bold: true
+                        font.pixelSize: 14
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: dashboardRoot.launchRiotPersonal()
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    color: "transparent"
+                    border.color: accentColor
+                    border.width: 2
+                    Text {
+                        anchors.centerIn: parent
+                        text: "КЛУБНЫЙ АККАУНТ"
+                        color: accentColor
+                        font.bold: true
+                        font.pixelSize: 14
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: dashboardRoot.launchRiotClub()
+                    }
+                }
+            }
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "Отмена"
+                color: "#666666"
+                font.pixelSize: 13
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: riotAccountPopup.close()
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: riotBusyHintPopup
+        width: Math.min(560, parent.width - 40)
+        height: 280
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            color: "#0a0505"
+            border.color: "#d32f2f"
+            radius: 10
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 28
+            spacing: 18
+            Text {
+                text: "КЛУБНЫЕ АККАУНТЫ ЗАНЯТЫ"
+                color: "#d32f2f"
+                font.bold: true
+                font.pixelSize: 18
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                color: "#cccccc"
+                font.pixelSize: 15
+                text: "Сейчас нет свободного клубного аккаунта Riot.\nМожно войти под своим — прогресс и скины останутся у вас."
+            }
+            Item { Layout.fillHeight: true }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                radius: 6
+                color: "#d32f2f"
+                Text {
+                    anchors.centerIn: parent
+                    text: "ВОЙТИ ПОД СВОИМ"
+                    color: "white"
+                    font.bold: true
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        riotBusyHintPopup.close()
+                        dashboardRoot.launchRiotPersonal()
+                    }
+                }
+            }
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "Закрыть"
+                color: "#666666"
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: riotBusyHintPopup.close()
+                }
+            }
         }
     }
 

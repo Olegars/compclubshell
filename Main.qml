@@ -389,9 +389,11 @@ Window {
                 color: "#020202"
                 Image {
                     anchors.fill: parent
-                    source: "images/hex_bg.png"
+                    source: Qt.resolvedUrl("images/hex_bg.png")
                     fillMode: Image.Tile
-                    opacity: 0.15
+                    opacity: 0.35
+                    onStatusChanged: if (status === Image.Error)
+                        console.warn("[BG] hex_bg load failed:", source)
                 }
                 Shape {
                     anchors.fill: parent
@@ -773,7 +775,7 @@ Window {
         visible: opacity > 0.0
         Behavior on opacity { NumberAnimation { duration: 250 } }
 
-        Image { anchors.fill: parent; source: "images/hex_bg.png"; fillMode: Image.Tile; opacity: 0.08 }
+        Image { anchors.fill: parent; source: Qt.resolvedUrl("images/hex_bg.png"); fillMode: Image.Tile; opacity: 0.25 }
         Column {
             anchors.centerIn: parent
             spacing: 30

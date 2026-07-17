@@ -13,9 +13,9 @@ Rectangle {
 
     Image {
         anchors.fill: parent
-        source: "images/hex_bg.png"
+        source: Qt.resolvedUrl("images/hex_bg.png")
         fillMode: Image.Tile
-        opacity: 0.1
+        opacity: 0.3
     }
 
     Column {

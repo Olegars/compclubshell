@@ -63,16 +63,28 @@ void GameModel::setFilter(const QString &filter)
         m_displayGames = m_allGames;
     } else {
         m_displayGames.clear();
+        const bool riotTab = filter.compare(QStringLiteral("RIOT"), Qt::CaseInsensitive) == 0;
 
         // Пробегаемся по полному списку и ищем совпадения
         for (const auto &game : m_allGames) {
             // Ищем совпадение либо по платформе (напр. "Steam"), либо по категории (напр. "Утилиты")
             // Используем Qt::CaseInsensitive, чтобы не было проблем с регистром (Steam == STEAM)
-            if (game.platform.contains(filter, Qt::CaseInsensitive) ||
-                game.category.contains(filter, Qt::CaseInsensitive)) {
+            bool match = game.platform.contains(filter, Qt::CaseInsensitive)
+                || game.category.contains(filter, Qt::CaseInsensitive);
 
-                m_displayGames.push_back(game);
+            if (!match && riotTab) {
+                const QString hay = (game.platform + QLatin1Char(' ')
+                                     + game.title + QLatin1Char(' ')
+                                     + game.exePath + QLatin1Char(' ')
+                                     + game.args).toLower();
+                match = hay.contains(QLatin1String("riot"))
+                    || hay.contains(QLatin1String("valorant"))
+                    || hay.contains(QLatin1String("league of legends"))
+                    || hay.contains(QLatin1String("league_of_legends"));
             }
+
+            if (match)
+                m_displayGames.push_back(game);
         }
     }
 

@@ -3,8 +3,7 @@
 
 #include "iplatformauth.h"
 
-// Запуск exe/ярлыка без интерактивного логина (Epic/Riot/EA пока так;
-// позже заменится на EpicAuth со scout при необходимости).
+// Запуск exe/ярлыка без интерактивного логина (Riot / Battle.net / …).
 class DirectLaunchAuth : public IPlatformAuth
 {
     Q_OBJECT
