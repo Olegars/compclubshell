@@ -3,6 +3,7 @@
 #include "steamauth.h"
 #include "epicauth.h"
 #include "eaauth.h"
+#include "riotauth.h"
 #include "directlaunchauth.h"
 
 #include <QDateTime>
@@ -399,7 +400,14 @@ IPlatformAuth *ProcessManager::createPlatformAuth(const QString &platform)
         || p == QLatin1String("electronic arts"))
         return new EaAuth(this);
 
-    // Riot / Battle.net / VK — пока direct exe
+    if (p == QLatin1String("riot")
+        || p == QLatin1String("riot games")
+        || p == QLatin1String("riotgames")
+        || p == QLatin1String("valorant")
+        || p == QLatin1String("league of legends"))
+        return new RiotAuth(this);
+
+    // Battle.net / VK — пока direct exe
     return new DirectLaunchAuth(p, this);
 }
 
@@ -571,7 +579,8 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
 
     const int killDelayMs = (platform == QLatin1String("steam")
                              || platform == QLatin1String("epic")) ? 700
-                          : (platform == QLatin1String("ea") ? 1500 : 100);
+                          : (platform == QLatin1String("ea")
+                             || platform == QLatin1String("riot") ? 1500 : 100);
 
     QTimer::singleShot(killDelayMs, this, [this, authData, appIdHint, platform]() {
         if (!m_gameSessionActive || !m_platformAuth)

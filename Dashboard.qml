@@ -60,21 +60,46 @@ Item {
 
     function resolveRiotExe(exePath) {
         var e = String(exePath || "").toLowerCase()
-        if (e.indexOf("riotclient") >= 0 || e.indexOf("riot games") >= 0
-                || e.indexOf("valorant") >= 0 || e.indexOf("league") >= 0)
+        if (e.indexOf("riotclientservices") >= 0)
             return exePath
         return defaultRiotClient
     }
 
+    function resolveRiotArgs(args, title, exePath) {
+        var a = String(args || "").trim()
+        var al = a.toLowerCase()
+        // В args ошибочно положили путь к .exe
+        if (a.length > 0 && al.indexOf("--launch-product") < 0
+                && (al.indexOf(".exe") >= 0 || al.indexOf("riot client") >= 0
+                    || a.indexOf(":\\") === 0 || (a.length >= 3 && a.charAt(1) === ":"))) {
+            console.warn("[RIOT] args похожи на путь — очищаем:", a)
+            a = ""
+        }
+        if (a.length > 0)
+            return a
+        var t = String(title || "").toLowerCase()
+        if (t.indexOf("valorant") >= 0)
+            return "--launch-product=valorant --launch-patchline=live"
+        if (t.indexOf("league") >= 0)
+            return "--launch-product=league_of_legends --launch-patchline=live"
+        return ""
+    }
+
+    // TEMP DEBUG: для Riot не показываем loading-оверлей — видно окно клиента
+    readonly property bool riotDebugNoOverlay: true
+
     function launchRiotPersonal() {
         var exe = resolveRiotExe(pendingRiotExe)
-        var args = pendingRiotArgs || ""
         var title = pendingRiotTitle || "Riot"
+        var args = resolveRiotArgs(pendingRiotArgs, title, pendingRiotExe)
         riotAccountPopup.close()
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = pendingRiotGameId
-            root.showGameLoading("riot", title)
+            if (!dashboardRoot.riotDebugNoOverlay)
+                root.showGameLoading("riot", title)
+            else if (typeof Launcher !== 'undefined' && Launcher.hideShellForGame)
+                Launcher.hideShellForGame()
         }
         if (typeof Launcher === 'undefined') {
             console.error("[RIOT] Launcher не найден")
@@ -98,7 +123,7 @@ Item {
         }
         console.log("[RIOT] личный аккаунт → Riot Client", exe, args)
         Launcher.launchPlatformSessionString(JSON.stringify(payload), "")
-        if (typeof root !== 'undefined')
+        if (typeof root !== 'undefined' && !dashboardRoot.riotDebugNoOverlay)
             root.scheduleHideGameLoading()
     }
 
@@ -109,7 +134,10 @@ Item {
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = gameId
-            root.showGameLoading("riot", title)
+            if (!dashboardRoot.riotDebugNoOverlay)
+                root.showGameLoading("riot", title)
+            else if (typeof Launcher !== 'undefined' && Launcher.hideShellForGame)
+                Launcher.hideShellForGame()
         }
         startClubTakeAccount(gameId, "riot", title, pendingRiotExe, pendingRiotArgs)
     }
@@ -172,13 +200,22 @@ Item {
                         if (looksRiot || res.platform === "riot") {
                             res.platform = "riot"
                             res.exe_path = dashboardRoot.resolveRiotExe(res.exe_path || modelExe || "")
+                            res.args = dashboardRoot.resolveRiotArgs(
+                                res.args || modelArgs || "",
+                                res.game_title || modelTitle || "",
+                                res.exe_path)
                         }
 
-                        if (typeof root !== 'undefined' && root.updateGameLoading)
-                            root.updateGameLoading(res.platform || "", res.game_title || modelTitle || "")
+                        if (typeof root !== 'undefined' && root.updateGameLoading) {
+                            if (!(res.platform === "riot" && dashboardRoot.riotDebugNoOverlay))
+                                root.updateGameLoading(res.platform || "", res.game_title || modelTitle || "")
+                        }
 
                         if (typeof Launcher !== 'undefined') {
                             console.log("[SESSION] take-account OK:", res.platform, res.login, "→ launch")
+                            if (res.platform === "riot" && dashboardRoot.riotDebugNoOverlay
+                                    && Launcher.hideShellForGame)
+                                Launcher.hideShellForGame()
                             Launcher.launchPlatformSessionString(JSON.stringify(res), String(res.platform_app_id || ""))
                         } else {
                             console.error("[SESSION] Launcher не найден")

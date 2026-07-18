@@ -70,6 +70,55 @@ void DirectLaunchAuth::startLauncher(QProcess *process,
         argsStr = launcher.value(QStringLiteral("args")).toString().trimmed();
     }
 
+    // Riot: в админке часто путают exe/args (путь к RiotClient в args, LeagueClient в exe).
+    if (m_platformId == QLatin1String("riot")) {
+        const QString defaultRiot =
+            QStringLiteral("C:\\Riot Games\\Riot Client\\RiotClientServices.exe");
+        const QString title = authData.value(QStringLiteral("game_title")).toString();
+
+        auto looksLikeExePath = [](const QString &s) {
+            const QString t = s.trimmed();
+            if (t.isEmpty())
+                return false;
+            if (t.contains(QStringLiteral("--launch-product"), Qt::CaseInsensitive))
+                return false;
+            return t.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)
+                || t.contains(QStringLiteral("Riot Client"), Qt::CaseInsensitive)
+                || t.startsWith(QStringLiteral(":\\"))
+                || (t.size() >= 3 && t.at(1) == QLatin1Char(':'));
+        };
+
+        if (looksLikeExePath(argsStr)) {
+            QString recovered = argsStr;
+            if (recovered.startsWith(QStringLiteral(":\\")))
+                recovered.prepend(QLatin1Char('C'));
+            if (recovered.contains(QStringLiteral("RiotClientServices"), Qt::CaseInsensitive)
+                || !QFileInfo::exists(exe)) {
+                qWarning() << "[RIOT] args выглядят как путь exe — переносим в exe_path:"
+                           << recovered;
+                exe = recovered;
+            } else {
+                qWarning() << "[RIOT] игнорируем path-like args:" << argsStr;
+            }
+            argsStr.clear();
+        }
+
+        if (!exe.contains(QStringLiteral("RiotClientServices"), Qt::CaseInsensitive)) {
+            if (QFileInfo::exists(defaultRiot)) {
+                qWarning() << "[RIOT] exe не RiotClientServices — подменяем на" << defaultRiot
+                           << "(было:" << exe << ")";
+                exe = defaultRiot;
+            }
+        }
+
+        if (argsStr.isEmpty()) {
+            if (title.contains(QStringLiteral("Valorant"), Qt::CaseInsensitive))
+                argsStr = QStringLiteral("--launch-product=valorant --launch-patchline=live");
+            else if (title.contains(QStringLiteral("League"), Qt::CaseInsensitive))
+                argsStr = QStringLiteral("--launch-product=league_of_legends --launch-patchline=live");
+        }
+    }
+
     if (exe.isEmpty()) {
         qCritical() << "[" << m_platformId.toUpper() << "] exe_path пуст";
         return;

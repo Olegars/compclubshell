@@ -18,6 +18,7 @@ qt_add_executable(appsector0451
     src/core/steamauth.h src/core/steamauth.cpp
     src/core/epicauth.h src/core/epicauth.cpp
     src/core/eaauth.h src/core/eaauth.cpp
+    src/core/riotauth.h src/core/riotauth.cpp
     src/core/directlaunchauth.h src/core/directlaunchauth.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
     config.ini
