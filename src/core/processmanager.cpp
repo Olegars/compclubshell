@@ -13,6 +13,7 @@
 #include <QProcess>
 #include <QSettings>
 #include <QTimer>
+#include <QVector>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -707,6 +708,42 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
             if (m_platformAuth)
                 m_platformAuth->startScout(login, password);
             startGameFindPoll();
+
+            // Личный Steam (кнопка STEAM): нет fullscreen-игры → оверлей/шелл не снимутся
+            // через acceptGameWindow. Считаем лаунчер сессией и следим за steam.exe.
+            if (platform == QLatin1String("steam") && login.isEmpty()) {
+                QTimer::singleShot(2500, this, [this]() {
+                    if (!m_gameSessionActive || m_gameHwnd != 0)
+                        return;
+                    if (!isProcessRunning(QStringLiteral("steam.exe")))
+                        return;
+                    qWarning() << "[SESSION] личный Steam — accept launcher session";
+                    emit gameStartedSuccessfully();
+                    m_gamePid = getProcessIdByName(QStringLiteral("steam"));
+                    if (!m_gamePid)
+                        m_gamePid = getProcessIdByName(QStringLiteral("steam.exe"));
+                    m_gameProcessImage = QStringLiteral("steam.exe");
+                    m_gameAcceptedAtMs = QDateTime::currentMSecsSinceEpoch();
+                    m_gameGoneTicks = 0;
+                    m_gameFindTimer->stop();
+                    if (!m_gameExitTimer->isActive())
+                        m_gameExitTimer->start(2000);
+                    // Оверлей ещё виден → снять TOPMOST → hide → мягкий wake Steam
+                    const int hideGen = m_hideShellGeneration;
+                    QTimer::singleShot(1800, this, [this, hideGen]() {
+                        if (hideGen != m_hideShellGeneration || !m_gameSessionActive)
+                            return;
+                        setShellTopmost(false);
+                    });
+                    QTimer::singleShot(2500, this, [this, hideGen]() {
+                        if (hideGen != m_hideShellGeneration || !m_gameSessionActive)
+                            return;
+                        hideShellForGame();
+                        // Не трогаем HWND Steam (wake/ShowWindow) — всплывает лишний чёрный фрейм.
+                        // После hide шелла CEF сам дорисует логин.
+                    });
+                });
+            }
         });
 
         m_platformAuth->startLauncher(m_process, authData, appIdHint);
@@ -932,6 +969,7 @@ static bool isPidAlive(quint32 pid)
 #endif
 }
 
+
 void ProcessManager::startGameExitWatch(quintptr hwnd, const QString &className)
 {
     m_gameHwnd = hwnd;
@@ -1024,6 +1062,14 @@ void ProcessManager::checkGameExit()
             || isProcessRunning(QStringLiteral("LeagueClient.exe"))
             || isProcessRunning(QStringLiteral("VALORANT-Win64-Shipping.exe"));
         if (leagueAlive || isPidAlive(m_gamePid)) {
+            m_gameGoneTicks = 0;
+            return;
+        }
+    }
+
+    // Личный Steam / лаунчер без fullscreen HWND — сессия живёт, пока процесс жив
+    if (m_currentPlatform == QLatin1String("steam") && m_gameHwnd == 0) {
+        if (isProcessRunning(QStringLiteral("steam.exe")) || isPidAlive(m_gamePid)) {
             m_gameGoneTicks = 0;
             return;
         }

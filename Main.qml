@@ -634,43 +634,62 @@ Window {
                                     font.letterSpacing: 2
                                 }
 
-                                // Простой надёжный спиннер (без BusyIndicator/Shape)
+                                // Спиннер: RotationAnimator на дочернем Item (NumberAnimation on rotation
+                                // при visible=true часто не стартует и «замирает»).
                                 Item {
                                     id: authWaitClock
                                     anchors.centerIn: parent
                                     width: 28
                                     height: 28
                                     visible: authActionBtn.waitingLogin
-                                    opacity: visible ? 1 : 0
 
-                                    NumberAnimation on rotation {
-                                        running: authWaitClock.visible
+                                    Item {
+                                        id: authWaitSpinnerItem
+                                        anchors.fill: parent
+
+                                        Canvas {
+                                            id: authWaitCanvas
+                                            anchors.fill: parent
+                                            onPaint: {
+                                                var ctx = getContext("2d")
+                                                var cx = width / 2
+                                                var cy = height / 2
+                                                var r = Math.min(cx, cy) - 2.5
+                                                ctx.reset()
+                                                ctx.lineWidth = 3
+                                                ctx.lineCap = "round"
+                                                ctx.strokeStyle = "#020202"
+                                                ctx.beginPath()
+                                                ctx.arc(cx, cy, r, -Math.PI * 0.5, Math.PI * 0.9)
+                                                ctx.stroke()
+                                            }
+                                            Component.onCompleted: requestPaint()
+                                            onWidthChanged: requestPaint()
+                                            onHeightChanged: requestPaint()
+                                        }
+                                    }
+
+                                    RotationAnimator {
+                                        id: authWaitSpin
+                                        target: authWaitSpinnerItem
                                         from: 0
                                         to: 360
-                                        loops: Animation.Infinite
                                         duration: 750
+                                        loops: Animation.Infinite
+                                        running: authActionBtn.waitingLogin
                                         easing.type: Easing.Linear
                                     }
 
-                                    Canvas {
-                                        id: authWaitCanvas
-                                        anchors.fill: parent
-                                        onPaint: {
-                                            var ctx = getContext("2d")
-                                            var cx = width / 2
-                                            var cy = height / 2
-                                            var r = Math.min(cx, cy) - 2.5
-                                            ctx.reset()
-                                            ctx.lineWidth = 3
-                                            ctx.lineCap = "round"
-                                            ctx.strokeStyle = "#020202"
-                                            ctx.beginPath()
-                                            ctx.arc(cx, cy, r, -Math.PI * 0.5, Math.PI * 0.9)
-                                            ctx.stroke()
+                                    Connections {
+                                        target: authActionBtn
+                                        function onWaitingLoginChanged() {
+                                            if (authActionBtn.waitingLogin) {
+                                                authWaitSpinnerItem.rotation = 0
+                                                authWaitSpin.restart()
+                                            } else {
+                                                authWaitSpin.stop()
+                                            }
                                         }
-                                        Component.onCompleted: requestPaint()
-                                        onWidthChanged: requestPaint()
-                                        onHeightChanged: requestPaint()
                                     }
                                 }
 

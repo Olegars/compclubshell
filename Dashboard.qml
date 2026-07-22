@@ -392,16 +392,22 @@ Item {
                             iconText: "󰓓"
                             brandColor: "#00adef"
                             onClicked: {
-                                if (typeof root !== 'undefined')
-                                    root.showGameLoading()
+                                // Личный Steam: оверлей держим до gameStartedSuccessfully из C++
+                                // (не hideShell сразу — иначе оверлей не видно).
+                                if (typeof root !== 'undefined') {
+                                    root.isLoggingIn = true
+                                    root.showGameLoading("steam", "Steam")
+                                }
                                 var mockAuth = {
                                     "platform": "steam",
+                                    "platform_source": "personal_account",
                                     "login": "",
                                     "password": "",
-                                    "args": "-silent -shutdown"
+                                    "args": "",
+                                    "auth": { "mode": "personal" }
                                 }
                                 if (typeof Launcher !== 'undefined') {
-                                    console.log("[QML-CLICK] Быстрый запуск чистого Steam...");
+                                    console.log("[QML-CLICK] Быстрый запуск чистого Steam...")
                                     Launcher.launchPlatformSession(mockAuth, "")
                                 }
                             }
@@ -1279,6 +1285,7 @@ Item {
     }
 
     component PlatformSquareBtn : Rectangle {
+        id: platBtn
         property string btnText: "LAUNCH"
         property string iconText: "🎮"
         property string brandColor: accentColor
@@ -1287,8 +1294,24 @@ Item {
         Layout.fillWidth: true
         Layout.preferredHeight: 65
         radius: 4
-        color: "#0a0d0b"
-        border.color: brandColor
+        color: {
+            if (platBtnMouse.pressed)
+                return Qt.rgba(0.06, 0.12, 0.1, 1)
+            if (platBtnMouse.containsMouse)
+                return Qt.rgba(0.08, 0.14, 0.11, 1)
+            return "#0a0d0b"
+        }
+        border.color: platBtnMouse.containsMouse || platBtnMouse.pressed
+                      ? brandColor
+                      : Qt.darker(brandColor, 1.35)
+        border.width: platBtnMouse.containsMouse || platBtnMouse.pressed ? 2 : 1
+        scale: platBtnMouse.pressed ? 0.96 : (platBtnMouse.containsMouse ? 1.03 : 1.0)
+        opacity: platBtnMouse.containsMouse ? 1 : 0.92
+
+        Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 120 } }
+        Behavior on border.width { NumberAnimation { duration: 100 } }
+        Behavior on color { ColorAnimation { duration: 120 } }
 
         Column {
             anchors.centerIn: parent
@@ -1296,20 +1319,25 @@ Item {
             Text {
                 text: iconText
                 anchors.horizontalCenter: parent.horizontalCenter
+                scale: platBtnMouse.containsMouse ? 1.08 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
             }
             Text {
                 text: btnText
-                color: "white"
+                color: platBtnMouse.containsMouse ? brandColor : "white"
                 font.pixelSize: 10
+                font.bold: platBtnMouse.containsMouse
                 anchors.horizontalCenter: parent.horizontalCenter
+                Behavior on color { ColorAnimation { duration: 120 } }
             }
         }
 
         MouseArea {
+            id: platBtnMouse
             anchors.fill: parent
-            onClicked: {
-                parent.clicked()
-            }
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: platBtn.clicked()
         }
     }
 }

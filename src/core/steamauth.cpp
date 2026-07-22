@@ -290,10 +290,26 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
     const QString login = authData.value(QStringLiteral("login")).toString();
     const QString steamId = authData.value(QStringLiteral("steam_id")).toString();
     const QString persona = authData.value(QStringLiteral("persona_name")).toString(login);
+    const QJsonObject authMeta = authData.value(QStringLiteral("auth")).toObject();
+    const QString mode = authMeta.value(QStringLiteral("mode")).toString();
+    const bool personal = mode.compare(QStringLiteral("personal"), Qt::CaseInsensitive) == 0
+                          || login.isEmpty();
+
+    // Личный Steam: не трогаем VDF клуба, сбрасываем AutoLogin → чистое окно входа
+    if (personal) {
+#ifdef Q_OS_WIN
+        QSettings steamReg(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
+                           QSettings::NativeFormat);
+        steamReg.remove(QStringLiteral("AutoLoginUser"));
+        steamReg.setValue(QStringLiteral("RememberPassword"), 0);
+#endif
+        qWarning() << "[STEAM] applyCache: personal — без VDF, AutoLogin сброшен";
+        return true;
+    }
 
     QJsonObject vdf = authData.value(QStringLiteral("vdf_files")).toObject();
     if (vdf.isEmpty()) {
-        const QJsonObject auth = authData.value(QStringLiteral("auth")).toObject();
+        const QJsonObject auth = authMeta;
         const QJsonObject cache = auth.value(QStringLiteral("cache")).toObject();
         if (cache.contains(QStringLiteral("vdf_files")))
             vdf = cache.value(QStringLiteral("vdf_files")).toObject();
@@ -348,7 +364,8 @@ void SteamAuth::startLauncher(QProcess *process,
     const QString argsStr = authData.value(QStringLiteral("args")).toString().trimmed();
 
     QStringList args;
-    if (!appId.isEmpty() && appId != QStringLiteral("0"))
+    const bool hasApp = !appId.isEmpty() && appId != QStringLiteral("0");
+    if (hasApp)
         args << QStringLiteral("-applaunch") << appId;
 
     const QStringList passthrough = {
@@ -361,10 +378,12 @@ void SteamAuth::startLauncher(QProcess *process,
         if (argsStr.contains(flag, Qt::CaseInsensitive) && !args.contains(flag))
             args << flag;
     }
-    if (!args.contains(QStringLiteral("-shutdown")))
+    // -shutdown только с игрой: иначе «чистый» Steam стартует и сразу гаснет → чёрные окна
+    if (hasApp && !args.contains(QStringLiteral("-shutdown")))
         args << QStringLiteral("-shutdown");
 
     process->setWorkingDirectory(steamPath);
+    qWarning() << "[STEAM] start:" << steamPath + QStringLiteral("/steam.exe") << args;
     process->start(steamPath + QStringLiteral("/steam.exe"), args);
 }
 
@@ -381,6 +400,12 @@ void SteamAuth::startScout(const QString &login, const QString &password)
 {
 #ifdef Q_OS_WIN
     stopScout();
+
+    if (login.isEmpty() || password.isEmpty()) {
+        qWarning() << "[STEAM] Scout пропущен (личный аккаунт / нет credentials)";
+        return;
+    }
+
     m_scoutTicks = 0;
     m_scoutInjectTick = 0;
     m_scoutInjected = false;
