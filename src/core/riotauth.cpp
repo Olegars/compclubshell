@@ -17,6 +17,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
+#include <QVector>
 #include <string>
 
 #ifdef Q_OS_WIN
@@ -109,6 +110,112 @@ static void setShellTopmostFrom(QObject *auth, bool enabled)
 {
     if (auto *pm = qobject_cast<ProcessManager *>(auth->parent()))
         pm->setShellTopmost(enabled);
+}
+
+// Off-screen park: Riot остаётся SW_SHOW (CEF/UIA живы), но за виртуальным экраном.
+static bool riotRectLooksOnScreen(const RECT &rc)
+{
+    // Уже запаркованные окна ~ -32000
+    return rc.left > -10000 && rc.top > -10000;
+}
+
+void RiotAuth::keepShellOverlayUp()
+{
+    setShellTopmostFrom(this, true);
+}
+
+void RiotAuth::parkRiotOffscreen(quintptr hwndVal, const char *why)
+{
+#ifdef Q_OS_WIN
+    HWND h = reinterpret_cast<HWND>(hwndVal);
+    if (!h || !IsWindow(h)) {
+        h = FindWindowW(nullptr, L"Riot Client");
+        if (!h || !IsWindow(h))
+            h = reinterpret_cast<HWND>(m_loginHwnd);
+    }
+    if (!h || !IsWindow(h))
+        return;
+
+    RECT rc{};
+    GetWindowRect(h, &rc);
+    const int w = rc.right - rc.left;
+    const int hgt = rc.bottom - rc.top;
+    if (w < 100 || hgt < 100)
+        return;
+
+    // Сохраняем on-screen rect один раз (не перезаписываем координатами -32000)
+    if (riotRectLooksOnScreen(rc)) {
+        m_riotSavedX = rc.left;
+        m_riotSavedY = rc.top;
+        m_riotSavedW = w;
+        m_riotSavedH = hgt;
+        m_riotParkedHwnd = reinterpret_cast<quintptr>(h);
+        m_riotParkedOffscreen = true;
+    } else if (!m_riotParkedOffscreen) {
+        // Уже off-screen без нашего save — всё равно помечаем
+        m_riotParkedHwnd = reinterpret_cast<quintptr>(h);
+        m_riotParkedOffscreen = true;
+        if (m_riotSavedW <= 0) {
+            m_riotSavedW = w;
+            m_riotSavedH = hgt;
+        }
+    }
+
+    // Держим размер, только сдвигаем. Не SW_HIDE — CEF/логин должны жить.
+    const int ox = -32000;
+    const int oy = -32000;
+    if (rc.left != ox || rc.top != oy) {
+        SetWindowPos(h, nullptr, ox, oy, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        qWarning() << "[RIOT] park off-screen" << ox << oy
+                   << "size" << (m_riotSavedW > 0 ? m_riotSavedW : w)
+                   << "x" << (m_riotSavedH > 0 ? m_riotSavedH : hgt)
+                   << "|" << why;
+    }
+    keepShellOverlayUp();
+#else
+    Q_UNUSED(hwndVal);
+    Q_UNUSED(why);
+#endif
+}
+
+void RiotAuth::restoreRiotOnscreen(const char *why)
+{
+#ifdef Q_OS_WIN
+    HWND h = reinterpret_cast<HWND>(m_riotParkedHwnd);
+    if (!h || !IsWindow(h))
+        h = reinterpret_cast<HWND>(m_loginHwnd);
+    if (!h || !IsWindow(h))
+        h = FindWindowW(nullptr, L"Riot Client");
+    if (!h || !IsWindow(h))
+        return;
+
+    int x = m_riotSavedX;
+    int y = m_riotSavedY;
+    int w = m_riotSavedW;
+    int hgt = m_riotSavedH;
+    if (w < 400 || hgt < 300) {
+        const int sw = GetSystemMetrics(SM_CXSCREEN);
+        const int sh = GetSystemMetrics(SM_CYSCREEN);
+        w = 1536;
+        hgt = 864;
+        x = (sw - w) / 2;
+        y = (sh - hgt) / 2;
+    }
+    SetWindowPos(h, nullptr, x, y, w, hgt,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    m_riotParkedOffscreen = false;
+    qWarning() << "[RIOT] restore on-screen" << x << y << w << "x" << hgt << "|" << why;
+#else
+    Q_UNUSED(why);
+#endif
+}
+
+void RiotAuth::keepOverlayOverRiot(quintptr hwndVal)
+{
+    // Только TOPMOST оверлея. Park — явно после Enter / при ожидании Play.
+    Q_UNUSED(hwndVal);
+    keepShellOverlayUp();
 }
 
 struct RiotLoginEnumCtx {
@@ -234,6 +341,11 @@ void RiotAuth::silentKill(const QString &image)
 void RiotAuth::killLauncher()
 {
     qWarning() << "[RIOT] killLauncher";
+    // Не restore — окно сейчас убьём; иначе вспышка поверх оверлея
+    m_riotParkedOffscreen = false;
+    m_riotParkedHwnd = 0;
+    m_riotSavedW = 0;
+    m_riotSavedH = 0;
     silentKill(QStringLiteral("RiotClientServices.exe"));
     silentKill(QStringLiteral("RiotClient.exe"));
     silentKill(QStringLiteral("RiotClientUx.exe"));
@@ -242,6 +354,9 @@ void RiotAuth::killLauncher()
     silentKill(QStringLiteral("LeagueClientUx.exe"));
     silentKill(QStringLiteral("LeagueClientUxRender.exe"));
     silentKill(QStringLiteral("LeagueCrashHandler64.exe"));
+    m_launchAborted = true;
+    m_playClickStop = true;
+    m_overlayDismissed = true;
 }
 
 void RiotAuth::clearLocalSession()
@@ -363,6 +478,16 @@ void RiotAuth::startLauncher(QProcess *process,
     m_playClickStop = false;
     m_overlayDismissScheduled = false;
     m_overlayDismissed = false;
+    m_lcuTutorialSkipDone = false;
+    m_leagueHeaderPlayDone = false;
+    m_headerPlayAttempts = 0;
+    m_leagueLobbyPosted = false;
+    m_lobbyPostAttempts = 0;
+    m_launchAborted = false;
+    m_riotParkedOffscreen = false;
+    m_riotParkedHwnd = 0;
+    m_riotSavedW = 0;
+    m_riotSavedH = 0;
     process->setWorkingDirectory(fi.absolutePath());
 
     // С product-args с первого старта — после логина Riot часто сам продолжает launch.
@@ -373,10 +498,8 @@ void RiotAuth::startLauncher(QProcess *process,
     if (m_expectInteractive)
         qWarning() << "[RIOT] старт с product (после логина ждём session yaml):" << m_productArgs;
 
-    // TEMP DEBUG: шелл не перекрывает Riot Client
-    setShellTopmostFrom(this, false);
-    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
-        pm->hideShellForGame();
+    // Оверлей остаётся topmost; Riot не должен всплывать поверх loading.
+    keepOverlayOverRiot();
 
     qWarning().noquote() << "[RIOT] Launch exe:" << exe;
     qWarning().noquote() << "[RIOT] Launch args:" << args;
@@ -448,9 +571,13 @@ void RiotAuth::scheduleProductLaunch()
     m_productLaunchScheduled = true;
     m_productLaunchOk = false;
     m_playClickDone = false;
+    m_playClickStop = false;
+    m_launchAborted = false;
+    m_overlayDismissScheduled = false;
+    m_overlayDismissed = false;
     m_sessionPollTicks = 0;
     m_rsoRetryCount = 0;
-    qWarning() << "[RIOT] после логина: ждём RSO/session, затем product-launcher/.../launch";
+    qWarning() << "[RIOT] после логина: RSO → protocol/API → UIA Play";
     pollSessionThenLaunchProduct();
 }
 
@@ -486,6 +613,258 @@ bool RiotAuth::readRiotLockfile(int *port, QString *password, QString *protocol)
     if (protocol)
         *protocol = parts.at(4).isEmpty() ? QStringLiteral("https") : parts.at(4);
     return port && *port > 0 && password && !password->isEmpty();
+}
+
+bool RiotAuth::readLeagueLockfile(int *port, QString *password, QString *protocol) const
+{
+    // Lockfile League Client (не Riot Client!)
+    const QStringList paths = {
+        QStringLiteral("C:/Riot Games/League of Legends/lockfile"),
+        QStringLiteral("D:/Riot Games/League of Legends/lockfile"),
+        QStringLiteral("E:/Riot Games/League of Legends/lockfile"),
+        QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+            + QStringLiteral("/Riot Games/League of Legends/lockfile"),
+    };
+    for (const QString &lockPath : paths) {
+        QFile lf(lockPath);
+        if (!lf.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QStringList parts = QString::fromUtf8(lf.readAll()).trimmed().split(QLatin1Char(':'));
+        lf.close();
+        if (parts.size() < 5)
+            continue;
+        const int p = parts.at(2).toInt();
+        const QString pass = parts.at(3);
+        if (p <= 0 || pass.isEmpty())
+            continue;
+        if (port)
+            *port = p;
+        if (password)
+            *password = pass;
+        if (protocol)
+            *protocol = parts.at(4).isEmpty() ? QStringLiteral("https") : parts.at(4);
+        qWarning().noquote() << "[RIOT] League lockfile:" << lockPath << "port" << p;
+        return true;
+    }
+    return false;
+}
+
+void RiotAuth::skipLolTutorialViaLcu(const char *why)
+{
+    if (m_overlayDismissed)
+        return;
+
+    int port = 0;
+    QString password;
+    QString protocol;
+    if (!readLeagueLockfile(&port, &password, &protocol)) {
+        qWarning() << "[RIOT] LCU lockfile нет — skip tutorial позже |" << why;
+        return;
+    }
+
+    const QByteArray auth = QByteArrayLiteral("Basic ")
+        + QStringLiteral("riot:%1").arg(password).toUtf8().toBase64();
+
+    auto putJson = [this, port, protocol, auth, why](const QString &path, const QByteArray &body) {
+        QUrl url(QStringLiteral("%1://127.0.0.1:%2%3").arg(protocol).arg(port).arg(path));
+        QNetworkRequest req(url);
+        req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        req.setRawHeader("Authorization", auth);
+        req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+        QNetworkReply *reply = ensureNam()->put(req, body);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, why, path]() {
+            const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray resp = reply->readAll();
+            qWarning().noquote() << "[RIOT] LCU PUT" << path << "HTTP" << code
+                                 << "| body:" << QString::fromUtf8(resp.left(200))
+                                 << "|" << why;
+            if (code >= 200 && code < 300)
+                m_lcuTutorialSkipDone = true;
+            // НЕ ставим m_overlayDismissed: ещё нужен клик верхней «ИГРАТЬ»
+            reply->deleteLater();
+        });
+    };
+
+    auto getPath = [this, port, protocol, auth, why](const QString &path) {
+        QUrl url(QStringLiteral("%1://127.0.0.1:%2%3").arg(protocol).arg(port).arg(path));
+        QNetworkRequest req(url);
+        req.setRawHeader("Authorization", auth);
+        req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+        QNetworkReply *reply = ensureNam()->get(req);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, why, path]() {
+            const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray body = reply->readAll();
+            qWarning().noquote() << "[RIOT] LCU GET" << path
+                                 << "HTTP" << code
+                                 << "| body:" << QString::fromUtf8(body.left(300))
+                                 << "|" << why;
+            if (path.contains(QStringLiteral("/settings")) && code >= 200 && code < 300) {
+                const QString s = QString::fromUtf8(body);
+                if (s.contains(QStringLiteral("\"hasSeenTutorialPath\":true"))
+                    || s.contains(QStringLiteral("\"hasSkippedTutorialPath\":true"))
+                    || s.contains(QStringLiteral("\"shouldSeeNewPlayerExperience\":false"))) {
+                    m_lcuTutorialSkipDone = true;
+                    qWarning() << "[RIOT] LCU: FTUE settings ok — ждём UI и клик «ИГРАТЬ»";
+                }
+            }
+            reply->deleteLater();
+        });
+    };
+
+    getPath(QStringLiteral("/lol-npe-tutorial-path/v1/settings"));
+    getPath(QStringLiteral("/lol-npe-tutorial-path/v1/tutorials"));
+
+    // Скрыть welcome/FTUE оверлей на аккаунте
+    const QByteArray settingsBody = QByteArrayLiteral(
+        "{\"hasSeenTutorialPath\":true,\"hasSkippedTutorialPath\":true,"
+        "\"shouldSeeNewPlayerExperience\":false}");
+    putJson(QStringLiteral("/lol-npe-tutorial-path/v1/settings"), settingsBody);
+    m_lcuTutorialSkipDone = true;
+}
+
+void RiotAuth::openLeagueLobbyViaLcu(const char *why)
+{
+    // Новый аккаунт: 430 часто закрыт — сначала intro bots 870
+    if (m_lobbyPostAttempts >= 4 || m_leagueLobbyPosted)
+        return;
+    int port = 0;
+    QString password;
+    QString protocol;
+    if (!readLeagueLockfile(&port, &password, &protocol)) {
+        qWarning() << "[RIOT] LCU lobby — нет lockfile |" << why;
+        return;
+    }
+
+    static const int kQueues[] = {870, 840, 430, 400};
+    const int queueId = kQueues[qMin(m_lobbyPostAttempts, 3)];
+    ++m_lobbyPostAttempts;
+
+    const QByteArray body =
+        QByteArrayLiteral("{\"queueId\":") + QByteArray::number(queueId) + '}';
+    QUrl url(QStringLiteral("%1://127.0.0.1:%2/lol-lobby/v2/lobby")
+                 .arg(protocol).arg(port));
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    req.setRawHeader("Authorization",
+                     QByteArrayLiteral("Basic ")
+                         + QStringLiteral("riot:%1").arg(password).toUtf8().toBase64());
+    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+    qWarning() << "[RIOT] LCU POST lobby queueId=" << queueId << "|" << why
+               << "try" << m_lobbyPostAttempts;
+    QNetworkReply *reply = ensureNam()->post(req, body);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, why, queueId]() {
+        const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray resp = reply->readAll();
+        qWarning().noquote() << "[RIOT] LCU lobby HTTP" << code
+                             << "queue" << queueId
+                             << "| body:" << QString::fromUtf8(resp.left(220))
+                             << "|" << why;
+        if (code >= 200 && code < 300) {
+            m_leagueLobbyPosted = true;
+            m_overlayDismissed = true;
+            qWarning() << "[RIOT] LCU lobby OK — ушли с Пути новичка";
+        }
+        reply->deleteLater();
+    });
+}
+
+void RiotAuth::ensureSingleLeagueClient()
+{
+#ifdef Q_OS_WIN
+    struct Item {
+        DWORD pid = 0;
+        HWND hwnd = nullptr;
+        int area = 0;
+        bool titled = false;
+        bool visible = false;
+    };
+    QVector<Item> items;
+
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto *list = reinterpret_cast<QVector<Item> *>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (!pid)
+            return TRUE;
+        const QString img = processImageForPid(pid);
+        if (!img.contains(QStringLiteral("LeagueClientUx"), Qt::CaseInsensitive))
+            return TRUE;
+        RECT r{};
+        GetWindowRect(hwnd, &r);
+        const int w = r.right - r.left;
+        const int h = r.bottom - r.top;
+        if (w < 800 || h < 450)
+            return TRUE;
+        wchar_t title[256] = {};
+        GetWindowTextW(hwnd, title, 255);
+        Item it;
+        it.pid = pid;
+        it.hwnd = hwnd;
+        it.area = w * h;
+        it.visible = IsWindowVisible(hwnd);
+        it.titled = QString::fromWCharArray(title).contains(QStringLiteral("League"),
+                                                            Qt::CaseInsensitive);
+        list->push_back(it);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&items));
+
+    // Также все LeagueClientUx.exe из snapshot (даже без большого окна)
+    QVector<DWORD> uxPids;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(snap, &pe)) {
+            do {
+                const QString name = QString::fromWCharArray(pe.szExeFile);
+                if (name.compare(QStringLiteral("LeagueClientUx.exe"), Qt::CaseInsensitive) == 0)
+                    uxPids.push_back(pe.th32ProcessID);
+            } while (Process32NextW(snap, &pe));
+        }
+        CloseHandle(snap);
+    }
+
+    if (items.size() <= 1 && uxPids.size() <= 1)
+        return;
+
+    Item keep;
+    bool haveKeep = false;
+    auto better = [](const Item &a, const Item &b) {
+        if (a.visible != b.visible)
+            return a.visible;
+        if (a.titled != b.titled)
+            return a.titled;
+        return a.area > b.area;
+    };
+    for (const Item &it : items) {
+        if (!haveKeep || better(it, keep)) {
+            keep = it;
+            haveKeep = true;
+        }
+    }
+    if (!haveKeep && !uxPids.isEmpty())
+        keep.pid = uxPids.first();
+
+    QSet<DWORD> killPids;
+    for (const Item &it : items) {
+        if (keep.pid && it.pid != keep.pid)
+            killPids.insert(it.pid);
+    }
+    for (DWORD pid : uxPids) {
+        if (keep.pid && pid != keep.pid)
+            killPids.insert(pid);
+    }
+    for (DWORD pid : killPids) {
+        qWarning() << "[RIOT] дубликат LeagueClientUx — kill pid" << qulonglong(pid);
+        HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if (h) {
+            TerminateProcess(h, 0);
+            CloseHandle(h);
+        }
+    }
+#else
+    Q_UNUSED(this);
+#endif
 }
 
 void RiotAuth::postRiotApi(const QString &path, const QByteArray &body, const char *why)
@@ -541,7 +920,7 @@ void RiotAuth::pollSessionThenLaunchProduct()
         if (isGameProcessRunning()) {
             qWarning() << "[RIOT] игра уже есть — launch не нужен";
             m_productLaunchOk = true;
-            scheduleDismissClientOverlay();
+            notifyProductReady();
             m_sessionPollTimer->stop();
             m_sessionPollTimer->deleteLater();
             m_sessionPollTimer = nullptr;
@@ -576,7 +955,7 @@ void RiotAuth::pollSessionThenLaunchProduct()
             if (isGameProcessRunning()) {
                 m_productLaunchOk = true;
                 qWarning() << "[RIOT] игра стартовала сама — OK";
-                scheduleDismissClientOverlay();
+                notifyProductReady();
                 return;
             }
             // RSO check → UIA «Играть» (прямой LeagueClient.exe Windows блокирует)
@@ -592,7 +971,8 @@ void RiotAuth::finishLaunchNudge(const char *why)
         qWarning() << "[RIOT] процесс игры уже есть |" << why;
         m_productLaunchOk = true;
         m_playClickStop = true;
-        scheduleDismissClientOverlay();
+        ensureSingleLeagueClient();
+        notifyProductReady();
         return;
     }
     if (m_playClickDone) {
@@ -600,44 +980,73 @@ void RiotAuth::finishLaunchNudge(const char *why)
         return;
     }
     m_playClickDone = true;
-    qWarning() << "[RIOT] страница «Играть» — один клик Play (без спама) |" << why;
-    // Один уверенный клик. Повтор только если кнопка ещё не была видна.
-    if (clickPlayButton(why))
+
+    // Ждём готовую кнопку «Играть» (UIA). Без heuristic и без forceRetry после клика.
+    qWarning() << "[RIOT] ждём UIA «Играть» (макс. 1 клик) |" << why;
+
+    auto onGameUp = [this]() {
         m_playClickStop = true;
-
-    // Редкие retry: только если ещё НЕ кликали уверенно и процесса нет
-    for (int ms : {4000, 9000}) {
-        QTimer::singleShot(ms, this, [this]() {
-            if (m_playClickStop || isGameProcessRunning()) {
-                m_playClickStop = true;
-                return;
-            }
-            if (clickPlayButton("retry Play once"))
-                m_playClickStop = true;
+        m_productLaunchOk = true;
+        ensureSingleLeagueClient();
+        notifyProductReady();
+        QTimer::singleShot(3000, this, [this]() {
+            if (!m_launchAborted)
+                ensureSingleLeagueClient();
         });
-    }
-
-    // Пока ждём процесс — гасим диалог «уже запущена» и не жмём Play снова
-    for (int ms : {2500, 5000, 8000, 12000}) {
-        QTimer::singleShot(ms, this, [this]() {
-            if (isGameProcessRunning()) {
-                m_playClickStop = true;
-                m_productLaunchOk = true;
-                scheduleDismissClientOverlay();
-                return;
-            }
-            dismissAlreadyRunningDialog("poll");
+        QTimer::singleShot(8000, this, [this]() {
+            if (!m_launchAborted)
+                ensureSingleLeagueClient();
         });
-    }
+    };
 
-    QTimer::singleShot(16000, this, [this]() {
+    auto tryPlay = [this, onGameUp](const char *tag) {
+        if (m_launchAborted)
+            return;
         if (isGameProcessRunning()) {
-            qWarning() << "[RIOT] LeagueClient поднялся после UIA Play";
-            m_playClickStop = true;
-            scheduleDismissClientOverlay();
+            qWarning() << "[RIOT] процесс уже есть — Play не жмём |" << tag;
+            onGameUp();
+            return;
+        }
+        if (m_playClickStop)
+            return;
+        qWarning() << "[RIOT] клик Play |" << tag;
+        clickPlayButton(tag);
+    };
+
+    // Сначала даём --launch-product шанс поднять League сам (без нашего клика).
+    // Страница продукта должна быть ON-SCREEN (под оверлеем), иначе UIA desc≈6.
+    restoreRiotOnscreen("finishLaunchNudge");
+    keepShellOverlayUp();
+    QTimer::singleShot(5000, this, [tryPlay]() { tryPlay("Play @5s"); });
+    QTimer::singleShot(8000, this, [tryPlay]() { tryPlay("Play @8s"); });
+    QTimer::singleShot(12000, this, [tryPlay]() { tryPlay("Play @12s"); });
+    QTimer::singleShot(16000, this, [tryPlay]() { tryPlay("Play @16s"); });
+    QTimer::singleShot(20000, this, [tryPlay]() { tryPlay("Play @20s"); });
+
+    for (int ms : {4000, 7000, 10000, 14000, 18000}) {
+        QTimer::singleShot(ms, this, [this, onGameUp]() {
+            if (m_launchAborted)
+                return;
+            // Держим Riot на экране под оверлеем, пока ждём Play / процесс
+            if (!isGameProcessRunning()) {
+                restoreRiotOnscreen("poll keep on-screen");
+                keepShellOverlayUp();
+            }
+            dismissAccessDeniedDialog("poll");
+            dismissAlreadyRunningDialog("poll");
+            if (isGameProcessRunning())
+                onGameUp();
+        });
+    }
+
+    QTimer::singleShot(22000, this, [this, onGameUp]() {
+        if (m_launchAborted)
+            return;
+        if (isGameProcessRunning()) {
+            qWarning() << "[RIOT] LeagueClient поднялся";
+            onGameUp();
         } else {
-            qWarning() << "[RIOT] UIA Play не поднял игру — нужен ручной клик «Играть» "
-                          "(прямой LeagueClient.exe Windows блокирует)";
+            qWarning() << "[RIOT] LeagueClient не поднялся после ожидания «Играть»";
         }
     });
 }
@@ -746,17 +1155,36 @@ void RiotAuth::launchGameExeDirect(const char *why)
 }
 
 #ifdef Q_OS_WIN
-static void riotClickScreen(int x, int y, const char *why)
+static void riotClickScreen(int x, int y, const char *why, bool doubleClick = false)
 {
+    // Absolute coords — надёжнее SetCursorPos+relative на multi-DPI
+    const int sx = qMax(1, GetSystemMetrics(SM_CXSCREEN));
+    const int sy = qMax(1, GetSystemMetrics(SM_CYSCREEN));
+    const LONG ax = (x * 65535L) / sx;
+    const LONG ay = (y * 65535L) / sy;
+
     SetCursorPos(x, y);
-    Sleep(40);
-    INPUT in[2] = {};
+    Sleep(50);
+
+    INPUT in[3] = {};
     in[0].type = INPUT_MOUSE;
-    in[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    in[0].mi.dx = ax;
+    in[0].mi.dy = ay;
+    in[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
     in[1].type = INPUT_MOUSE;
-    in[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-    SendInput(2, in, sizeof(INPUT));
-    qWarning() << "[RIOT] mouse click" << x << y << "|" << why;
+    in[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    in[2].type = INPUT_MOUSE;
+    in[2].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(3, in, sizeof(INPUT));
+    if (doubleClick) {
+        Sleep(60);
+        in[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        in[2].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        SendInput(2, in + 1, sizeof(INPUT));
+        qWarning() << "[RIOT] mouse dbl-click" << x << y << "|" << why;
+    } else {
+        qWarning() << "[RIOT] mouse click" << x << y << "|" << why;
+    }
 }
 
 static bool riotNameLooksPlay(const QString &raw)
@@ -778,30 +1206,56 @@ static int riotRectArea(const RECT &r)
         return 0;
     return w * h;
 }
+
+static bool riotInvokeElement(IUIAutomationElement *el, const char *why)
+{
+    if (!el)
+        return false;
+    IUnknown *patUnk = nullptr;
+    if (FAILED(el->GetCurrentPattern(UIA_InvokePatternId, &patUnk)) || !patUnk)
+        return false;
+    IUIAutomationInvokePattern *invoke = nullptr;
+    bool ok = false;
+    if (SUCCEEDED(patUnk->QueryInterface(IID_IUIAutomationInvokePattern,
+                                         reinterpret_cast<void **>(&invoke)))
+        && invoke) {
+        const HRESULT hr = invoke->Invoke();
+        ok = SUCCEEDED(hr);
+        qWarning() << "[RIOT] UIA Invoke «Играть» hr" << Qt::hex << quint32(hr)
+                   << "| ok:" << ok << "|" << why;
+        invoke->Release();
+    }
+    patUnk->Release();
+    return ok;
+}
+
+static void riotForceForeground(HWND hwnd); // defined below
 #endif
 
 bool RiotAuth::clickPlayButton(const char *why)
 {
 #ifdef Q_OS_WIN
-    if (m_playClickStop || isGameProcessRunning()) {
+    if (m_launchAborted || m_playClickStop || isGameProcessRunning()) {
         m_playClickStop = true;
-        qWarning() << "[RIOT] Play click skip — уже стоп/игра жива |" << why;
+        qWarning() << "[RIOT] Play click skip — abort/стоп/игра |" << why;
         return false;
     }
 
-    HWND hwnd = reinterpret_cast<HWND>(m_loginHwnd);
+    HWND hwnd = FindWindowW(nullptr, L"Riot Client");
     if (!hwnd || !IsWindow(hwnd))
-        hwnd = FindWindowW(nullptr, L"Riot Client");
+        hwnd = reinterpret_cast<HWND>(m_loginHwnd);
     if (!hwnd || !IsWindow(hwnd)) {
         qWarning() << "[RIOT] UIA Play — нет HWND |" << why;
         return false;
     }
 
-    AllowSetForegroundWindow(ASFW_ANY);
-    ShowWindow(hwnd, SW_RESTORE);
-    SetForegroundWindow(hwnd);
-    Sleep(120);
+    // CEF/UIA за экраном почти пустые (desc≈6). Нужен on-screen под оверлеем.
+    restoreRiotOnscreen("before Play UIA");
+    keepShellOverlayUp();
+    Sleep(400);
 
+    // Не снимаем topmost: мышь попадёт в оверлей. Сначала UIA Invoke под оверлеем.
+    // ElementFromHandle + Invoke работают без показа окна поверх.
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     IUIAutomation *automation = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
@@ -820,9 +1274,10 @@ bool RiotAuth::clickPlayButton(const char *why)
     }
 
     IUIAutomationElement *best = nullptr;
-    int bestArea = 0;
+    int bestScore = 0;
     POINT bestClick{};
     bool haveClick = false;
+    QString bestName;
 
     auto consider = [&](IUIAutomationElement *el) {
         if (!el)
@@ -832,6 +1287,7 @@ bool RiotAuth::clickPlayButton(const char *why)
         const QString n = name ? QString::fromWCharArray(name) : QString();
         if (name)
             SysFreeString(name);
+        const QString nt = n.trimmed();
         if (!riotNameLooksPlay(n)) {
             el->Release();
             return;
@@ -847,33 +1303,38 @@ bool RiotAuth::clickPlayButton(const char *why)
         BOOL gotCp = FALSE;
         el->GetClickablePoint(&cp, &gotCp);
 
-        qWarning().noquote() << "[RIOT] UIA play-cand:\"" << n << "\" area" << area
+        qWarning().noquote() << "[RIOT] UIA play-cand:\"" << nt << "\" area" << area
                              << "off" << bool(off)
                              << "rect" << r.left << r.top
                              << (r.right - r.left) << "x" << (r.bottom - r.top)
                              << "clickable" << bool(gotCp) << cp.x << cp.y;
 
-        // Ghost 0×0 — не кликаем
-        if (off || (area < 80 && !gotCp)) {
+        if (off || area < 200) {
             el->Release();
             return;
         }
 
-        const int score = area > 0 ? area : 100;
-        if (score >= bestArea) {
+        // Точное «Играть» + крупная жёлтая кнопка (~200×60)
+        int score = area;
+        const QString nl = nt.toLower();
+        if (nl == QStringLiteral("играть") || nl == QStringLiteral("play"))
+            score += 500000;
+        if ((r.right - r.left) >= 150 && (r.bottom - r.top) >= 40)
+            score += 100000;
+
+        if (score >= bestScore) {
             if (best)
                 best->Release();
             best = el;
-            bestArea = score;
-            if (area >= 80) {
-                bestClick.x = (r.left + r.right) / 2;
-                bestClick.y = (r.top + r.bottom) / 2;
-                haveClick = true;
-            } else if (gotCp) {
+            bestScore = score;
+            bestName = nt;
+            if (gotCp) {
                 bestClick = cp;
                 haveClick = true;
             } else {
-                haveClick = false;
+                bestClick.x = (r.left + r.right) / 2;
+                bestClick.y = (r.top + r.bottom) / 2;
+                haveClick = true;
             }
             return;
         }
@@ -912,19 +1373,30 @@ bool RiotAuth::clickPlayButton(const char *why)
         trueCond->Release();
 
     bool clicked = false;
-    if (best && haveClick) {
-        BSTR pname = nullptr;
-        best->get_CurrentName(&pname);
-        qWarning().noquote() << "[RIOT] UIA Play ONE click:\""
-                             << (pname ? QString::fromWCharArray(pname) : QString())
-                             << "\" @" << bestClick.x << bestClick.y
-                             << "area" << bestArea << "|" << why;
-        if (pname)
-            SysFreeString(pname);
-        // Только один физический клик — без Invoke и без heuristic-сетки
-        riotClickScreen(bestClick.x, bestClick.y, why);
-        clicked = true;
-        m_playClickStop = true;
+    if (best && haveClick && bestScore >= 100000) {
+        qWarning().noquote() << "[RIOT] UIA Play BEST:\"" << bestName << "\" @"
+                             << bestClick.x << bestClick.y
+                             << "score" << bestScore << "|" << why;
+        // Под оверлеем: только Invoke. Мышь — лишь если Invoke не сработал (кратко снять topmost).
+        if (riotInvokeElement(best, why)) {
+            clicked = true;
+        } else {
+            // Мышь нуждается в on-screen rect — кратко возвращаем окно
+            restoreRiotOnscreen("Play mouse fallback");
+            Sleep(120);
+            POINT cp = bestClick;
+            RECT r{};
+            if (SUCCEEDED(best->get_CurrentBoundingRectangle(&r)) && riotRectArea(r) > 200) {
+                cp.x = (r.left + r.right) / 2;
+                cp.y = (r.top + r.bottom) / 2;
+            }
+            setShellTopmostFrom(this, false);
+            riotForceForeground(hwnd);
+            Sleep(80);
+            riotClickScreen(cp.x, cp.y, why, false);
+            clicked = true;
+            keepShellOverlayUp();
+        }
         best->Release();
         best = nullptr;
     } else {
@@ -932,12 +1404,17 @@ bool RiotAuth::clickPlayButton(const char *why)
             best->Release();
             best = nullptr;
         }
-        // Кнопка ещё не в дереве — ждём следующий retry, не кликаем вслепую
-        qWarning() << "[RIOT] UIA «Играть» ещё не видна — ждём retry |" << why;
+        // НЕ heuristic: ранний клик в пустой UI + retry = два клиента
+        qWarning() << "[RIOT] UIA Play ещё нет (desc" << len << "score" << bestScore
+                   << ") — ждём кнопку, без heuristic |" << why;
     }
 
     root->Release();
     automation->Release();
+    // Один успешный клик — больше не жмём (иначе второй клиент)
+    if (clicked)
+        m_playClickStop = true;
+    keepOverlayOverRiot();
     return clicked;
 #else
     Q_UNUSED(why);
@@ -973,7 +1450,8 @@ static HWND findLeagueClientHwnd()
         GetWindowRect(hwnd, &r);
         const int w = r.right - r.left;
         const int h = r.bottom - r.top;
-        if (w < 200 || h < 200)
+        // Splash 512x216 не трогаем
+        if (w < 800 || h < 450)
             return TRUE;
 
         wchar_t title[256] = {};
@@ -983,8 +1461,12 @@ static HWND findLeagueClientHwnd()
         int score = w * h;
         if (t.contains(QStringLiteral("League"), Qt::CaseInsensitive))
             score += 5000000;
+        if (img.contains(QStringLiteral("LeagueClientUx"), Qt::CaseInsensitive))
+            score += 2000000;
         if (visible)
             score += 1000000;
+        else
+            return TRUE; // невидимые HWND не берём — иначе ложный accept + game closed
 
         if (c->logged < 8) {
             qWarning().noquote() << "[RIOT] League HWND cand:" << t
@@ -1025,22 +1507,141 @@ static bool riotNameLooksStart(const QString &raw)
         || n.contains(QStringLiteral("продолжить"))
         || (n.contains(QStringLiteral("continue")) && !n.contains(QStringLiteral("account")));
 }
+
+static HWND findLeagueRenderHwnd(HWND root)
+{
+    if (!root)
+        return nullptr;
+    struct Ctx {
+        HWND best = nullptr;
+        int bestArea = 0;
+    } ctx;
+    EnumChildWindows(root, [](HWND child, LPARAM lp) -> BOOL {
+        auto *c = reinterpret_cast<Ctx *>(lp);
+        wchar_t cls[256] = {};
+        GetClassNameW(child, cls, 255);
+        const QString cn = QString::fromWCharArray(cls);
+        if (!cn.contains(QStringLiteral("Chrome_RenderWidgetHostHWND"), Qt::CaseInsensitive)
+            && !cn.contains(QStringLiteral("Chrome_WidgetWin"), Qt::CaseInsensitive)
+            && !cn.contains(QStringLiteral("Intermediate D3D"), Qt::CaseInsensitive))
+            return TRUE;
+        RECT r{};
+        GetClientRect(child, &r);
+        const int area = (r.right - r.left) * (r.bottom - r.top);
+        if (area > c->bestArea) {
+            c->bestArea = area;
+            c->best = child;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.best ? ctx.best : root;
+}
+
+static void riotForceForeground(HWND hwnd)
+{
+    if (!hwnd)
+        return;
+    AllowSetForegroundWindow(ASFW_ANY);
+    HWND fg = GetForegroundWindow();
+    DWORD pidFg = 0, pidThis = GetCurrentProcessId();
+    DWORD tidFg = fg ? GetWindowThreadProcessId(fg, &pidFg) : 0;
+    DWORD tidThis = GetCurrentThreadId();
+    if (tidFg && tidFg != tidThis)
+        AttachThreadInput(tidThis, tidFg, TRUE);
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    if (tidFg && tidFg != tidThis)
+        AttachThreadInput(tidThis, tidFg, FALSE);
+}
 #endif
 
-void RiotAuth::scheduleDismissClientOverlay()
+void RiotAuth::notifyProductReady()
 {
+    // Аккаунт уже прошёл NPE: не кликаем туториал/хедер — только передаём управление.
     if (m_overlayDismissScheduled)
         return;
     m_overlayDismissScheduled = true;
-    qWarning() << "[RIOT] планируем закрытие оверлея LoL (ОБУЧЕНИЕ → НАЧАТЬ)";
-    // Окно клиента появляется позже процесса; туториал — ещё позже
-    const int delaysMs[] = {2000, 4500, 7000, 10000, 14000, 20000};
-    for (int ms : delaysMs) {
-        QTimer::singleShot(ms, this, [this]() {
-            if (!m_overlayDismissed)
-                dismissClientOverlay("League tutorial");
-        });
+    m_playClickStop = true;
+    m_productLaunchOk = true;
+    m_allowsGameDetect = true;
+
+    const bool isValorant = m_gameTitle.contains(QStringLiteral("Valorant"), Qt::CaseInsensitive);
+    if (!isValorant)
+        ensureSingleLeagueClient();
+
+    qWarning() << "[RIOT] продукт готов — ждём окно и передаём управление игроку"
+               << (isValorant ? "(Valorant)" : "(League)");
+
+    keepOverlayOverRiot();
+
+    if (isValorant) {
+        // ProcessManager::pollForGameWindow найдёт Unreal fullscreen
+        m_overlayDismissed = true;
+        return;
     }
+
+    auto tryAccept = [this]() {
+        if (m_launchAborted)
+            return;
+        if (m_overlayDismissed)
+            return;
+#ifdef Q_OS_WIN
+        HWND hwnd = findLeagueClientHwnd();
+        if (!hwnd || !IsWindowVisible(hwnd))
+            return;
+        m_overlayDismissed = true;
+        char cls[256] = {};
+        GetClassNameA(hwnd, cls, sizeof(cls));
+        qWarning() << "[RIOT] League Client готов — передаём управление игроку";
+        if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+            pm->onGameWindowFound(reinterpret_cast<quintptr>(hwnd),
+                                  QString::fromLatin1(cls));
+#else
+        m_overlayDismissed = true;
+#endif
+    };
+
+    for (int ms : {1000, 3000, 5000, 8000, 12000, 18000})
+        QTimer::singleShot(ms, this, tryAccept);
+}
+
+void RiotAuth::dismissAccessDeniedDialog(const char *why)
+{
+#ifdef Q_OS_WIN
+    // Windows: «не удается получить доступ» — заголовок = путь к LeagueClient.exe
+    struct Ctx {
+        HWND hwnd = nullptr;
+    } ctx;
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto *c = reinterpret_cast<Ctx *>(lp);
+        if (!IsWindowVisible(hwnd))
+            return TRUE;
+        wchar_t title[512] = {};
+        GetWindowTextW(hwnd, title, 511);
+        const QString t = QString::fromWCharArray(title);
+        if (t.contains(QStringLiteral("LeagueClient.exe"), Qt::CaseInsensitive)
+            || t.contains(QStringLiteral("League of Legends\\LeagueClient"), Qt::CaseInsensitive)) {
+            c->hwnd = hwnd;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+
+    if (!ctx.hwnd)
+        return;
+
+    qWarning() << "[RIOT] закрываем Access Denied на LeagueClient |" << why;
+    m_playClickStop = true; // больше не провоцируем повторный запуск
+    AllowSetForegroundWindow(ASFW_ANY);
+    SetForegroundWindow(ctx.hwnd);
+    // Enter / OK
+    PostMessageW(ctx.hwnd, WM_CLOSE, 0, 0);
+    Sleep(50);
+    sendReturnKey();
+#else
+    Q_UNUSED(why);
+#endif
 }
 
 void RiotAuth::dismissAlreadyRunningDialog(const char *why)
@@ -1117,10 +1718,11 @@ void RiotAuth::dismissClientOverlay(const char *why)
         return;
     }
 
-    AllowSetForegroundWindow(ASFW_ANY);
-    ShowWindow(hwnd, SW_RESTORE);
-    SetForegroundWindow(hwnd);
-    Sleep(150);
+    riotForceForeground(hwnd);
+    Sleep(120);
+
+    HWND clickHwnd = findLeagueRenderHwnd(hwnd);
+    qWarning() << "[RIOT] overlay click target hwnd render!=" << (clickHwnd != hwnd) << "|" << why;
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     IUIAutomation *automation = nullptr;
@@ -1139,7 +1741,6 @@ void RiotAuth::dismissClientOverlay(const char *why)
         return;
     }
 
-    // Как Play: обход всех потомков (Button type у CEF часто пуст)
     IUIAutomationCondition *trueCond = nullptr;
     automation->CreateTrueCondition(&trueCond);
     IUIAutomationElementArray *all = nullptr;
@@ -1150,11 +1751,22 @@ void RiotAuth::dismissClientOverlay(const char *why)
         all->get_Length(&len);
     qWarning() << "[RIOT] overlay UIA descendants:" << len << "|" << why;
 
-    IUIAutomationElement *best = nullptr;
-    int bestArea = 0;
-    POINT bestClick{};
-    bool haveClick = false;
+    IUIAutomationElement *bestStart = nullptr;
+    int bestStartArea = 0;
+    POINT bestStartClick{};
+    bool haveStart = false;
+    POINT headerPlayClick{};
+    bool haveHeaderPlay = false;
+    int headerPlayArea = 0;
     int logged = 0;
+    bool looksHome = false;
+    bool looksTutorialCarousel = false;
+    bool looksLobby = false;
+    bool stillLoading = false;
+
+    RECT winRect{};
+    GetWindowRect(hwnd, &winRect);
+    const int winH = qMax(1, winRect.bottom - winRect.top);
 
     const int limit = qMin(len, 500);
     for (int i = 0; i < limit; ++i) {
@@ -1167,6 +1779,7 @@ void RiotAuth::dismissClientOverlay(const char *why)
         const QString n = name ? QString::fromWCharArray(name) : QString();
         if (name)
             SysFreeString(name);
+        const QString nl = n.trimmed().toLower();
 
         BOOL off = FALSE;
         el->get_CurrentIsOffscreen(&off);
@@ -1174,11 +1787,47 @@ void RiotAuth::dismissClientOverlay(const char *why)
         el->get_CurrentBoundingRectangle(&r);
         const int area = riotRectArea(r);
 
-        if (logged < 15 && area >= 400 && !n.trimmed().isEmpty()) {
+        if (!nl.isEmpty()) {
+            if (nl.contains(QStringLiteral("путь новичка"))
+                || nl.contains(QStringLiteral("обучение для новых"))
+                || nl.contains(QStringLiteral("сообщество"))
+                || nl.contains(QStringLiteral("список друзей пуст"))
+                || nl.contains(QStringLiteral("в сети"))
+                || nl.contains(QStringLiteral("награды за повышение"))
+                || nl.contains(QStringLiteral("наборы для новичков")))
+                looksHome = true;
+            if (nl.contains(QStringLiteral("обучение"))
+                || nl.contains(QStringLiteral("завершите все обучающ"))
+                || nl.contains(QStringLiteral("добро пожаловать")))
+                looksTutorialCarousel = true;
+            if (nl.contains(QStringLiteral("загрузка")))
+                stillLoading = true;
+            if (nl.contains(QStringLiteral("найти игру"))
+                || nl.contains(QStringLiteral("выберите режим"))
+                || nl.contains(QStringLiteral("очередь"))
+                || nl.contains(QStringLiteral("подтвердить"))
+                || nl.contains(QStringLiteral("пригласить"))
+                || nl.contains(QStringLiteral("blind pick"))
+                || nl.contains(QStringLiteral("выбор чемпиона")))
+                looksLobby = true;
+        }
+
+        if (logged < 12 && area >= 200 && !n.trimmed().isEmpty()) {
             qWarning().noquote() << "[RIOT] overlay el#" << i << "\"" << n.trimmed() << "\""
                                  << (r.right - r.left) << "x" << (r.bottom - r.top)
-                                 << "off" << bool(off);
+                                 << "top" << r.top;
             ++logged;
+        }
+
+        // Верхняя синяя «ИГРАТЬ»: берём САМУЮ КРУПНУЮ в верхней трети (не мелкий текст 58x18)
+        const int relTop = r.top - winRect.top;
+        if (!off && area >= 80 && riotNameLooksPlay(n) && relTop >= 0 && relTop < winH / 3) {
+            if (area > headerPlayArea) {
+                headerPlayArea = area;
+                headerPlayClick.x = (r.left + r.right) / 2;
+                headerPlayClick.y = (r.top + r.bottom) / 2;
+                haveHeaderPlay = true;
+            }
         }
 
         if (!riotNameLooksStart(n) || off || area < 80) {
@@ -1186,23 +1835,14 @@ void RiotAuth::dismissClientOverlay(const char *why)
             continue;
         }
 
-        POINT cp{};
-        BOOL gotCp = FALSE;
-        el->GetClickablePoint(&cp, &gotCp);
-        qWarning().noquote() << "[RIOT] overlay cand:\"" << n.trimmed() << "\" area" << area
-                             << "clickable" << bool(gotCp) << cp.x << cp.y;
-
-        if (area >= bestArea) {
-            if (best)
-                best->Release();
-            best = el;
-            bestArea = area;
-            bestClick.x = (r.left + r.right) / 2;
-            bestClick.y = (r.top + r.bottom) / 2;
-            haveClick = true;
-            if (gotCp && area < 200) {
-                bestClick = cp;
-            }
+        if (area >= bestStartArea) {
+            if (bestStart)
+                bestStart->Release();
+            bestStart = el;
+            bestStartArea = area;
+            bestStartClick.x = (r.left + r.right) / 2;
+            bestStartClick.y = (r.top + r.bottom) / 2;
+            haveStart = true;
             continue;
         }
         el->Release();
@@ -1212,40 +1852,144 @@ void RiotAuth::dismissClientOverlay(const char *why)
     if (trueCond)
         trueCond->Release();
 
-    if (best && haveClick) {
+    auto clickHeaderPlay = [&]() -> bool {
+        if (m_headerPlayAttempts >= 5)
+            return false;
+        riotForceForeground(hwnd);
+        ShowWindow(hwnd, SW_RESTORE);
+        ++m_headerPlayAttempts;
+        m_leagueHeaderPlayDone = true;
+        // Всегда heuristic лево-верх — UIA «ИГРАТЬ» 58×18 мимо бирюзовой кнопки
+        HWND target = clickHwnd ? clickHwnd : hwnd;
+        RECT cr{};
+        GetClientRect(target, &cr);
+        // Несколько точек в зоне верхней бирюзовой ИГРАТЬ
+        const double spots[][2] = {{0.09, 0.055}, {0.12, 0.06}, {0.15, 0.065}};
+        const auto &s = spots[qMin(m_headerPlayAttempts - 1, 2)];
+        POINT p;
+        p.x = int(cr.right * s[0]);
+        p.y = int(cr.bottom * s[1]);
+        ClientToScreen(target, &p);
+        qWarning() << "[RIOT] heuristic верхней ИГРАТЬ @" << p.x << p.y
+                   << "try" << m_headerPlayAttempts << "|" << why;
+        riotClickScreen(p.x, p.y, "header ИГРАТЬ");
+        return true;
+    };
+
+    if (looksLobby) {
+        qWarning() << "[RIOT] overlay: уже лобби/очередь — готово |" << why;
+        m_overlayDismissed = true;
+        if (bestStart)
+            bestStart->Release();
+        root->Release();
+        automation->Release();
+        return;
+    }
+
+    // «Путь новичка» / дом — LCU lobby + верхняя ИГРАТЬ (не золотая в карточке)
+    if (looksHome && !looksTutorialCarousel) {
+        qWarning() << "[RIOT] overlay: Путь новичка/дом — lobby + header Play |" << why;
+        openLeagueLobbyViaLcu(why);
+        clickHeaderPlay();
+        // Не ставим dismissed по числу кликов — только lobby OK или looksLobby
+        if (bestStart)
+            bestStart->Release();
+        root->Release();
+        automation->Release();
+        return;
+    }
+
+    if (bestStart && haveStart) {
         BSTR pname = nullptr;
-        best->get_CurrentName(&pname);
+        bestStart->get_CurrentName(&pname);
         qWarning().noquote() << "[RIOT] overlay ONE click:\""
                              << (pname ? QString::fromWCharArray(pname) : QString())
-                             << "\" @" << bestClick.x << bestClick.y << "|" << why;
+                             << "\" @" << bestStartClick.x << bestStartClick.y << "|" << why;
         if (pname)
             SysFreeString(pname);
-        riotClickScreen(bestClick.x, bestClick.y, why);
-        m_overlayDismissed = true;
-        best->Release();
+        riotClickScreen(bestStartClick.x, bestStartClick.y, why);
+        bestStart->Release();
     } else {
-        if (best)
-            best->Release();
-        // CEF часто без имён — клик в зону синей «НАЧАТЬ» (низ центральной карточки).
-        // Не ставим m_overlayDismissed: если промах — следующие retry ещё раз.
-        RECT cr{};
-        GetClientRect(hwnd, &cr);
-        const double spots[][2] = {{0.50, 0.70}, {0.50, 0.74}, {0.50, 0.66}};
-        qWarning() << "[RIOT] overlay UIA пуст — heuristic НАЧАТЬ |" << why
-                   << "client" << cr.right << "x" << cr.bottom;
-        for (const auto &s : spots) {
-            POINT p;
-            p.x = int(cr.right * s[0]);
-            p.y = int(cr.bottom * s[1]);
-            ClientToScreen(hwnd, &p);
-            riotClickScreen(p.x, p.y, "heuristic НАЧАТЬ");
-            Sleep(180);
+        if (bestStart)
+            bestStart->Release();
+        if (stillLoading || len < 8) {
+            qWarning() << "[RIOT] overlay: ещё загрузка/мало UI — ждём |" << why
+                       << "len" << len << "loading" << stillLoading;
+        } else if (looksTutorialCarousel) {
+            HWND target = clickHwnd ? clickHwnd : hwnd;
+            RECT cr{};
+            GetClientRect(target, &cr);
+            const int cw = cr.right > 0 ? cr.right : 1280;
+            const int ch = cr.bottom > 0 ? cr.bottom : 720;
+            qWarning() << "[RIOT] overlay: rewind + ONE НАЧАТЬ |" << why
+                       << "render" << cw << "x" << ch;
+            riotForceForeground(hwnd);
+            for (int i = 0; i < 4; ++i) {
+                sendVk(VK_LEFT);
+                Sleep(120);
+            }
+            POINT btn;
+            btn.x = int(cw * 0.50);
+            btn.y = int(ch * 0.90);
+            ClientToScreen(target, &btn);
+            riotClickScreen(btn.x, btn.y, "НАЧАТЬ bottom");
+        } else if (len >= 25) {
+            qWarning() << "[RIOT] overlay: UI готов без ОБУЧЕНИЕ — header Play + lobby |" << why;
+            openLeagueLobbyViaLcu(why);
+            clickHeaderPlay();
+        } else {
+            qWarning() << "[RIOT] overlay: ждём полный UI |" << why << "len" << len;
         }
-        sendReturnKey();
     }
 
     root->Release();
     automation->Release();
+#else
+    Q_UNUSED(why);
+#endif
+}
+
+void RiotAuth::shellExecuteRiotProtocol(const char *why)
+{
+    if (m_launchAborted || isGameProcessRunning())
+        return;
+    QString productId;
+    QString patchline;
+    parseProductArgs(&productId, &patchline);
+#ifdef Q_OS_WIN
+    // Безопаснее прямого LeagueClient.exe — обрабатывает сам Riot Client
+    const QString uri = QStringLiteral("riotclient://launch-product?product=%1&patchline=%2")
+                            .arg(productId, patchline);
+    const UINT_PTR r = reinterpret_cast<UINT_PTR>(
+        ShellExecuteW(nullptr, L"open",
+                      reinterpret_cast<LPCWSTR>(uri.utf16()),
+                      nullptr, nullptr, SW_SHOWNORMAL));
+    qWarning().noquote() << "[RIOT] protocol" << uri
+                         << "| result:" << r << (r > 32 ? "OK" : "FAIL") << "|" << why;
+#else
+    Q_UNUSED(why);
+#endif
+}
+
+void RiotAuth::dismissRiotModalsSoft(const char *why)
+{
+#ifdef Q_OS_WIN
+    if (m_launchAborted)
+        return;
+    HWND hwnd = reinterpret_cast<HWND>(m_loginHwnd);
+    if (!hwnd || !IsWindow(hwnd))
+        hwnd = FindWindowW(nullptr, L"Riot Client");
+    if (!hwnd || !IsWindow(hwnd))
+        return;
+    restoreRiotOnscreen("before soft Esc");
+    AllowSetForegroundWindow(ASFW_ANY);
+    SetForegroundWindow(hwnd);
+    Sleep(80);
+    sendVk(VK_ESCAPE);
+    Sleep(200);
+    // Остаёмся on-screen под оверлеем — страница продукта должна догрузиться
+    keepShellOverlayUp();
+    qWarning() << "[RIOT] soft Esc на модалки Riot |" << why;
 #else
     Q_UNUSED(why);
 #endif
@@ -1316,17 +2060,40 @@ void RiotAuth::launchProductViaApi(const char *why)
                              << "|" << why;
         sessionReply->deleteLater();
 
-        // После Tab-логина страница «Играть» уже бывает открыта — не блокируемся на парсинге RSO
-        const bool looksLoggedIn = m_credentialsSent
-            || (code >= 200 && code < 300 && body.size() > 2);
+        const QByteArray bodyLower = body.toLower();
+        const bool rsoReady = (code >= 200 && code < 300)
+            && bodyLower.contains("authenticated");
 
-        if (!looksLoggedIn) {
-            if (m_rsoRetryCount < 4) {
+        // Не жмём Play пока RSO 404/не готов — иначе гонка с --launch-product → 2 клиента
+        if (!rsoReady) {
+            const int maxRso = 15;
+            // Логин мог не уйти (фокус/оверлей) — повторный Enter на 3-м и 8-м retry
+            if (m_credentialsSent
+                && (m_rsoRetryCount == 2 || m_rsoRetryCount == 7)) {
+#ifdef Q_OS_WIN
+                HWND h = reinterpret_cast<HWND>(m_loginHwnd);
+                if (!h || !IsWindow(h))
+                    h = FindWindowW(nullptr, L"Riot Client");
+                if (h && IsWindow(h)) {
+                    // Enter только на экране — иначе CEF не принимает
+                    restoreRiotOnscreen("before resubmit Enter");
+                    AllowSetForegroundWindow(ASFW_ANY);
+                    SetForegroundWindow(h);
+                    Sleep(150);
+                    sendReturnKey();
+                    keepShellOverlayUp();
+                    qWarning() << "[RIOT] повторный Enter на Войти (RSO ещё не готов)";
+                }
+#endif
+            }
+            if (m_rsoRetryCount < maxRso) {
                 ++m_rsoRetryCount;
-                qWarning() << "[RIOT] RSO ещё не залогинен — retry" << m_rsoRetryCount << "/4 через 3s";
-                QTimer::singleShot(3000, this, [this]() {
-                    if (!isGameProcessRunning())
-                        launchProductViaApi("retry after RSO wait");
+                qWarning() << "[RIOT] RSO ещё не готов — retry" << m_rsoRetryCount
+                           << "/" << maxRso << "через 2.5s";
+                QTimer::singleShot(2500, this, [this]() {
+                    if (m_launchAborted || isGameProcessRunning())
+                        return;
+                    launchProductViaApi("retry after RSO wait");
                 });
             } else {
                 qWarning() << "[RIOT] RSO так и не готов — finishLaunchNudge";
@@ -1335,11 +2102,37 @@ void RiotAuth::launchProductViaApi(const char *why)
             return;
         }
 
-        Q_UNUSED(productId);
         Q_UNUSED(patchline);
-        // HTTP launch endpoint на этой сборке нет — только UIA «Играть»
-        discoverRiotLaunchPaths(why); // GET restrictions + swagger log
-        QTimer::singleShot(800, this, [this, why]() {
+        // RSO OK — страница продукта грузится ON-SCREEN под оверлеем (не park: иначе UIA пустой)
+        restoreRiotOnscreen("RSO authenticated");
+        keepShellOverlayUp();
+
+        // Этап 2–3: /product-launcher/.../launch на этой сборке 404.
+        // Уже стартовали с --launch-product → страница LoL после логина.
+        // НЕ зовём riotclient://launch-product снова: вместе с Play = 2 клиента.
+        discoverRiotLaunchPaths(why);
+        postRiotApi(QStringLiteral("/product-launcher/v1/products/%1/patchlines/%2/launch")
+                        .arg(productId, patchline.isEmpty() ? QStringLiteral("live") : patchline),
+                    QByteArrayLiteral("{}"), "try product-launcher (may 404)");
+        postRiotApi(QStringLiteral("/eula/v1/agreements/accept"), QByteArrayLiteral("{}"),
+                    "try eula accept (may 404)");
+
+        QTimer::singleShot(1500, this, [this]() {
+            if (m_launchAborted || isGameProcessRunning())
+                return;
+            dismissRiotModalsSoft("before Play");
+        });
+        QTimer::singleShot(2800, this, [this, why]() {
+            if (m_launchAborted)
+                return;
+            if (isGameProcessRunning()) {
+                qWarning() << "[RIOT] игра уже после логина — UIA не нужен";
+                m_playClickStop = true;
+                m_productLaunchOk = true;
+                ensureSingleLeagueClient();
+                notifyProductReady();
+                return;
+            }
             finishLaunchNudge(why);
         });
     });
@@ -1347,6 +2140,15 @@ void RiotAuth::launchProductViaApi(const char *why)
 
 void RiotAuth::stopScout()
 {
+    // Гасим отложенные Play/LCU/overlay — иначе после закрытия окна снова «пинают» Riot
+    m_launchAborted = true;
+    m_playClickStop = true;
+    m_overlayDismissed = true;
+    if (m_sessionPollTimer) {
+        m_sessionPollTimer->stop();
+        m_sessionPollTimer->deleteLater();
+        m_sessionPollTimer = nullptr;
+    }
     if (!m_scoutTimer)
         return;
     m_scoutTimer->stop();
@@ -1358,12 +2160,20 @@ void RiotAuth::startScout(const QString &login, const QString &password)
 {
 #ifdef Q_OS_WIN
     stopScout();
+    // stopScout() ставит abort — для НОВОГО запуска сбрасываем
+    m_launchAborted = false;
+    m_playClickStop = false;
+    m_overlayDismissed = false;
     m_ticks = 0;
     m_phaseTick = 0;
     m_stableCount = 0;
     m_lastW = 0;
     m_lastH = 0;
     m_loginHwnd = 0;
+    m_riotParkedOffscreen = false;
+    m_riotParkedHwnd = 0;
+    m_riotSavedW = 0;
+    m_riotSavedH = 0;
     m_phase = Phase::WaitLoginWindow;
     m_credentialsSent = false;
     m_login = login;
@@ -1376,9 +2186,7 @@ void RiotAuth::startScout(const QString &login, const QString &password)
     }
 
     m_allowsGameDetect = false;
-    setShellTopmostFrom(this, false);
-    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
-        pm->hideShellForGame();
+    keepOverlayOverRiot();
     qWarning() << "[RIOT] Scout START (phase machine), login:" << login
                << "| pass len" << password.size();
 
@@ -1393,7 +2201,7 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         if (m_ticks > 300) {
             qWarning() << "[RIOT] Scout TIMEOUT phase" << int(m_phase);
             m_allowsGameDetect = true;
-            setShellTopmostFrom(this, true);
+            keepOverlayOverRiot();
             stopScout();
             return;
         }
@@ -1426,10 +2234,29 @@ void RiotAuth::startScout(const QString &login, const QString &password)
             hgt = rc.bottom - rc.top;
         }
 
+        // До Enter: Riot ДОЛЖЕН быть на экране (CEF/RSO ломаются за -32000).
+        // Оверлей TOPMOST закрывает его от игрока. Park — только после Submit.
+        const bool loginPhases =
+            m_phase == Phase::WaitLoginWindow
+            || m_phase == Phase::WaitStableSize
+            || m_phase == Phase::TypeUsername
+            || m_phase == Phase::TabToPassword
+            || m_phase == Phase::TypePassword
+            || m_phase == Phase::TabToSubmit
+            || m_phase == Phase::PressEnter;
+        if (loginPhases) {
+            if (m_riotParkedOffscreen)
+                restoreRiotOnscreen("login on-screen");
+            keepShellOverlayUp();
+        } else {
+            keepShellOverlayUp();
+        }
+
         if (ctx.doDump) {
             qWarning() << "[RIOT] tick" << m_ticks << "| phase" << int(m_phase)
                        << "| best:" << (ctx.best ? ctx.title : QStringLiteral("(none)"))
-                       << "| size" << w << "x" << hgt;
+                       << "| size" << w << "x" << hgt
+                       << "| parked" << m_riotParkedOffscreen;
         }
 
         switch (m_phase) {
@@ -1470,7 +2297,7 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         }
 
         case Phase::TypeUsername: {
-            // Пауза после стабилизации. Не кликать и не SetFocus — фокус уже в username.
+            // На экране под TOPMOST-оверлеем; SendInput в foreground Riot.
             if (m_ticks < m_phaseTick + 5)
                 break;
             HWND h = reinterpret_cast<HWND>(m_loginHwnd);
@@ -1479,19 +2306,18 @@ void RiotAuth::startScout(const QString &login, const QString &password)
                 m_phase = Phase::WaitLoginWindow;
                 break;
             }
-            setShellTopmostFrom(this, false);
-            // Только foreground, если шелл перехватил; без BringWindowToTop/SetFocus
-            if (GetForegroundWindow() != h) {
-                AllowSetForegroundWindow(ASFW_ANY);
-                SetForegroundWindow(h);
-                Sleep(150);
-            }
+            if (m_riotParkedOffscreen)
+                restoreRiotOnscreen("before username");
+            AllowSetForegroundWindow(ASFW_ANY);
+            SetForegroundWindow(h);
+            Sleep(200);
             for (int i = 0; i < 48; ++i)
                 sendVk(VK_BACK);
             Sleep(100);
             qWarning() << "[RIOT] type username len" << m_login.size() << m_login;
             typeUnicode(m_login);
             m_credentialsSent = true;
+            keepShellOverlayUp();
             m_phase = Phase::TabToPassword;
             m_phaseTick = m_ticks;
             break;
@@ -1500,7 +2326,12 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         case Phase::TabToPassword:
             if (m_ticks < m_phaseTick + 2)
                 break;
+            if (HWND h = reinterpret_cast<HWND>(m_loginHwnd)) {
+                AllowSetForegroundWindow(ASFW_ANY);
+                SetForegroundWindow(h);
+            }
             sendTabs(1, "→ password");
+            keepShellOverlayUp();
             m_phase = Phase::TypePassword;
             m_phaseTick = m_ticks;
             break;
@@ -1508,12 +2339,17 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         case Phase::TypePassword:
             if (m_ticks < m_phaseTick + 2)
                 break;
+            if (HWND h = reinterpret_cast<HWND>(m_loginHwnd)) {
+                AllowSetForegroundWindow(ASFW_ANY);
+                SetForegroundWindow(h);
+            }
             Sleep(80);
             for (int i = 0; i < 40; ++i)
                 sendVk(VK_BACK);
             Sleep(60);
             qWarning() << "[RIOT] type password len" << m_password.size();
             typeUnicode(m_password);
+            keepShellOverlayUp();
             m_phase = Phase::TabToSubmit;
             m_phaseTick = m_ticks;
             break;
@@ -1521,7 +2357,12 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         case Phase::TabToSubmit:
             if (m_ticks < m_phaseTick + 2)
                 break;
+            if (HWND h = reinterpret_cast<HWND>(m_loginHwnd)) {
+                AllowSetForegroundWindow(ASFW_ANY);
+                SetForegroundWindow(h);
+            }
             sendTabs(5, "→ Войти");
+            keepShellOverlayUp();
             m_phase = Phase::PressEnter;
             m_phaseTick = m_ticks;
             break;
@@ -1529,11 +2370,17 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         case Phase::PressEnter:
             if (m_ticks < m_phaseTick + 1)
                 break;
+            if (HWND h = reinterpret_cast<HWND>(m_loginHwnd)) {
+                AllowSetForegroundWindow(ASFW_ANY);
+                SetForegroundWindow(h);
+            }
             Sleep(80);
             sendReturnKey();
             m_allowsGameDetect = true;
             m_phase = Phase::Done;
             qWarning() << "[RIOT] Enter на Войти — ждём session yaml → ShellExecute product";
+            // Не park: страница продукта (--launch-product) должна грузиться on-screen под оверлеем
+            keepShellOverlayUp();
             stopScout();
             scheduleProductLaunch();
             break;

@@ -53,21 +53,32 @@ private:
     void scheduleProductLaunch();
     void pollSessionThenLaunchProduct();
     void shellExecuteProductOnce(const char *why);
+    void shellExecuteRiotProtocol(const char *why);
+    void dismissRiotModalsSoft(const char *why);
     void launchGameExeDirect(const char *why);
     bool clickPlayButton(const char *why);
     void dismissClientOverlay(const char *why);
     void dismissAlreadyRunningDialog(const char *why);
-    void scheduleDismissClientOverlay();
+    void dismissAccessDeniedDialog(const char *why);
+    void skipLolTutorialViaLcu(const char *why);
+    void openLeagueLobbyViaLcu(const char *why);
+    void ensureSingleLeagueClient();
+    void notifyProductReady();
     void launchProductViaApi(const char *why);
     void finishLaunchNudge(const char *why);
     void discoverRiotLaunchPaths(const char *why);
     void postRiotApi(const QString &path, const QByteArray &body, const char *why);
     bool readRiotLockfile(int *port, QString *password, QString *protocol) const;
+    bool readLeagueLockfile(int *port, QString *password, QString *protocol) const;
     bool isGameProcessRunning() const;
     bool parseProductArgs(QString *productId, QString *patchline) const;
     QString sessionSettingsPath() const;
     QString resolveGameExePath() const;
     QNetworkAccessManager *ensureNam();
+    void parkRiotOffscreen(quintptr hwnd, const char *why);
+    void restoreRiotOnscreen(const char *why);
+    void keepShellOverlayUp();
+    void keepOverlayOverRiot(quintptr hwnd = 0);
 
     QTimer *m_scoutTimer = nullptr;
     QTimer *m_sessionPollTimer = nullptr;
@@ -80,6 +91,13 @@ private:
     int m_sessionPollTicks = 0;
     int m_rsoRetryCount = 0;
     quintptr m_loginHwnd = 0;
+    // Сохранённый rect Riot Client до park за экран
+    int m_riotSavedX = 0;
+    int m_riotSavedY = 0;
+    int m_riotSavedW = 0;
+    int m_riotSavedH = 0;
+    quintptr m_riotParkedHwnd = 0;
+    bool m_riotParkedOffscreen = false;
     bool m_credentialsSent = false;
     bool m_allowsGameDetect = true;
     bool m_expectInteractive = true;
@@ -89,6 +107,12 @@ private:
     bool m_playClickStop = false; // уже кликнули Play / игра жива — больше не жать
     bool m_overlayDismissScheduled = false;
     bool m_overlayDismissed = false;
+    bool m_lcuTutorialSkipDone = false;
+    bool m_leagueHeaderPlayDone = false;
+    int m_headerPlayAttempts = 0;
+    bool m_leagueLobbyPosted = false;
+    int m_lobbyPostAttempts = 0;
+    bool m_launchAborted = false; // stopScout/kill — отменить отложенные Play/LCU
     QString m_launcherExe;
     QString m_productArgs;
     QString m_gameTitle;

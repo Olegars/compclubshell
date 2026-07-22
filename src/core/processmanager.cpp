@@ -220,6 +220,32 @@ static bool isKnownGameClass(const QString &cls)
            || cls.startsWith(QLatin1String("CryENGINE"), Qt::CaseInsensitive);
 }
 
+static bool isLeagueClientSized(HWND h)
+{
+    if (!h)
+        return false;
+    RECT rc{};
+    GetWindowRect(h, &rc);
+    const int w = rc.right - rc.left;
+    const int hgt = rc.bottom - rc.top;
+    // Splash ~512×216; полноценный клиент обычно ≥800×450 (часто 1280×720)
+    // Visible не требуем: окно может быть ещё SW_HIDE в момент первого детекта
+    return w >= 800 && hgt >= 450;
+}
+
+static bool isRiotLeagueProcess(DWORD pid)
+{
+    const QString img = processImageForPid(pid);
+    return img.contains(QStringLiteral("LeagueClient"), Qt::CaseInsensitive);
+}
+
+static bool isRiotValorantProcess(DWORD pid)
+{
+    const QString img = processImageForPid(pid).toLower();
+    return img.contains(QStringLiteral("valorant"))
+           || img.contains(QStringLiteral("valorant-win64-shipping"));
+}
+
 struct FindGameWindowCtx {
     HWND hwnd = nullptr;
     QString className;
@@ -257,6 +283,71 @@ static BOOL CALLBACK enumFindGameWindowProc(HWND h, LPARAM lp)
     c->hwnd = h;
     c->className = cls;
     return FALSE;
+}
+
+// League Client = CEF (Chrome_WidgetWin / RCLIENT), не fullscreen — отдельный enum для Riot
+static BOOL CALLBACK enumFindLeagueClientProc(HWND h, LPARAM lp)
+{
+    auto *c = reinterpret_cast<FindGameWindowCtx *>(lp);
+    if (!IsWindowVisible(h) || !isLeagueClientSized(h))
+        return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    if (!isRiotLeagueProcess(pid) || isShellProcess(pid))
+        return TRUE;
+
+    char name[256];
+    if (GetClassNameA(h, name, sizeof(name)) <= 0)
+        return TRUE;
+
+    wchar_t title[256] = {};
+    GetWindowTextW(h, title, 255);
+    const QString t = QString::fromWCharArray(title);
+    const QString img = processImageForPid(pid);
+
+    // Предпочитаем окно с заголовком League / LeagueClientUx
+    const bool titled = t.contains(QStringLiteral("League"), Qt::CaseInsensitive);
+    const bool ux = img.contains(QStringLiteral("LeagueClientUx"), Qt::CaseInsensitive);
+    if (!titled && !ux)
+        return TRUE;
+
+    c->hwnd = h;
+    c->className = QString::fromLatin1(name);
+    // Если уже нашли titled Ux — можно остановиться; иначе берём первый подходящий
+    if (titled && ux)
+        return FALSE;
+    return titled ? FALSE : TRUE;
+}
+
+static bool findRiotProductWindow(HWND *outHwnd, QString *outClass)
+{
+    if (!outHwnd || !outClass)
+        return false;
+    *outHwnd = nullptr;
+    outClass->clear();
+
+    FindGameWindowCtx league;
+    EnumWindows(enumFindLeagueClientProc, reinterpret_cast<LPARAM>(&league));
+    if (league.hwnd) {
+        *outHwnd = league.hwnd;
+        *outClass = league.className;
+        return true;
+    }
+
+    // Valorant: почти fullscreen Unreal
+    FindGameWindowCtx fs;
+    EnumWindows(enumFindGameWindowProc, reinterpret_cast<LPARAM>(&fs));
+    if (fs.hwnd) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fs.hwnd, &pid);
+        if (isRiotValorantProcess(pid)) {
+            *outHwnd = fs.hwnd;
+            *outClass = fs.className;
+            return true;
+        }
+    }
+    return false;
 }
 #endif
 
@@ -673,6 +764,22 @@ void ProcessManager::pollForGameWindow()
         return;
     }
 
+    // Riot: League Client (CEF, часто 1280×720) или Valorant fullscreen
+    if (m_currentPlatform == QLatin1String("riot")) {
+        HWND hwnd = nullptr;
+        QString cls;
+        if (!findRiotProductWindow(&hwnd, &cls))
+            return;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        qWarning() << "[SESSION] riot product window:" << cls
+                   << "| exe:" << processImageForPid(pid);
+        m_pendingGameHwnd = 0;
+        m_pendingGameClass.clear();
+        acceptGameWindow(reinterpret_cast<quintptr>(hwnd), cls);
+        return;
+    }
+
     // Только почти fullscreen Unreal/Unity/Valve — не SDL-заставка и не start_protected_game
     FindGameWindowCtx fs;
     EnumWindows(enumFindGameWindowProc, reinterpret_cast<LPARAM>(&fs));
@@ -780,6 +887,19 @@ void ProcessManager::onGameWindowFound(quintptr hwnd, const QString &className)
         return;
     }
 
+    // League Client: только видимое окно (невидимый HWND потом «пропадает» → ложный game closed)
+    if (m_currentPlatform == QLatin1String("riot") && isRiotLeagueProcess(pid)
+        && isLeagueClientSized(h) && IsWindowVisible(h)) {
+        qWarning() << "[SESSION] League Client → accept:" << className << "| exe:" << img;
+        acceptGameWindow(hwnd, className);
+        return;
+    }
+    if (m_currentPlatform == QLatin1String("riot") && isRiotLeagueProcess(pid)
+        && isLeagueClientSized(h) && !IsWindowVisible(h)) {
+        qWarning() << "[SESSION] League ещё не visible — ждём:" << className << "| exe:" << img;
+        return;
+    }
+
     if (!isKnownGameClass(className) || !isNearFullscreenWindow(h)) {
         qWarning() << "[SESSION] ждём почти fullscreen игры, сейчас:" << className
                    << "| exe:" << img << "| (заставка/окно мало — игнор)";
@@ -835,6 +955,16 @@ void ProcessManager::startGameExitWatch(quintptr hwnd, const QString &className)
 bool ProcessManager::findAliveGameWindow(quintptr *outHwnd) const
 {
 #ifdef Q_OS_WIN
+    if (m_currentPlatform == QLatin1String("riot")) {
+        HWND hwnd = nullptr;
+        QString cls;
+        if (!findRiotProductWindow(&hwnd, &cls))
+            return false;
+        if (outHwnd)
+            *outHwnd = reinterpret_cast<quintptr>(hwnd);
+        return true;
+    }
+
     FindGameWindowCtx ctx;
     EnumWindows(enumFindGameWindowProc, reinterpret_cast<LPARAM>(&ctx));
     if (!ctx.hwnd)
@@ -882,13 +1012,24 @@ void ProcessManager::checkGameExit()
                 m_gamePid = pid;
                 m_gameProcessImage = processImageForPid(pid);
             }
+            qWarning() << "[SESSION] rebind game hwnd → pid" << m_gamePid << m_gameProcessImage;
         }
         m_gameGoneTicks = 0;
         return;
     }
 
+    // Riot: LeagueClientUx часто меняет HWND при загрузке — пока процесс жив, сессию не рвём
+    if (m_currentPlatform == QLatin1String("riot")) {
+        const bool leagueAlive = isProcessRunning(QStringLiteral("LeagueClientUx.exe"))
+            || isProcessRunning(QStringLiteral("LeagueClient.exe"))
+            || isProcessRunning(QStringLiteral("VALORANT-Win64-Shipping.exe"));
+        if (leagueAlive || isPidAlive(m_gamePid)) {
+            m_gameGoneTicks = 0;
+            return;
+        }
+    }
+
     // Grace только для splash→main (окно пропало, процесс ещё грузит).
-    // Раньше 45с игнорировали любой выход — Steam/TF2 закрывались «долго», шелл ждал таймер.
     const qint64 aliveForMs = QDateTime::currentMSecsSinceEpoch() - m_gameAcceptedAtMs;
     if (aliveForMs < 45000 && isPidAlive(m_gamePid)) {
         m_gameGoneTicks = 0;

@@ -85,9 +85,6 @@ Item {
         return ""
     }
 
-    // TEMP DEBUG: для Riot не показываем loading-оверлей — видно окно клиента
-    readonly property bool riotDebugNoOverlay: true
-
     function launchRiotPersonal() {
         var exe = resolveRiotExe(pendingRiotExe)
         var title = pendingRiotTitle || "Riot"
@@ -96,10 +93,7 @@ Item {
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = pendingRiotGameId
-            if (!dashboardRoot.riotDebugNoOverlay)
-                root.showGameLoading("riot", title)
-            else if (typeof Launcher !== 'undefined' && Launcher.hideShellForGame)
-                Launcher.hideShellForGame()
+            root.showGameLoading("riot", title)
         }
         if (typeof Launcher === 'undefined') {
             console.error("[RIOT] Launcher не найден")
@@ -123,7 +117,7 @@ Item {
         }
         console.log("[RIOT] личный аккаунт → Riot Client", exe, args)
         Launcher.launchPlatformSessionString(JSON.stringify(payload), "")
-        if (typeof root !== 'undefined' && !dashboardRoot.riotDebugNoOverlay)
+        if (typeof root !== 'undefined')
             root.scheduleHideGameLoading()
     }
 
@@ -134,10 +128,7 @@ Item {
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = gameId
-            if (!dashboardRoot.riotDebugNoOverlay)
-                root.showGameLoading("riot", title)
-            else if (typeof Launcher !== 'undefined' && Launcher.hideShellForGame)
-                Launcher.hideShellForGame()
+            root.showGameLoading("riot", title)
         }
         startClubTakeAccount(gameId, "riot", title, pendingRiotExe, pendingRiotArgs)
     }
@@ -206,16 +197,11 @@ Item {
                                 res.exe_path)
                         }
 
-                        if (typeof root !== 'undefined' && root.updateGameLoading) {
-                            if (!(res.platform === "riot" && dashboardRoot.riotDebugNoOverlay))
-                                root.updateGameLoading(res.platform || "", res.game_title || modelTitle || "")
-                        }
+                        if (typeof root !== 'undefined' && root.updateGameLoading)
+                            root.updateGameLoading(res.platform || "", res.game_title || modelTitle || "")
 
                         if (typeof Launcher !== 'undefined') {
                             console.log("[SESSION] take-account OK:", res.platform, res.login, "→ launch")
-                            if (res.platform === "riot" && dashboardRoot.riotDebugNoOverlay
-                                    && Launcher.hideShellForGame)
-                                Launcher.hideShellForGame()
                             Launcher.launchPlatformSessionString(JSON.stringify(res), String(res.platform_app_id || ""))
                         } else {
                             console.error("[SESSION] Launcher не найден")
