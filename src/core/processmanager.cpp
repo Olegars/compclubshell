@@ -1830,6 +1830,20 @@ void ProcessManager::toggleSystemLanguage()
 #endif
 }
 
+void ProcessManager::rebootPC()
+{
+#ifdef Q_OS_WIN
+    qWarning() << "[SYSTEM] rebootPC: shutdown /r /t 0";
+    const bool ok = QProcess::startDetached(
+        QStringLiteral("shutdown"),
+        {QStringLiteral("/r"), QStringLiteral("/t"), QStringLiteral("0")});
+    if (!ok)
+        qWarning() << "[SYSTEM] rebootPC: не удалось запустить shutdown.exe";
+#else
+    qWarning() << "[SYSTEM] rebootPC: не поддерживается на этой платформе";
+#endif
+}
+
 void ProcessManager::handleDownloadDecision(bool continueDownload)
 {
     if (!continueDownload && m_offendingPid != 0) {

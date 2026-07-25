@@ -68,6 +68,7 @@ public slots:
     void toggleSystemLanguage();
     void handleDownloadDecision(bool continueDownload);
     void applyEnterprisePolicies(bool enable);
+    Q_INVOKABLE void rebootPC();
 
 signals:
     void gameStarted();

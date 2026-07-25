@@ -895,6 +895,13 @@ Item {
                             }
                         }
                     }
+
+                    ActionBtn {
+                        text: "ПЕРЕЗАГРУЗКА"
+                        icon: "↻"
+                        baseColor: "#b91c1c"
+                        onClicked: rebootConfirmPopup.requestPinAndOpen()
+                    }
                 }
             }
         }
@@ -1418,6 +1425,205 @@ Item {
             if (root && root.gameLoadingVisible) {
                 accountChoicePopup.close()
                 clubBusyHintPopup.close()
+            }
+        }
+    }
+
+    Popup {
+        id: rebootConfirmPopup
+        width: Math.min(560, parent.width - 40)
+        height: 380
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        property string rebootPin: ""
+        property bool pinReady: false
+        property bool pinLoading: false
+        property string pinError: ""
+
+        function requestPinAndOpen() {
+            rebootPin = ""
+            pinReady = false
+            pinLoading = true
+            pinError = ""
+            open()
+
+            var baseUrl = "http://192.168.222.2:22222"
+            if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
+                baseUrl = NetworkManager.serverUrl
+            var pcId = parseInt(dashboardRoot.termId)
+            if (!pcId) {
+                pinLoading = false
+                pinError = "Не удалось определить ПК"
+                console.error("[REBOOT] terminalId пуст")
+                return
+            }
+            var xhr = new XMLHttpRequest()
+            xhr.open("POST", baseUrl + "/api/shell/games/pause")
+            xhr.setRequestHeader("Content-Type", "application/json")
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE)
+                    return
+                pinLoading = false
+                if (xhr.status !== 200) {
+                    pinError = "Не удалось сохранить PIN"
+                    console.error("[REBOOT] pause HTTP", xhr.status, xhr.responseText)
+                    return
+                }
+                try {
+                    var res = JSON.parse(xhr.responseText)
+                    if (res.status === "success" && res.pin_code) {
+                        rebootPin = String(res.pin_code)
+                        pinReady = true
+                        if (typeof root !== 'undefined')
+                            root.temporaryPausePin = rebootPin
+                        console.log("[REBOOT] PIN сохранён в БД (pause API)")
+                    } else {
+                        pinError = res.message || "Не удалось сохранить PIN"
+                        console.error("[REBOOT] отказ:", res.message || xhr.responseText)
+                    }
+                } catch (e) {
+                    pinError = "Ошибка ответа сервера"
+                    console.error("[REBOOT] parse:", e)
+                }
+            }
+            xhr.send(JSON.stringify({
+                "computer_id": pcId,
+                "booking_id": (typeof NetworkManager !== 'undefined') ? NetworkManager.lastBookingId : 0
+            }))
+        }
+
+        background: Rectangle {
+            color: "#0a0505"
+            border.color: accentColor
+            radius: 10
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 28
+            spacing: 14
+            Text {
+                text: "Перезагрузка"
+                color: accentColor
+                font.pixelSize: 22
+                font.bold: true
+                font.letterSpacing: 2
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                color: "#e5e5e5"
+                font.pixelSize: 15
+                lineHeight: 1.35
+                text: "Сохраните пин код для входа после перезагрузки"
+            }
+            Text {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                color: rebootConfirmPopup.pinError !== "" ? "#ef4444"
+                       : (rebootConfirmPopup.pinReady ? accentColor : "#a3a3a3")
+                font.pixelSize: rebootConfirmPopup.pinReady ? 42 : 16
+                font.bold: true
+                font.letterSpacing: rebootConfirmPopup.pinReady ? 10 : 1
+                text: rebootConfirmPopup.pinLoading ? "Получение PIN…"
+                      : (rebootConfirmPopup.pinReady ? rebootConfirmPopup.rebootPin
+                         : (rebootConfirmPopup.pinError !== "" ? rebootConfirmPopup.pinError : "— — — —"))
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                color: "#a3a3a3"
+                font.pixelSize: 14
+                lineHeight: 1.3
+                text: "Перезагрузить компьютер?"
+            }
+            Item { Layout.fillHeight: true }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    enabled: rebootConfirmPopup.pinReady
+                    opacity: rebootConfirmPopup.pinReady
+                             ? (rebootConfirmMouse.pressed ? 0.9 : 1.0)
+                             : 0.45
+                    color: !rebootConfirmPopup.pinReady
+                           ? "#7f1d1d"
+                           : (rebootConfirmMouse.pressed
+                              ? Qt.darker("#b91c1c", 1.25)
+                              : (rebootConfirmMouse.containsMouse
+                                 ? Qt.lighter("#b91c1c", 1.12)
+                                 : "#b91c1c"))
+                    scale: rebootConfirmMouse.pressed && rebootConfirmPopup.pinReady
+                           ? 0.96
+                           : (rebootConfirmMouse.containsMouse && rebootConfirmPopup.pinReady ? 1.02 : 1.0)
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Перезагрузить"
+                        color: "white"
+                        font.bold: true
+                        font.pixelSize: 14
+                    }
+                    MouseArea {
+                        id: rebootConfirmMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: rebootConfirmPopup.pinReady
+                        cursorShape: rebootConfirmPopup.pinReady ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: {
+                            if (!rebootConfirmPopup.pinReady)
+                                return
+                            rebootConfirmPopup.close()
+                            if (typeof Launcher !== "undefined")
+                                Launcher.rebootPC()
+                        }
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    color: rebootCancelMouse.pressed
+                           ? Qt.rgba(0.06, 0.12, 0.1, 0.85)
+                           : (rebootCancelMouse.containsMouse
+                              ? Qt.rgba(0.08, 0.14, 0.11, 0.55)
+                              : "transparent")
+                    border.color: rebootCancelMouse.containsMouse || rebootCancelMouse.pressed
+                                  ? Qt.lighter(accentColor, 1.2)
+                                  : accentColor
+                    border.width: 2
+                    scale: rebootCancelMouse.pressed ? 0.96 : (rebootCancelMouse.containsMouse ? 1.02 : 1.0)
+                    opacity: rebootCancelMouse.pressed ? 0.9 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Отмена"
+                        color: rebootCancelMouse.containsMouse || rebootCancelMouse.pressed
+                               ? Qt.lighter(accentColor, 1.15)
+                               : accentColor
+                        font.bold: true
+                        font.pixelSize: 14
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                    }
+                    MouseArea {
+                        id: rebootCancelMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: rebootConfirmPopup.close()
+                    }
+                }
             }
         }
     }
