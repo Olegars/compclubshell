@@ -24,7 +24,7 @@ public:
     void setNeedsCacheBackup(bool) override {}
     bool didInteractiveLogin() const override { return false; }
 
-    void backupCache(NetworkManager *, int, const QString &) override {}
+    void backupCache(NetworkManager *, int, const QString &, int = 0, int = 0) override {}
 
     QString launcherProcessName() const override { return m_launcherImage; }
 

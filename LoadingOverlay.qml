@@ -267,4 +267,17 @@ Item {
         NumberAnimation { target: stage; property: "scale"; from: 0.86; to: 1; duration: 520; easing.type: Easing.OutBack }
         NumberAnimation { target: titleBlock; property: "opacity"; from: 0; to: 1; duration: 500; easing.type: Easing.OutCubic }
     }
+
+    // Modal (last sibling = on top): swallow mouse so clicks cannot fall through to Dashboard.
+    MouseArea {
+        anchors.fill: parent
+        enabled: overlay.visible
+        hoverEnabled: true
+        acceptedButtons: Qt.AllButtons
+        onPressed: (mouse) => { mouse.accepted = true }
+        onReleased: (mouse) => { mouse.accepted = true }
+        onClicked: (mouse) => { mouse.accepted = true }
+        onDoubleClicked: (mouse) => { mouse.accepted = true }
+        onWheel: (wheel) => { wheel.accepted = true }
+    }
 }

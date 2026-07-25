@@ -1,5 +1,6 @@
 #include "steamauth.h"
 #include "networkmanager.h"
+#include "processmanager.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -14,12 +15,14 @@
 #include <QSettings>
 #include <QStringConverter>
 #include <QTextStream>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <string>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <tlhelp32.h>
 #endif
 
 static bool writeTextFile(const QString &path, const QString &content)
@@ -265,24 +268,206 @@ QString SteamAuth::buildLoginUsersVdf(const QString &steamId,
     ).arg(id, login, name, ts);
 }
 
-void SteamAuth::killLauncher()
+static bool steamImageRunning(const QString &image)
 {
 #ifdef Q_OS_WIN
-    auto silentKill = [](const QString &image) {
-        auto *p = new QProcess;
-        p->setProgram(QStringLiteral("taskkill"));
-        p->setArguments({QStringLiteral("/F"), QStringLiteral("/T"),
-                         QStringLiteral("/IM"), image});
-        p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
-            args->flags |= CREATE_NO_WINDOW;
-        });
-        QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                         p, &QObject::deleteLater);
-        p->start();
-    };
-    silentKill(QStringLiteral("steam.exe"));
-    silentKill(QStringLiteral("steamwebhelper.exe"));
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return false;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (QString::fromWCharArray(pe.szExeFile).compare(image, Qt::CaseInsensitive) == 0) {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+#else
+    Q_UNUSED(image);
+    return false;
 #endif
+}
+
+static void steamSilentKill(const QString &image)
+{
+#ifdef Q_OS_WIN
+    auto *p = new QProcess;
+    p->setProgram(QStringLiteral("taskkill"));
+    p->setArguments({QStringLiteral("/F"), QStringLiteral("/T"),
+                     QStringLiteral("/IM"), image});
+    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *args) {
+        args->flags |= CREATE_NO_WINDOW;
+    });
+    QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                     p, &QObject::deleteLater);
+    p->start();
+#else
+    Q_UNUSED(image);
+#endif
+}
+
+void SteamAuth::killLauncher()
+{
+    steamSilentKill(QStringLiteral("steam.exe"));
+    steamSilentKill(QStringLiteral("steamwebhelper.exe"));
+    steamSilentKill(QStringLiteral("steamservice.exe"));
+    steamSilentKill(QStringLiteral("steamerrorreporter.exe"));
+}
+
+void SteamAuth::killSteamAndWait(int timeoutMs)
+{
+    killLauncher();
+#ifdef Q_OS_WIN
+    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
+    while (QDateTime::currentMSecsSinceEpoch() < deadline) {
+        const bool alive = steamImageRunning(QStringLiteral("steam.exe"))
+                           || steamImageRunning(QStringLiteral("steamwebhelper.exe"));
+        if (!alive) {
+            qWarning() << "[STEAM] killSteamAndWait: процессы Steam завершены";
+            // Короткая пауза — отпустить файловые хендлы
+            QThread::msleep(300);
+            return;
+        }
+        killLauncher();
+        QThread::msleep(250);
+    }
+    qWarning() << "[STEAM] WARN: killSteamAndWait timeout — Steam ещё жив, wipe всё равно";
+#else
+    Q_UNUSED(timeoutMs);
+#endif
+}
+
+QString SteamAuth::sanitizeLoginUsersForLogout(const QString &vdf)
+{
+    if (vdf.trimmed().isEmpty())
+        return vdf;
+    QString out = vdf;
+    auto zeroKey = [&out](const QString &key) {
+        // "RememberPassword"\t\t"1" / "true" → "0"
+        const QRegularExpression re(
+            QStringLiteral("(\"%1\"\\s+)\"[^\"]*\"").arg(QRegularExpression::escape(key)),
+            QRegularExpression::CaseInsensitiveOption);
+        out.replace(re, QStringLiteral("\\1\"0\""));
+    };
+    zeroKey(QStringLiteral("RememberPassword"));
+    zeroKey(QStringLiteral("AllowAutoLogin"));
+    zeroKey(QStringLiteral("MostRecent"));
+    return out;
+}
+
+QString SteamAuth::sanitizeConfigVdfForLogout(const QString &vdf)
+{
+    if (vdf.trimmed().isEmpty())
+        return vdf;
+    QString out = vdf;
+    // Ключи автологина в InstallConfigStore / Software/Valve/Steam
+    auto clearKey = [&out](const QString &key) {
+        const QRegularExpression re(
+            QStringLiteral("\"%1\"\\s+\"[^\"]*\"\\s*")
+                .arg(QRegularExpression::escape(key)),
+            QRegularExpression::CaseInsensitiveOption);
+        out.remove(re);
+    };
+    clearKey(QStringLiteral("AutoLoginUser"));
+    clearKey(QStringLiteral("AlreadyDoneUser"));
+    clearKey(QStringLiteral("RememberPassword"));
+
+    // ConnectCache блоки (JWT / auth tickets для silent login)
+    const QRegularExpression connectBlock(
+        QStringLiteral("\"ConnectCache\"\\s*\\{[^}]*\\}"),
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+    out.remove(connectBlock);
+    // Одиночные ConnectCache-значения на случай плоского формата
+    const QRegularExpression connectLine(
+        QStringLiteral("\"ConnectCache\"\\s+\"[^\"]*\"\\s*"),
+        QRegularExpression::CaseInsensitiveOption);
+    out.remove(connectLine);
+    return out;
+}
+
+void SteamAuth::wipePersonalSession()
+{
+    QStringList cleared;
+    const QString steamPath = steamInstallPath();
+    const QString configDir = steamPath + QStringLiteral("/config");
+
+#ifdef Q_OS_WIN
+    {
+        QSettings steamReg(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
+                           QSettings::NativeFormat);
+        if (steamReg.contains(QStringLiteral("AutoLoginUser"))) {
+            steamReg.remove(QStringLiteral("AutoLoginUser"));
+            cleared << QStringLiteral("reg:AutoLoginUser");
+        }
+        if (steamReg.contains(QStringLiteral("AlreadyDoneUser"))) {
+            steamReg.remove(QStringLiteral("AlreadyDoneUser"));
+            cleared << QStringLiteral("reg:AlreadyDoneUser");
+        }
+        steamReg.setValue(QStringLiteral("RememberPassword"), 0);
+        cleared << QStringLiteral("reg:RememberPassword=0");
+    }
+#endif
+
+    const QString loginUsersPath = configDir + QStringLiteral("/loginusers.vdf");
+    {
+        const QString raw = readTextFile(loginUsersPath);
+        if (!raw.isEmpty()) {
+            const QString sanitized = sanitizeLoginUsersForLogout(raw);
+            if (sanitized != raw && writeTextFile(loginUsersPath, sanitized))
+                cleared << QStringLiteral("loginusers.vdf:MostRecent/RememberPassword/AllowAutoLogin→0");
+            else if (sanitized == raw)
+                cleared << QStringLiteral("loginusers.vdf:already-clean-or-no-flags");
+        }
+    }
+
+    const QString configVdfPath = configDir + QStringLiteral("/config.vdf");
+    {
+        const QString raw = readTextFile(configVdfPath);
+        if (!raw.isEmpty()) {
+            const QString sanitized = sanitizeConfigVdfForLogout(raw);
+            if (sanitized != raw && writeTextFile(configVdfPath, sanitized))
+                cleared << QStringLiteral("config.vdf:AutoLogin/AlreadyDone/ConnectCache");
+            else if (sanitized == raw)
+                cleared << QStringLiteral("config.vdf:no-autologin-keys");
+        }
+    }
+
+    // Machine-auth / connect-cache tokens (club silent path)
+    auto removeIfExists = [&cleared](const QString &path, const QString &label) {
+        if (!QFile::exists(path))
+            return;
+        if (QFile::remove(path))
+            cleared << label;
+        else
+            cleared << (label + QStringLiteral(":FAILED"));
+    };
+    removeIfExists(configDir + QStringLiteral("/local.vdf"), QStringLiteral("config/local.vdf"));
+    const QString appLocal = localAppDataSteamVdfPath();
+    if (!appLocal.isEmpty())
+        removeIfExists(appLocal, QStringLiteral("%LOCALAPPDATA%/Steam/local.vdf"));
+
+    // Steam Guard machine auth files (ssfn*)
+    QDir steamRoot(steamPath);
+    if (steamRoot.exists()) {
+        const QFileInfoList ssfns = steamRoot.entryInfoList(
+            QStringList{QStringLiteral("ssfn*")},
+            QDir::Files | QDir::Hidden | QDir::System);
+        for (const QFileInfo &fi : ssfns) {
+            if (QFile::remove(fi.absoluteFilePath()))
+                cleared << (QStringLiteral("ssfn:") + fi.fileName());
+            else
+                cleared << (QStringLiteral("ssfn:") + fi.fileName() + QStringLiteral(":FAILED"));
+        }
+    }
+
+    qWarning().noquote() << "[STEAM] personal: full logout wipe |"
+                         << (cleared.isEmpty() ? QStringLiteral("(nothing found)")
+                                               : cleared.join(QStringLiteral(", ")));
 }
 
 bool SteamAuth::applyCache(const QJsonObject &authData)
@@ -292,18 +477,26 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
     const QString persona = authData.value(QStringLiteral("persona_name")).toString(login);
     const QJsonObject authMeta = authData.value(QStringLiteral("auth")).toObject();
     const QString mode = authMeta.value(QStringLiteral("mode")).toString();
+    const QString platformSource = authData.value(QStringLiteral("platform_source")).toString();
     const bool personal = mode.compare(QStringLiteral("personal"), Qt::CaseInsensitive) == 0
+                          || platformSource.compare(QStringLiteral("personal_account"),
+                                                    Qt::CaseInsensitive) == 0
                           || login.isEmpty();
+    m_personalLaunch = personal;
 
-    // Личный Steam: не трогаем VDF клуба, сбрасываем AutoLogin → чистое окно входа
+    // Личный Steam: полный logout wipe → окно входа (не silent club session)
     if (personal) {
-#ifdef Q_OS_WIN
-        QSettings steamReg(QStringLiteral("HKEY_CURRENT_USER\\Software\\Valve\\Steam"),
-                           QSettings::NativeFormat);
-        steamReg.remove(QStringLiteral("AutoLoginUser"));
-        steamReg.setValue(QStringLiteral("RememberPassword"), 0);
-#endif
-        qWarning() << "[STEAM] applyCache: personal — без VDF, AutoLogin сброшен";
+        qWarning() << "[STEAM] applyCache: personal — kill Steam + full logout wipe";
+        killSteamAndWait(8000);
+        wipePersonalSession();
+        // Повторный wipe если файлы были залочены
+        if (QFile::exists(steamInstallPath() + QStringLiteral("/config/local.vdf"))
+            || QFile::exists(localAppDataSteamVdfPath())) {
+            qWarning() << "[STEAM] personal: local.vdf ещё на диске — kill+wipe retry";
+            killSteamAndWait(4000);
+            wipePersonalSession();
+        }
+        m_needBackup = false;
         return true;
     }
 
@@ -362,18 +555,26 @@ void SteamAuth::startLauncher(QProcess *process,
     const QString steamPath = steamInstallPath();
     const QString appId = resolveAppId(authData, appIdHint);
     const QString argsStr = authData.value(QStringLiteral("args")).toString().trimmed();
+    const QString mode = authData.value(QStringLiteral("auth")).toObject()
+                             .value(QStringLiteral("mode")).toString();
+    const QString platformSource = authData.value(QStringLiteral("platform_source")).toString();
+    const bool personal = m_personalLaunch
+        || mode.compare(QStringLiteral("personal"), Qt::CaseInsensitive) == 0
+        || platformSource.compare(QStringLiteral("personal_account"), Qt::CaseInsensitive) == 0
+        || authData.value(QStringLiteral("login")).toString().trimmed().isEmpty();
+    m_personalLaunch = personal;
 
     QStringList args;
     const bool hasApp = !appId.isEmpty() && appId != QStringLiteral("0");
     if (hasApp)
         args << QStringLiteral("-applaunch") << appId;
 
-    const QStringList passthrough = {
-        QStringLiteral("-novid"),
-        QStringLiteral("-nojoy"),
-        QStringLiteral("-silent"),
-        QStringLiteral("-shutdown"),
-    };
+    // Personal: без -silent — иначе окно логина прячется / Steam silent-логинится в фон.
+    const QStringList passthrough = personal
+        ? QStringList{QStringLiteral("-novid"), QStringLiteral("-nojoy"),
+                      QStringLiteral("-shutdown")}
+        : QStringList{QStringLiteral("-novid"), QStringLiteral("-nojoy"),
+                      QStringLiteral("-silent"), QStringLiteral("-shutdown")};
     for (const QString &flag : passthrough) {
         if (argsStr.contains(flag, Qt::CaseInsensitive) && !args.contains(flag))
             args << flag;
@@ -381,9 +582,13 @@ void SteamAuth::startLauncher(QProcess *process,
     // -shutdown только с игрой: иначе «чистый» Steam стартует и сразу гаснет → чёрные окна
     if (hasApp && !args.contains(QStringLiteral("-shutdown")))
         args << QStringLiteral("-shutdown");
+    // Личный вход: явно не тащим -silent из args продукта
+    if (personal)
+        args.removeAll(QStringLiteral("-silent"));
 
     process->setWorkingDirectory(steamPath);
-    qWarning() << "[STEAM] start:" << steamPath + QStringLiteral("/steam.exe") << args;
+    qWarning() << "[STEAM] start:" << steamPath + QStringLiteral("/steam.exe") << args
+               << (personal ? "| personal (login UI, no -silent)" : "| club");
     process->start(steamPath + QStringLiteral("/steam.exe"), args);
 }
 
@@ -438,6 +643,10 @@ void SteamAuth::startScout(const QString &login, const QString &password)
             parkWindowOffscreen(ctx.pickerHwnd);
         if (ctx.steamDlgHwnd)
             parkWindowOffscreen(ctx.steamDlgHwnd);
+        if (ctx.loginHwnd || ctx.pickerHwnd || ctx.steamDlgHwnd) {
+            if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+                pm->setShellTopmost(true);
+        }
 
         if (!m_scoutInjected && ctx.loginHwnd && m_scoutTicks >= 12) {
             m_scoutInjected = true;
@@ -536,7 +745,8 @@ void SteamAuth::startScout(const QString &login, const QString &password)
 #endif
 }
 
-void SteamAuth::backupCache(NetworkManager *net, int terminalId, const QString &login)
+void SteamAuth::backupCache(NetworkManager *net, int terminalId, const QString &login,
+                            int accountId, int gameId)
 {
 #ifdef Q_OS_WIN
     if (login.isEmpty()) {
@@ -557,6 +767,10 @@ void SteamAuth::backupCache(NetworkManager *net, int terminalId, const QString &
     QJsonObject rootPayload;
     rootPayload.insert(QStringLiteral("login"), login);
     rootPayload.insert(QStringLiteral("terminal_id"), terminalId);
+    if (accountId > 0)
+        rootPayload.insert(QStringLiteral("account_id"), accountId);
+    if (gameId > 0)
+        rootPayload.insert(QStringLiteral("game_id"), gameId);
     rootPayload.insert(QStringLiteral("platform"), QStringLiteral("steam"));
     rootPayload.insert(QStringLiteral("config_vdf"), configVdf);
     rootPayload.insert(QStringLiteral("loginusers_vdf"), loginusersVdf);
@@ -572,7 +786,8 @@ void SteamAuth::backupCache(NetworkManager *net, int terminalId, const QString &
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     const QByteArray jsonData = QJsonDocument(rootPayload).toJson(QJsonDocument::Compact);
-    qDebug() << "[STEAM] VDF backup → server, bytes:" << jsonData.size();
+    qDebug() << "[STEAM] VDF backup → server, bytes:" << jsonData.size()
+             << "account_id:" << accountId << "game_id:" << gameId;
 
     QNetworkReply *reply = net->networkAccessManager()->post(request, jsonData);
     connect(reply, &QNetworkReply::finished, reply, [reply]() {
@@ -586,5 +801,7 @@ void SteamAuth::backupCache(NetworkManager *net, int terminalId, const QString &
     Q_UNUSED(net);
     Q_UNUSED(terminalId);
     Q_UNUSED(login);
+    Q_UNUSED(accountId);
+    Q_UNUSED(gameId);
 #endif
 }

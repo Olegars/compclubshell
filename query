@@ -1,0 +1,21 @@
+﻿=== sector0451 images ===
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\hex_bg.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\battlenet.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\ea.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\epic.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\lesta.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\riot.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\roblox.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\steam.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\ubisoft.png
+C:\Qt\compclubshell\build\0451-Release\sector0451\images\launchers\vkplay.png
+=== qml txt ===
+=== grep steam ===
+C:\Qt\compclubshell\build\0451-Release\build.ninja
+C:\Qt\compclubshell\build\0451-Release\.cmake\api\v1\reply\target-appsector0451-Release-9caca055e9251b02802b.json
+C:\Qt\compclubshell\build\0451-Release\.qt\appsector0451_res.cmake
+C:\Qt\compclubshell\build\0451-Release\.qt\rcc\appsector0451_raw_res_0.qrc
+C:\Qt\compclubshell\build\0451-Release\.qt\rcc\qrc_appsector0451_raw_res_0.cpp
+C:\Qt\compclubshell\build\0451-Release\.rcc\qmlcache\appsector0451_Dashboard_qml.cpp
+C:\Qt\compclubshell\build\0451-Release\sector0451\Dashboard.qml

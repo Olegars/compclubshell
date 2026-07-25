@@ -42,7 +42,9 @@ public:
 
     virtual void backupCache(NetworkManager *net,
                              int terminalId,
-                             const QString &login) = 0;
+                             const QString &login,
+                             int accountId = 0,
+                             int gameId = 0) = 0;
 
     // Имя процесса лаунчера для раннего exit-watch (например steam.exe).
     virtual QString launcherProcessName() const = 0;

@@ -36,14 +36,65 @@ Item {
     property string darkBg: "#030704"
     property string currentLanguage: "RU"
 
-    // Riot: выбор личного / клубного аккаунта перед запуском
-    property int pendingRiotGameId: 0
-    property string pendingRiotTitle: ""
-    property string pendingRiotExe: ""
-    property string pendingRiotArgs: ""
-    property string pendingRiotPlatform: "riot"
+    // Выбор личного / клубного аккаунта перед запуском любой игры
+    property int pendingGameId: 0
+    property string pendingGameTitle: ""
+    property string pendingGameExe: ""
+    property string pendingGameArgs: ""
+    property string pendingGamePlatform: ""
 
     readonly property string defaultRiotClient: "C:\\Riot Games\\Riot Client\\RiotClientServices.exe"
+    readonly property string defaultEpicLauncher: "C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe"
+    readonly property string defaultEaDesktop: "C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe"
+
+    readonly property var epicLauncherPaths: [
+        "C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe",
+        "C:\\Program Files (x86)\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe",
+        "C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe"
+    ]
+    readonly property var eaLauncherPaths: [
+        "C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe",
+        "C:\\Program Files\\Electronic Arts\\EA Desktop\\EADesktop.exe"
+    ]
+    readonly property var battleNetPaths: [
+        "C:\\Program Files (x86)\\Battle.net\\Battle.net Launcher.exe",
+        "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe",
+        "C:\\Program Files\\Battle.net\\Battle.net Launcher.exe",
+        "C:\\Program Files\\Battle.net\\Battle.net.exe"
+    ]
+    readonly property var ubisoftPaths: [
+        "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\UbisoftConnect.exe",
+        "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\upc.exe",
+        "C:\\Program Files\\Ubisoft\\Ubisoft Game Launcher\\UbisoftConnect.exe",
+        "C:\\Program Files\\Ubisoft\\Ubisoft Game Launcher\\upc.exe"
+    ]
+    readonly property var lestaPaths: [
+        "C:\\Program Files (x86)\\Lesta\\GameCenter\\LestaGameCenter.exe",
+        "C:\\Program Files\\Lesta\\GameCenter\\LestaGameCenter.exe",
+        "C:\\Games\\Lesta Game Center\\LestaGameCenter.exe",
+        "C:\\Users\\Public\\Desktop\\Lesta Game Center.lnk"
+    ]
+    readonly property var vkPlayPaths: [
+        "C:\\Users\\Public\\Desktop\\VK Play.lnk",
+        "C:\\Program Files (x86)\\VK Play\\GameCenter\\GameCenter.exe",
+        "C:\\Program Files\\VK Play\\GameCenter\\GameCenter.exe",
+        "C:\\Program Files (x86)\\MyGames\\GameCenter\\GameCenter.exe",
+        "C:\\Program Files\\MyGames\\GameCenter\\GameCenter.exe"
+    ]
+
+    function launchQuickClient(paths) {
+        if (typeof Launcher === "undefined") {
+            console.warn("[LAUNCH] Launcher недоступен")
+            return
+        }
+        if (typeof Launcher.launchFirstExisting === "function") {
+            Launcher.launchFirstExisting(paths, "")
+            return
+        }
+        // fallback: старый API — первый путь
+        if (paths && paths.length > 0)
+            Launcher.launch(paths[0], "", "", "", "")
+    }
 
     function looksLikeRiot(platform, exePath, args, title) {
         var p = String(platform || "").toLowerCase()
@@ -56,6 +107,81 @@ Item {
             || a.indexOf("league of legends") >= 0
             || t.indexOf("valorant") >= 0 || t.indexOf("league of legends") >= 0
             || t.indexOf("legends") >= 0 && t.indexOf("league") >= 0
+    }
+
+    function looksLikeEpic(platform, exePath, args) {
+        var p = String(platform || "").toLowerCase()
+        var e = String(exePath || "").toLowerCase()
+        var a = String(args || "").toLowerCase()
+        return p === "epic" || p.indexOf("epic") >= 0
+            || e.indexOf("epicgameslauncher") >= 0 || e.indexOf("epic games") >= 0
+            || a.indexOf("com.epicgames.launcher") >= 0
+    }
+
+    function looksLikeEa(platform, exePath, args) {
+        var p = String(platform || "").toLowerCase()
+        var e = String(exePath || "").toLowerCase()
+        var a = String(args || "").toLowerCase()
+        return p === "ea" || p === "origin" || p === "eadesktop" || p === "eaapp"
+            || p.indexOf("ea ") >= 0 || p.indexOf("electronic arts") >= 0
+            || e.indexOf("eadesktop.exe") >= 0 || e.indexOf("ea desktop") >= 0
+            || a.indexOf("origin2://") >= 0 || a.indexOf("origin://") >= 0
+            || a.indexOf("eadm://") >= 0
+    }
+
+    function looksLikeSteam(platform, exePath, args) {
+        var p = String(platform || "").toLowerCase()
+        var e = String(exePath || "").toLowerCase()
+        var a = String(args || "").toLowerCase()
+        var fileName = e.split("\\").pop().split("/").pop()
+        return p === "steam" || p === "valve"
+            || fileName === "steam.exe"
+            || a.indexOf("steam://") >= 0 || a.indexOf("-applaunch") >= 0
+    }
+
+    function normalizePlatform(platform, exePath, args, title) {
+        if (looksLikeRiot(platform, exePath, args, title))
+            return "riot"
+        if (looksLikeEpic(platform, exePath, args))
+            return "epic"
+        if (looksLikeEa(platform, exePath, args))
+            return "ea"
+        if (looksLikeSteam(platform, exePath, args))
+            return "steam"
+        var p = String(platform || "").toLowerCase().trim()
+        return p.length > 0 ? p : "pc"
+    }
+
+    function platformBrandTitle(key) {
+        switch (String(key || "").toLowerCase()) {
+        case "riot": return "RIOT GAMES"
+        case "steam": return "STEAM"
+        case "epic": return "EPIC GAMES"
+        case "ea": return "EA APP"
+        default:
+            var k = String(key || "").toUpperCase()
+            return k.length > 0 ? k : "ИГРА"
+        }
+    }
+
+    function platformBrandColor(key) {
+        switch (String(key || "").toLowerCase()) {
+        case "riot": return "#d32f2f"
+        case "steam": return "#00adef"
+        case "epic": return "#ffffff"
+        case "ea": return "#ff5722"
+        default: return accentColor
+        }
+    }
+
+    function platformShortName(key) {
+        switch (String(key || "").toLowerCase()) {
+        case "riot": return "Riot"
+        case "steam": return "Steam"
+        case "epic": return "Epic"
+        case "ea": return "EA"
+        default: return "платформы"
+        }
     }
 
     function resolveRiotExe(exePath) {
@@ -85,18 +211,63 @@ Item {
         return ""
     }
 
-    function launchRiotPersonal() {
-        var exe = resolveRiotExe(pendingRiotExe)
-        var title = pendingRiotTitle || "Riot"
-        var args = resolveRiotArgs(pendingRiotArgs, title, pendingRiotExe)
-        riotAccountPopup.close()
+    function resolvePersonalExe(platform, exePath) {
+        var e = String(exePath || "").trim()
+        if (platform === "riot")
+            return resolveRiotExe(e)
+        if (e.length > 0)
+            return e
+        if (platform === "epic")
+            return defaultEpicLauncher
+        if (platform === "ea")
+            return defaultEaDesktop
+        return e
+    }
+
+    function resolvePersonalArgs(platform, args, title, exePath) {
+        if (platform === "riot")
+            return resolveRiotArgs(args, title, exePath)
+        return String(args || "")
+    }
+
+    function isLaunchBlocked() {
+        if (typeof root !== 'undefined' && root !== null) {
+            if (root.isLoggingIn || root.gameLoadingVisible)
+                return true
+        }
+        if (typeof Launcher !== 'undefined' && typeof Launcher.isSessionBusy === 'function'
+                && Launcher.isSessionBusy())
+            return true
+        return false
+    }
+
+    function openAccountChoice(gameId, platform, title, exePath, args) {
+        if (isLaunchBlocked()) {
+            console.log("[LAUNCH] ignore tile click — session busy / overlay visible")
+            return
+        }
+        pendingGameId = parseInt(gameId) || 0
+        pendingGameTitle = title || ""
+        pendingGameExe = exePath || ""
+        pendingGameArgs = args || ""
+        pendingGamePlatform = normalizePlatform(platform, exePath, args, title)
+        accountChoicePopup.open()
+    }
+
+    function launchPersonal() {
+        var plat = normalizePlatform(pendingGamePlatform, pendingGameExe, pendingGameArgs, pendingGameTitle)
+        var title = pendingGameTitle || platformShortName(plat)
+        var exe = resolvePersonalExe(plat, pendingGameExe)
+        var args = resolvePersonalArgs(plat, pendingGameArgs, title, pendingGameExe)
+        accountChoicePopup.close()
+        clubBusyHintPopup.close()
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
-            root.currentGameId = pendingRiotGameId
-            root.showGameLoading("riot", title)
+            root.currentGameId = pendingGameId
+            root.showGameLoading(plat, title)
         }
         if (typeof Launcher === 'undefined') {
-            console.error("[RIOT] Launcher не найден")
+            console.error("[LAUNCH] Launcher не найден")
             if (typeof root !== 'undefined') {
                 root.isLoggingIn = false
                 root.hideGameLoading()
@@ -104,33 +275,34 @@ Item {
             return
         }
         var payload = {
-            "platform": "riot",
+            "platform": plat,
             "platform_source": "personal_account",
             "exe_path": exe,
             "args": args,
             "login": "",
             "password": "",
-            "game_id": pendingRiotGameId,
+            "game_id": pendingGameId,
             "game_title": title,
             "terminal_id": parseInt(dashboardRoot.termId),
             "auth": { "mode": "personal" }
         }
-        console.log("[RIOT] личный аккаунт → Riot Client", exe, args)
+        console.log("[LAUNCH] личный аккаунт →", plat, exe, args)
         Launcher.launchPlatformSessionString(JSON.stringify(payload), "")
-        if (typeof root !== 'undefined')
-            root.scheduleHideGameLoading()
+        // Оверлей держит C++ до hideShell / gameStartedSuccessfully — не scheduleHide рано
     }
 
-    function launchRiotClub() {
-        var gameId = pendingRiotGameId
-        var title = pendingRiotTitle || "Riot"
-        riotAccountPopup.close()
+    function launchClub() {
+        var gameId = pendingGameId
+        var plat = normalizePlatform(pendingGamePlatform, pendingGameExe, pendingGameArgs, pendingGameTitle)
+        var title = pendingGameTitle || platformShortName(plat)
+        accountChoicePopup.close()
+        clubBusyHintPopup.close()
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = gameId
-            root.showGameLoading("riot", title)
+            root.showGameLoading(plat, title)
         }
-        startClubTakeAccount(gameId, "riot", title, pendingRiotExe, pendingRiotArgs)
+        startClubTakeAccount(gameId, plat, title, pendingGameExe, pendingGameArgs)
     }
 
     function startClubTakeAccount(gameId, modelPlatform, modelTitle, modelExe, modelArgs) {
@@ -208,9 +380,8 @@ Item {
                         }
                     } else {
                         console.warn("[SESSION] take-account:", res.message || "ошибка")
-                        if (String(res.message || "").indexOf("занят") >= 0
-                            && dashboardRoot.looksLikeRiot(modelPlatform, modelExe, modelArgs, modelTitle)) {
-                            riotBusyHintPopup.open()
+                        if (String(res.message || "").indexOf("занят") >= 0) {
+                            clubBusyHintPopup.open()
                         }
                         if (typeof root !== 'undefined') {
                             root.isLoggingIn = false
@@ -383,13 +554,13 @@ Item {
 
                     GridLayout {
                         columns: 3
-                        rows: 2
-                        columnSpacing: 10
-                        rowSpacing: 10
+                        rows: 3
+                        columnSpacing: 8
+                        rowSpacing: 8
                         Layout.fillWidth: true
                         PlatformSquareBtn {
                             btnText: "STEAM"
-                            iconText: "󰓓"
+                            iconSource: Qt.resolvedUrl("images/launchers/steam.png")
                             brandColor: "#00adef"
                             onClicked: {
                                 // Личный Steam: оверлей держим до gameStartedSuccessfully из C++
@@ -412,11 +583,96 @@ Item {
                                 }
                             }
                         }
-                        PlatformSquareBtn { btnText: "EPIC"; iconText: "󰊗"; brandColor: "#ffffff"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe", "", "", "", "") } }
-                        PlatformSquareBtn { btnText: "ROBLOX"; iconText: "󰩊"; brandColor: "#e11d48"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\Roblox Player.lnk", "", "", "", "") } }
-                        PlatformSquareBtn { btnText: "RIOT"; iconText: "󰊴"; brandColor: "#d32f2f"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "", "", "", "") } }
-                        PlatformSquareBtn { btnText: "EA APP"; iconText: "󰓡"; brandColor: "#ff5722"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe", "", "", "", "") } }
-                        PlatformSquareBtn { btnText: "VK PLAY"; iconText: "󰕼"; brandColor: "#ff3347"; onClicked: { if (typeof Launcher !== 'undefined') Launcher.launch("C:\\Users\\Public\\Desktop\\VK Play.lnk", "", "", "", "") } }
+                        PlatformSquareBtn {
+                            btnText: "EPIC"
+                            iconSource: Qt.resolvedUrl("images/launchers/epic.png")
+                            brandColor: "#ffffff"
+                            onClicked: {
+                                console.log("[QML-CLICK] Epic Games Launcher...")
+                                dashboardRoot.launchQuickClient(dashboardRoot.epicLauncherPaths)
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "EA APP"
+                            iconSource: Qt.resolvedUrl("images/launchers/ea.png")
+                            brandColor: "#ff5722"
+                            onClicked: {
+                                console.log("[QML-CLICK] EA App...")
+                                dashboardRoot.launchQuickClient(dashboardRoot.eaLauncherPaths)
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "RIOT"
+                            iconSource: Qt.resolvedUrl("images/launchers/riot.png")
+                            brandColor: "#d32f2f"
+                            onClicked: {
+                                if (typeof root !== 'undefined') {
+                                    root.isLoggingIn = true
+                                    root.showGameLoading("riot", "Riot Client")
+                                }
+                                var mockAuth = {
+                                    "platform": "riot",
+                                    "platform_source": "personal_account",
+                                    "exe_path": "C:\\Riot Games\\Riot Client\\RiotClientServices.exe",
+                                    "args": "--launch-product=league_of_legends --launch-patchline=live",
+                                    "login": "",
+                                    "password": "",
+                                    "auth": { "mode": "personal" }
+                                }
+                                if (typeof Launcher !== 'undefined') {
+                                    console.log("[QML-CLICK] Личный Riot Client...")
+                                    Launcher.launchPlatformSession(mockAuth, "")
+                                }
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "BATTLE.NET"
+                            iconSource: Qt.resolvedUrl("images/launchers/battlenet.png")
+                            brandColor: "#00aeff"
+                            onClicked: {
+                                console.log("[QML-CLICK] Battle.net...")
+                                dashboardRoot.launchQuickClient(dashboardRoot.battleNetPaths)
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "UBISOFT"
+                            iconSource: Qt.resolvedUrl("images/launchers/ubisoft.png")
+                            brandColor: "#ffffff"
+                            onClicked: {
+                                console.log("[QML-CLICK] Ubisoft Connect...")
+                                dashboardRoot.launchQuickClient(dashboardRoot.ubisoftPaths)
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "LESTA"
+                            iconSource: Qt.resolvedUrl("images/launchers/lesta.png")
+                            brandColor: "#ff6a00"
+                            onClicked: {
+                                console.log("[QML-CLICK] Lesta Game Center...")
+                                dashboardRoot.launchQuickClient(dashboardRoot.lestaPaths)
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "VK PLAY"
+                            iconSource: Qt.resolvedUrl("images/launchers/vkplay.png")
+                            brandColor: "#ff3347"
+                            onClicked: {
+                                console.log("[QML-CLICK] VK Play...")
+                                dashboardRoot.launchQuickClient(dashboardRoot.vkPlayPaths)
+                            }
+                        }
+                        PlatformSquareBtn {
+                            btnText: "ROBLOX"
+                            iconSource: Qt.resolvedUrl("images/launchers/roblox.png")
+                            brandColor: "#e11d48"
+                            onClicked: {
+                                console.log("[QML-CLICK] Roblox...")
+                                dashboardRoot.launchQuickClient([
+                                    "C:\\Users\\Public\\Desktop\\Roblox Player.lnk",
+                                    "C:\\Program Files (x86)\\Roblox\\Versions\\RobloxPlayerBeta.exe"
+                                ])
+                            }
+                        }
                     }
 
                     Item { height: 5; width: 1 }
@@ -637,30 +893,16 @@ Item {
                             id: gArea
                             anchors.fill: parent
                             hoverEnabled: true
+                            enabled: !dashboardRoot.isLaunchBlocked()
                             onClicked: {
-                                var currentGameId = model.id
-                                var mPlat = model.platform || ""
-                                var mTitle = model.title || ""
-                                var mExe = model.exePath || ""
-                                var mArgs = model.args || ""
-
-                                if (dashboardRoot.looksLikeRiot(mPlat, mExe, mArgs, mTitle)) {
-                                    dashboardRoot.pendingRiotGameId = parseInt(currentGameId)
-                                    dashboardRoot.pendingRiotTitle = mTitle
-                                    dashboardRoot.pendingRiotExe = mExe
-                                    dashboardRoot.pendingRiotArgs = mArgs
-                                    dashboardRoot.pendingRiotPlatform = mPlat || "riot"
-                                    riotAccountPopup.open()
+                                if (dashboardRoot.isLaunchBlocked())
                                     return
-                                }
-
-                                if (typeof root !== 'undefined') {
-                                    root.isLoggingIn = true
-                                    root.currentGameId = parseInt(currentGameId)
-                                    root.showGameLoading(mPlat, mTitle)
-                                }
-                                dashboardRoot.startClubTakeAccount(
-                                    currentGameId, mPlat, mTitle, mExe, mArgs)
+                                dashboardRoot.openAccountChoice(
+                                    model.id,
+                                    model.platform || "",
+                                    model.title || "",
+                                    model.exePath || "",
+                                    model.args || "")
                             }
                         }
                     }
@@ -1080,16 +1322,36 @@ Item {
         }
     }
 
+    Connections {
+        target: typeof root !== 'undefined' ? root : null
+        function onIsLoggingInChanged() {
+            if (root && root.isLoggingIn) {
+                accountChoicePopup.close()
+                clubBusyHintPopup.close()
+            }
+        }
+        function onGameLoadingVisibleChanged() {
+            if (root && root.gameLoadingVisible) {
+                accountChoicePopup.close()
+                clubBusyHintPopup.close()
+            }
+        }
+    }
+
     Popup {
-        id: riotAccountPopup
+        id: accountChoicePopup
         width: Math.min(640, parent.width - 40)
         height: 420
         anchors.centerIn: parent
         modal: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        readonly property string brandKey: dashboardRoot.pendingGamePlatform
+        readonly property string brandColor: dashboardRoot.platformBrandColor(brandKey)
+        readonly property string brandTitle: dashboardRoot.platformBrandTitle(brandKey)
+        readonly property string shortName: dashboardRoot.platformShortName(brandKey)
         background: Rectangle {
             color: "#0a0505"
-            border.color: "#d32f2f"
+            border.color: accountChoicePopup.brandColor
             radius: 10
         }
         ColumnLayout {
@@ -1098,16 +1360,17 @@ Item {
             spacing: 16
 
             Text {
-                text: "RIOT GAMES"
-                color: "#d32f2f"
+                text: accountChoicePopup.brandTitle
+                color: accountChoicePopup.brandColor
                 font.pixelSize: 22
                 font.bold: true
                 font.letterSpacing: 2
                 Layout.alignment: Qt.AlignHCenter
             }
             Text {
-                text: dashboardRoot.pendingRiotTitle.length > 0
-                      ? dashboardRoot.pendingRiotTitle : "Игра Riot"
+                text: dashboardRoot.pendingGameTitle.length > 0
+                      ? dashboardRoot.pendingGameTitle
+                      : ("Игра " + accountChoicePopup.shortName)
                 color: "#aaaaaa"
                 font.pixelSize: 14
                 Layout.alignment: Qt.AlignHCenter
@@ -1119,7 +1382,7 @@ Item {
                 color: "#e5e5e5"
                 font.pixelSize: 16
                 lineHeight: 1.35
-                text: "У вас есть личный аккаунт Riot?\n\n"
+                text: "У вас есть личный аккаунт " + accountChoicePopup.shortName + "?\n\n"
                       + "Личный — сохранит ранг, скины и прогресс.\n"
                       + "Клубный — гостевой вход из пула клуба (если свободны)."
             }
@@ -1132,65 +1395,104 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 52
                     radius: 6
-                    color: "#d32f2f"
+                    color: ownAccMouse.pressed
+                           ? Qt.darker(accountChoicePopup.brandColor, 1.25)
+                           : (ownAccMouse.containsMouse
+                              ? Qt.lighter(accountChoicePopup.brandColor, 1.12)
+                              : accountChoicePopup.brandColor)
+                    scale: ownAccMouse.pressed ? 0.96 : (ownAccMouse.containsMouse ? 1.02 : 1.0)
+                    opacity: ownAccMouse.pressed ? 0.9 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
                     Text {
                         anchors.centerIn: parent
                         text: "СВОЙ АККАУНТ"
-                        color: "white"
+                        color: accountChoicePopup.brandKey === "epic" ? "black" : "white"
                         font.bold: true
                         font.pixelSize: 14
                     }
                     MouseArea {
+                        id: ownAccMouse
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: dashboardRoot.launchRiotPersonal()
+                        onClicked: dashboardRoot.launchPersonal()
                     }
                 }
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 52
                     radius: 6
-                    color: "transparent"
-                    border.color: accentColor
+                    color: clubAccMouse.pressed
+                           ? Qt.rgba(0.06, 0.12, 0.1, 0.85)
+                           : (clubAccMouse.containsMouse
+                              ? Qt.rgba(0.08, 0.14, 0.11, 0.55)
+                              : "transparent")
+                    border.color: clubAccMouse.containsMouse || clubAccMouse.pressed
+                                  ? Qt.lighter(accentColor, 1.2)
+                                  : accentColor
                     border.width: 2
+                    scale: clubAccMouse.pressed ? 0.96 : (clubAccMouse.containsMouse ? 1.02 : 1.0)
+                    opacity: clubAccMouse.pressed ? 0.9 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
                     Text {
                         anchors.centerIn: parent
                         text: "КЛУБНЫЙ АККАУНТ"
-                        color: accentColor
+                        color: clubAccMouse.containsMouse || clubAccMouse.pressed
+                               ? Qt.lighter(accentColor, 1.15)
+                               : accentColor
                         font.bold: true
                         font.pixelSize: 14
+                        Behavior on color { ColorAnimation { duration: 100 } }
                     }
                     MouseArea {
+                        id: clubAccMouse
                         anchors.fill: parent
+                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: dashboardRoot.launchRiotClub()
+                        onClicked: dashboardRoot.launchClub()
                     }
                 }
             }
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 text: "Отмена"
-                color: "#666666"
+                color: cancelAccMouse.pressed
+                       ? "#aaaaaa"
+                       : (cancelAccMouse.containsMouse ? "#999999" : "#666666")
                 font.pixelSize: 13
+                scale: cancelAccMouse.pressed ? 0.96 : 1.0
+                opacity: cancelAccMouse.pressed ? 0.85 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: 100 } }
+                Behavior on color { ColorAnimation { duration: 100 } }
                 MouseArea {
+                    id: cancelAccMouse
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: riotAccountPopup.close()
+                    onClicked: accountChoicePopup.close()
                 }
             }
         }
     }
 
     Popup {
-        id: riotBusyHintPopup
+        id: clubBusyHintPopup
         width: Math.min(560, parent.width - 40)
         height: 280
         anchors.centerIn: parent
         modal: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        readonly property string brandKey: dashboardRoot.pendingGamePlatform
+        readonly property string brandColor: dashboardRoot.platformBrandColor(brandKey)
+        readonly property string shortName: dashboardRoot.platformShortName(brandKey)
         background: Rectangle {
             color: "#0a0505"
-            border.color: "#d32f2f"
+            border.color: clubBusyHintPopup.brandColor
             radius: 10
         }
         ColumnLayout {
@@ -1199,7 +1501,7 @@ Item {
             spacing: 18
             Text {
                 text: "КЛУБНЫЕ АККАУНТЫ ЗАНЯТЫ"
-                color: "#d32f2f"
+                color: clubBusyHintPopup.brandColor
                 font.bold: true
                 font.pixelSize: 18
                 Layout.alignment: Qt.AlignHCenter
@@ -1210,36 +1512,59 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 color: "#cccccc"
                 font.pixelSize: 15
-                text: "Сейчас нет свободного клубного аккаунта Riot.\nМожно войти под своим — прогресс и скины останутся у вас."
+                text: "Сейчас нет свободного клубного аккаунта "
+                      + clubBusyHintPopup.shortName
+                      + ".\nМожно войти под своим — прогресс и скины останутся у вас."
             }
             Item { Layout.fillHeight: true }
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 48
                 radius: 6
-                color: "#d32f2f"
+                color: busyOwnMouse.pressed
+                       ? Qt.darker(clubBusyHintPopup.brandColor, 1.25)
+                       : (busyOwnMouse.containsMouse
+                          ? Qt.lighter(clubBusyHintPopup.brandColor, 1.12)
+                          : clubBusyHintPopup.brandColor)
+                scale: busyOwnMouse.pressed ? 0.96 : (busyOwnMouse.containsMouse ? 1.02 : 1.0)
+                opacity: busyOwnMouse.pressed ? 0.9 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: 100 } }
+                Behavior on color { ColorAnimation { duration: 100 } }
                 Text {
                     anchors.centerIn: parent
                     text: "ВОЙТИ ПОД СВОИМ"
-                    color: "white"
+                    color: clubBusyHintPopup.brandKey === "epic" ? "black" : "white"
                     font.bold: true
                 }
                 MouseArea {
+                    id: busyOwnMouse
                     anchors.fill: parent
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                        riotBusyHintPopup.close()
-                        dashboardRoot.launchRiotPersonal()
+                        clubBusyHintPopup.close()
+                        dashboardRoot.launchPersonal()
                     }
                 }
             }
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 text: "Закрыть"
-                color: "#666666"
+                color: busyCloseMouse.pressed
+                       ? "#aaaaaa"
+                       : (busyCloseMouse.containsMouse ? "#999999" : "#666666")
+                scale: busyCloseMouse.pressed ? 0.96 : 1.0
+                opacity: busyCloseMouse.pressed ? 0.85 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: 100 } }
+                Behavior on color { ColorAnimation { duration: 100 } }
                 MouseArea {
+                    id: busyCloseMouse
                     anchors.fill: parent
-                    onClicked: riotBusyHintPopup.close()
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: clubBusyHintPopup.close()
                 }
             }
         }
@@ -1288,11 +1613,12 @@ Item {
         id: platBtn
         property string btnText: "LAUNCH"
         property string iconText: "🎮"
+        property string iconSource: ""   // optional qrc:/… png/svg; falls back to iconText
         property string brandColor: accentColor
         signal clicked()
 
         Layout.fillWidth: true
-        Layout.preferredHeight: 65
+        Layout.preferredHeight: 58
         radius: 4
         color: {
             if (platBtnMouse.pressed)
@@ -1315,17 +1641,34 @@ Item {
 
         Column {
             anchors.centerIn: parent
-            spacing: 4
-            Text {
-                text: iconText
+            spacing: 3
+            Item {
+                width: 22
+                height: 22
                 anchors.horizontalCenter: parent.horizontalCenter
-                scale: platBtnMouse.containsMouse ? 1.08 : 1.0
+                scale: platBtnMouse.containsMouse ? 1.1 : 1.0
                 Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+
+                Image {
+                    anchors.fill: parent
+                    visible: platBtn.iconSource.length > 0
+                    source: platBtn.iconSource
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    mipmap: true
+                }
+                Text {
+                    anchors.centerIn: parent
+                    visible: platBtn.iconSource.length === 0
+                    text: iconText
+                    color: brandColor
+                    font.pixelSize: 18
+                }
             }
             Text {
                 text: btnText
                 color: platBtnMouse.containsMouse ? brandColor : "white"
-                font.pixelSize: 10
+                font.pixelSize: 9
                 font.bold: platBtnMouse.containsMouse
                 anchors.horizontalCenter: parent.horizontalCenter
                 Behavior on color { ColorAnimation { duration: 120 } }

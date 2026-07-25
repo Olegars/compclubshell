@@ -17,6 +17,9 @@ public:
     QString platformId() const override { return QStringLiteral("riot"); }
 
     void killLauncher() override;
+    // Мягкое закрытие перед backup (CEF успевает сбросить persist yaml)
+    void prepareGracefulShutdown();
+    void forceKillRemaining();
     bool applyCache(const QJsonObject &authData) override;
     void startLauncher(QProcess *process,
                        const QJsonObject &authData,
@@ -24,12 +27,16 @@ public:
     void startScout(const QString &login, const QString &password) override;
     void stopScout() override;
 
-    bool needsCacheBackup() const override { return false; }
-    void setNeedsCacheBackup(bool) override {}
+    bool needsCacheBackup() const override { return m_needBackup; }
+    void setNeedsCacheBackup(bool need) override { m_needBackup = need; }
     bool didInteractiveLogin() const override { return m_credentialsSent; }
     bool allowsGameDetect() const override { return m_allowsGameDetect; }
 
-    void backupCache(NetworkManager *, int, const QString &) override {}
+    void backupCache(NetworkManager *net,
+                     int terminalId,
+                     const QString &login,
+                     int accountId = 0,
+                     int gameId = 0) override;
 
     QString launcherProcessName() const override
     {
@@ -40,9 +47,11 @@ private:
     enum class Phase {
         WaitLoginWindow,
         WaitStableSize,
+        TryApiLogin,
         TypeUsername,
         TabToPassword,
         TypePassword,
+        EnsurePersist,
         TabToSubmit,
         PressEnter,
         Done
@@ -50,11 +59,14 @@ private:
 
     void silentKill(const QString &image);
     void clearLocalSession();
+    // Personal only: aggressive wipe of all known RSO persist locations + verify.
+    void clearLocalSessionHard();
     void scheduleProductLaunch();
     void pollSessionThenLaunchProduct();
     void shellExecuteProductOnce(const char *why);
     void shellExecuteRiotProtocol(const char *why);
     void dismissRiotModalsSoft(const char *why);
+    bool acceptStaySignedInModal(const char *why);
     void launchGameExeDirect(const char *why);
     bool clickPlayButton(const char *why);
     void dismissClientOverlay(const char *why);
@@ -68,6 +80,9 @@ private:
     void finishLaunchNudge(const char *why);
     void discoverRiotLaunchPaths(const char *why);
     void postRiotApi(const QString &path, const QByteArray &body, const char *why);
+    void putRiotCredentials(const char *why);
+    void tryEnablePersistLogin(const char *why);
+    bool ensurePersistCheckbox(quintptr hwnd);
     bool readRiotLockfile(int *port, QString *password, QString *protocol) const;
     bool readLeagueLockfile(int *port, QString *password, QString *protocol) const;
     bool isGameProcessRunning() const;
@@ -99,6 +114,7 @@ private:
     quintptr m_riotParkedHwnd = 0;
     bool m_riotParkedOffscreen = false;
     bool m_credentialsSent = false;
+    bool m_needBackup = false;
     bool m_allowsGameDetect = true;
     bool m_expectInteractive = true;
     bool m_productLaunchScheduled = false;
@@ -113,6 +129,10 @@ private:
     bool m_leagueLobbyPosted = false;
     int m_lobbyPostAttempts = 0;
     bool m_launchAborted = false; // stopScout/kill — отменить отложенные Play/LCU
+    int m_launchGen = 0; // инвалидирует silent RSO-retry при fallback scout
+    bool m_apiLoginAttempted = false;
+    bool m_apiLoginInFlight = false;
+    bool m_persistEnableAttempted = false;
     QString m_launcherExe;
     QString m_productArgs;
     QString m_gameTitle;

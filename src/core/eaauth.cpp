@@ -16,6 +16,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
 #include <string>
 
@@ -246,16 +247,57 @@ static QSet<DWORD> collectEaPids()
     return pids;
 }
 
-static void placeWindowForInput(HWND hwnd)
+// Club interactive scout: login остаётся on-screen (CEF Submit жив), оверлей TOPMOST его кроет.
+// Off-screen park (-20000) ломает CEF focus — Enter на Войти не регистрируется.
+// Важно: во время typing/Tab/Enter НЕ поднимать shell TOPMOST сразу — иначе Enter не доходит до CEF.
+
+void EaAuth::keepOverlayUp(bool force)
 {
+    if (!force) {
+        if (m_sendInputBusy)
+            return;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now < m_overlayHoldOffUntilMs)
+            return;
+        // Idle waiting: rate-limit 1.5s — не спамить SetForeground/TOPMOST каждый tick.
+        if (m_lastOverlayRaiseMs > 0 && (now - m_lastOverlayRaiseMs) < 1500)
+            return;
+        m_lastOverlayRaiseMs = now;
+    } else {
+        m_lastOverlayRaiseMs = QDateTime::currentMSecsSinceEpoch();
+    }
+    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+        pm->setShellTopmost(true);
+}
+
+void EaAuth::beginInjectBurst()
+{
+    m_sendInputBusy = true;
+    // Держим hold-off пока burst не закончится endInjectBurstRestoreOverlay.
+    m_overlayHoldOffUntilMs = QDateTime::currentMSecsSinceEpoch() + 120000;
+}
+
+void EaAuth::endInjectBurstRestoreOverlay(int delayMs)
+{
+    const int ms = qMax(300, delayMs);
+    m_overlayHoldOffUntilMs = QDateTime::currentMSecsSinceEpoch() + ms;
+    QTimer::singleShot(ms, this, [this]() {
+        m_sendInputBusy = false;
+        keepOverlayUp(true);
+        qWarning() << "[EA] overlay TOPMOST restored after Enter settle";
+    });
+}
+
+// Foreground для SendInput без HWND_TOPMOST / SW_RESTORE — иначе login всплывает поверх loading.
+// НЕ поднимаем shell TOPMOST здесь: во время inject burst фокус должен остаться на EA CEF.
+static void placeWindowForScoutInput(HWND hwnd, QObject *auth, bool setFocus)
+{
+    Q_UNUSED(auth);
     if (!hwnd || !IsWindow(hwnd))
         return;
     DWORD pid = 0;
     const DWORD tid = GetWindowThreadProcessId(hwnd, &pid);
     AllowSetForegroundWindow(pid);
-    ShowWindow(hwnd, SW_RESTORE);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-    BringWindowToTop(hwnd);
     const DWORD ourTid = GetCurrentThreadId();
     const DWORD foreTid = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
     if (foreTid && foreTid != ourTid)
@@ -263,36 +305,25 @@ static void placeWindowForInput(HWND hwnd)
     if (tid && tid != ourTid)
         AttachThreadInput(ourTid, tid, TRUE);
     SetForegroundWindow(hwnd);
-    SetActiveWindow(hwnd);
-    SetFocus(hwnd);
+    if (setFocus) {
+        SetActiveWindow(hwnd);
+        SetFocus(hwnd);
+    }
     if (tid && tid != ourTid)
         AttachThreadInput(ourTid, tid, FALSE);
     if (foreTid && foreTid != ourTid)
         AttachThreadInput(ourTid, foreTid, FALSE);
 }
 
-// Нельзя SetFocus на HWND EA — сбивает фокус с CEF-поля (пароль уже сфокусирован).
-static void placeWindowForegroundOnly(HWND hwnd)
+static void placeWindowForInput(HWND hwnd, QObject *auth)
 {
-    if (!hwnd || !IsWindow(hwnd))
-        return;
-    DWORD pid = 0;
-    const DWORD tid = GetWindowThreadProcessId(hwnd, &pid);
-    AllowSetForegroundWindow(pid);
-    ShowWindow(hwnd, SW_RESTORE);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-    BringWindowToTop(hwnd);
-    const DWORD ourTid = GetCurrentThreadId();
-    const DWORD foreTid = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
-    if (foreTid && foreTid != ourTid)
-        AttachThreadInput(ourTid, foreTid, TRUE);
-    if (tid && tid != ourTid)
-        AttachThreadInput(ourTid, tid, TRUE);
-    SetForegroundWindow(hwnd);
-    if (tid && tid != ourTid)
-        AttachThreadInput(ourTid, tid, FALSE);
-    if (foreTid && foreTid != ourTid)
-        AttachThreadInput(ourTid, foreTid, FALSE);
+    placeWindowForScoutInput(hwnd, auth, true);
+}
+
+// Нельзя SetFocus на HWND EA — сбивает фокус с CEF-поля (пароль уже сфокусирован).
+static void placeWindowForegroundOnly(HWND hwnd, QObject *auth)
+{
+    placeWindowForScoutInput(hwnd, auth, false);
 }
 
 static void sendVk(WORD vk)
@@ -347,9 +378,9 @@ static void typeUnicode(const QString &text)
     }
 }
 
-static void clearAndType(HWND hwnd, const QString &text)
+static void clearAndType(HWND hwnd, QObject *auth, const QString &text)
 {
-    placeWindowForInput(hwnd);
+    placeWindowForInput(hwnd, auth);
     sendCtrlA();
     Sleep(40);
     sendVk(VK_DELETE);
@@ -405,7 +436,7 @@ static void clickClient(HWND hwnd, int clientX, int clientY)
     SendInput(2, in, sizeof(INPUT));
 }
 
-static void clickFieldPercent(HWND hwnd, double xp, double yp, const char *why)
+static void clickFieldPercent(HWND hwnd, QObject *auth, double xp, double yp, const char *why)
 {
     if (!hwnd || !IsWindow(hwnd))
         return;
@@ -414,13 +445,14 @@ static void clickFieldPercent(HWND hwnd, double xp, double yp, const char *why)
     const int x = int((rc.right - rc.left) * xp);
     const int y = int((rc.bottom - rc.top) * yp);
     qWarning() << "[EA] click" << why << "at" << x << y << "pct" << xp << yp;
-    placeWindowForInput(hwnd);
+    // Только foreground EA — без немедленного TOPMOST shell (клик/фокус уходят в CEF).
+    placeWindowForInput(hwnd, auth);
     clickClient(hwnd, x, y);
 }
 
-static void typeIntoFocusedField(HWND hwnd, const QString &text, const char *label)
+static void typeIntoFocusedField(HWND hwnd, QObject *auth, const QString &text, const char *label)
 {
-    placeWindowForInput(hwnd);
+    placeWindowForInput(hwnd, auth);
     Sleep(80);
     // Сначала клик уже сделан снаружи — чистим поле и печатаем unicode (надёжнее CEF, чем только Ctrl+V)
     sendCtrlA();
@@ -463,12 +495,6 @@ static void typeIntoFocusedField(HWND hwnd, const QString &text, const char *lab
             CloseClipboard();
         }
     }
-}
-
-static void setShellTopmostFrom(QObject *auth, bool enabled)
-{
-    if (auto *pm = qobject_cast<ProcessManager *>(auth->parent()))
-        pm->setShellTopmost(enabled);
 }
 
 struct EaLoginEnumCtx {
@@ -568,6 +594,7 @@ EaAuth::EaAuth(QObject *parent)
 EaAuth::~EaAuth()
 {
     stopScout();
+    stopLibraryReadyWatch();
 }
 
 void EaAuth::silentKill(const QString &image)
@@ -589,20 +616,222 @@ void EaAuth::silentKill(const QString &image)
 
 void EaAuth::killLauncher()
 {
-    qWarning() << "[EA] killLauncher: EADesktop + helpers";
-    silentKill(QStringLiteral("EADesktop.exe"));
-    silentKill(QStringLiteral("EABackgroundService.exe"));
-    silentKill(QStringLiteral("EALauncher.exe"));
-    silentKill(QStringLiteral("EALaunchHelper.exe"));
-    silentKill(QStringLiteral("Link2EA.exe"));
-    silentKill(QStringLiteral("EACefSubProcess.exe"));
-    silentKill(QStringLiteral("Origin.exe"));
-    silentKill(QStringLiteral("OriginWebHelperService.exe"));
+    qWarning() << "[EA] killLauncher: EADesktop + helpers (taskkill /F /T)";
+    const QStringList images = {
+        QStringLiteral("EADesktop.exe"),
+        QStringLiteral("EABackgroundService.exe"),
+        QStringLiteral("EALauncher.exe"),
+        QStringLiteral("EALaunchHelper.exe"),
+        QStringLiteral("Link2EA.exe"),
+        QStringLiteral("EACefSubProcess.exe"),
+        QStringLiteral("EALocalHostSvc.exe"),
+        QStringLiteral("EAConnect_microsoft.exe"),
+        QStringLiteral("Origin.exe"),
+        QStringLiteral("OriginWebHelperService.exe"),
+        QStringLiteral("OriginThinSetupInternal.exe"),
+        QStringLiteral("IGOProxy32.exe"),
+    };
+    for (const QString &image : images)
+        silentKill(image);
+}
+
+static bool eaImageRunning(const QString &image)
+{
+#ifdef Q_OS_WIN
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return false;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool found = false;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (QString::fromWCharArray(pe.szExeFile).compare(image, Qt::CaseInsensitive) == 0) {
+                found = true;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return found;
+#else
+    Q_UNUSED(image);
+    return false;
+#endif
+}
+
+static bool eaAnyProcessAlive()
+{
+    const QStringList images = {
+        QStringLiteral("EADesktop.exe"),
+        QStringLiteral("EABackgroundService.exe"),
+        QStringLiteral("EALauncher.exe"),
+        QStringLiteral("Link2EA.exe"),
+        QStringLiteral("EACefSubProcess.exe"),
+        QStringLiteral("Origin.exe"),
+        QStringLiteral("OriginWebHelperService.exe"),
+    };
+    for (const QString &image : images) {
+        if (eaImageRunning(image))
+            return true;
+    }
+    return false;
+}
+
+static void killEaAndWait(EaAuth *self, int timeoutMs)
+{
+    if (!self)
+        return;
+    self->killLauncher();
+#ifdef Q_OS_WIN
+    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
+    int rounds = 0;
+    while (QDateTime::currentMSecsSinceEpoch() < deadline) {
+        if (!eaAnyProcessAlive()) {
+            qWarning() << "[EA] killAndWait: процессы EA/Origin завершены после" << rounds
+                       << "раундов";
+            QThread::msleep(500);
+            // Повторная проверка — сервисы иногда поднимаются снова
+            if (!eaAnyProcessAlive())
+                return;
+            qWarning() << "[EA] killAndWait: процесс снова жив — ещё taskkill";
+        }
+        self->killLauncher();
+        ++rounds;
+        QThread::msleep(400);
+    }
+    qWarning() << "[EA] WARN: killAndWait timeout" << timeoutMs << "ms — wipe всё равно";
+#else
+    Q_UNUSED(timeoutMs);
+#endif
+}
+
+static void wipePathLogged(const QString &path, const QString &kind, QStringList *cleared)
+{
+    if (!cleared)
+        return;
+    const QFileInfo fi(path);
+    if (!fi.exists())
+        return;
+    bool ok = false;
+    if (fi.isDir())
+        ok = QDir(path).removeRecursively();
+    else
+        ok = QFile::remove(path);
+    if (ok) {
+        *cleared << (kind + QLatin1Char(':') + path);
+        qWarning().noquote() << "[EA] personal wipe: removed" << kind << path;
+    } else {
+        *cleared << (kind + QStringLiteral(":FAILED:") + path);
+        qWarning().noquote() << "[EA] personal wipe: FAILED" << kind << path;
+    }
+}
+
+static QString eaOriginRoot()
+{
+    return eaLocalAppData() + QStringLiteral("/Origin");
+}
+
+static QStringList wipeEaPersonalSession()
+{
+    QStringList cleared;
+    const QString root = eaDesktopRoot();
+    QDir rootDir(root);
+    if (rootDir.exists()) {
+        // Жёсткий logout: почти всё под EA Desktop, Logs оставляем для диагностики
+        const QFileInfoList entries = rootDir.entryInfoList(
+            QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+        for (const QFileInfo &fi : entries) {
+            if (fi.fileName().compare(QStringLiteral("Logs"), Qt::CaseInsensitive) == 0)
+                continue;
+            wipePathLogged(fi.absoluteFilePath(),
+                           fi.isDir() ? QStringLiteral("ea-dir") : QStringLiteral("ea-file"),
+                           &cleared);
+        }
+        // Явно добить типичные session/token пути (если parent wipe частично FAIL)
+        // IGOCache / content ownership — только personal wipe (не club applyCache)
+        const QStringList extra = {
+            QStringLiteral("SEC"),
+            QStringLiteral("IGOCache"),
+            QStringLiteral("OfflineCache"),
+            QStringLiteral("CEF"),
+            QStringLiteral("CEF/BrowserCache"),
+            QStringLiteral("CEF/BrowserCache/EADesktop"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Network"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Local Storage"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Cookies"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Sessions"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/IndexedDB"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Service Worker"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Cache"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Code Cache"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/GPUCache"),
+            QStringLiteral("CEF/BrowserCache/EADesktop/Session Storage"),
+        };
+        for (const QString &sub : extra)
+            wipePathLogged(root + QLatin1Char('/') + sub, QStringLiteral("ea-dir"), &cleared);
+
+        const QFileInfoList users = rootDir.entryInfoList(
+            QStringList{QStringLiteral("user_*.ini"), QStringLiteral("*.db"),
+                        QStringLiteral("*.sqlite"), QStringLiteral("*.sqlite3")},
+            QDir::Files | QDir::Hidden | QDir::System);
+        for (const QFileInfo &fi : users)
+            wipePathLogged(fi.absoluteFilePath(), QStringLiteral("ea-file"), &cleared);
+    }
+
+    // Origin legacy cache (если ещё есть на машине)
+    const QString origin = eaOriginRoot();
+    if (QDir(origin).exists()) {
+        const QStringList originKill = {
+            QStringLiteral("local.xml"),
+            QStringLiteral("login.json"),
+            QStringLiteral(".local"),
+            QStringLiteral("SSO"),
+            QStringLiteral("CachedData"),
+            QStringLiteral("Cache"),
+            QStringLiteral("Cookies"),
+            QStringLiteral("Sessions"),
+            QStringLiteral("Local Storage"),
+            QStringLiteral("Session Storage"),
+            QStringLiteral("IndexedDB"),
+            QStringLiteral("Service Worker"),
+            QStringLiteral("GPUCache"),
+            QStringLiteral("Code Cache"),
+        };
+        for (const QString &sub : originKill) {
+            const QString abs = origin + QLatin1Char('/') + sub;
+            const QFileInfo fi(abs);
+            wipePathLogged(abs, fi.isDir() || (!fi.exists() && !sub.contains(QLatin1Char('.')))
+                                    ? QStringLiteral("origin-dir")
+                                    : QStringLiteral("origin-file"),
+                           &cleared);
+        }
+        QDir originDir(origin);
+        const QFileInfoList oUsers = originDir.entryInfoList(
+            QStringList{QStringLiteral("user_*.ini"), QStringLiteral("*.db")},
+            QDir::Files | QDir::Hidden | QDir::System);
+        for (const QFileInfo &fi : oUsers)
+            wipePathLogged(fi.absoluteFilePath(), QStringLiteral("origin-file"), &cleared);
+    }
+
+    return cleared;
+}
+
+static void clearEaLocalSession()
+{
+    const QStringList cleared = wipeEaPersonalSession();
+    for (const QString &item : cleared)
+        qWarning() << "[EA] cleared session:" << item;
 }
 
 bool EaAuth::applyCache(const QJsonObject &authData)
 {
     const QString login = authData.value(QStringLiteral("login")).toString();
+    const QString password = authData.value(QStringLiteral("password")).toString();
+    const QString mode = authData.value(QStringLiteral("auth")).toObject()
+                             .value(QStringLiteral("mode")).toString();
+    const QString platformSource = authData.value(QStringLiteral("platform_source")).toString();
+    m_gameTitle = authData.value(QStringLiteral("game_title")).toString().trimmed();
     QString exe = authData.value(QStringLiteral("exe_path")).toString().trimmed();
     if (exe.isEmpty()) {
         const QJsonObject launcher = authData.value(QStringLiteral("launcher")).toObject();
@@ -611,6 +840,40 @@ bool EaAuth::applyCache(const QJsonObject &authData)
     if (exe.isEmpty())
         exe = defaultEaDesktopExe();
     m_launcherExe = exe;
+
+    const bool personal = (mode == QLatin1String("personal"))
+        || (platformSource.compare(QStringLiteral("personal_account"), Qt::CaseInsensitive) == 0)
+        || login.trimmed().isEmpty() || password.isEmpty();
+    m_personalLaunch = personal;
+    m_personalEarlyAuthWarned = false;
+    m_gameUriDeferred = false;
+
+    if (personal) {
+        qWarning() << "[EA] applyCache: personal — aggressive kill + full logout wipe"
+                   << "| title:" << (m_gameTitle.isEmpty() ? QStringLiteral("(none)") : m_gameTitle);
+        killEaAndWait(this, 20000);
+        QStringList cleared = wipeEaPersonalSession();
+        // user_*.ini ещё на месте → процессы держали файл; kill+wipe ещё раз
+        const QString userIniGlob = eaDesktopRoot();
+        const bool userIniLeft = QDir(userIniGlob).exists()
+            && !QDir(userIniGlob).entryList(QStringList{QStringLiteral("user_*.ini")},
+                                            QDir::Files).isEmpty();
+        const bool secLeft = QDir(eaDesktopRoot() + QStringLiteral("/SEC")).exists();
+        if (userIniLeft || secLeft) {
+            qWarning() << "[EA] personal: session remnants after wipe — kill+wipe retry"
+                       << "user_ini:" << userIniLeft << "SEC:" << secLeft;
+            killEaAndWait(this, 12000);
+            cleared += wipeEaPersonalSession();
+        }
+        qWarning().noquote() << "[EA] personal: full logout wipe |"
+                             << (cleared.isEmpty() ? QStringLiteral("(nothing found)")
+                                                   : cleared.join(QStringLiteral(", ")));
+        // Не soft-silent: credentials нет, scout/URI/DIRECT запрещены политикой personal
+        m_expectInteractive = false;
+        m_allowsGameDetect = true;
+        m_needBackup = false;
+        return true;
+    }
 
     const QJsonObject vdf = extractVdfFiles(authData);
     QString blob = vdf.value(QStringLiteral("local_vdf")).toString();
@@ -655,10 +918,38 @@ void EaAuth::startLauncher(QProcess *process,
         argsStr = launcher.value(QStringLiteral("args")).toString().trimmed();
     }
 
+    const QString mode = authData.value(QStringLiteral("auth")).toObject()
+                             .value(QStringLiteral("mode")).toString();
+    const QString platformSource = authData.value(QStringLiteral("platform_source")).toString();
+    const QString login = authData.value(QStringLiteral("login")).toString().trimmed();
+    if (!m_personalLaunch) {
+        m_personalLaunch = (mode == QLatin1String("personal"))
+            || (platformSource.compare(QStringLiteral("personal_account"),
+                                       Qt::CaseInsensitive) == 0)
+            || login.isEmpty();
+    }
+    if (m_gameTitle.isEmpty())
+        m_gameTitle = authData.value(QStringLiteral("game_title")).toString().trimmed();
+
     m_launcherExe = exe;
     // Полные args, в т.ч. "...||C:\\...\\game.exe" — не режем || здесь
     m_launchArgs = argsStr.trimmed();
     m_gameUriDeferred = false;
+
+    const QFileInfo fi(exe);
+    process->setWorkingDirectory(fi.absolutePath());
+    resetLogWatch();
+
+    // Personal: только EADesktop.exe без args — пользователь логинится вручную.
+    // Никакого soft-silent scout / origin2 / DIRECT.
+    if (m_personalLaunch) {
+        qWarning().noquote() << "[EA] personal launch: EADesktop empty args (no game URI/DIRECT):"
+                             << exe;
+        qWarning().noquote() << "[EA] personal: stored launch args ignored until manual play:"
+                             << (m_launchArgs.isEmpty() ? QStringLiteral("(none)") : m_launchArgs);
+        process->start(exe, QStringList{});
+        return;
+    }
 
     const QString uriPart = normalizeEaGameUri(m_launchArgs);
     const bool isUri = uriPart.startsWith(QStringLiteral("origin2://"), Qt::CaseInsensitive)
@@ -670,17 +961,12 @@ void EaAuth::startLauncher(QProcess *process,
     // LaunchHelper+URI сразу при битом cache открывает login и scout раньше был выключен.
     if (!m_expectInteractive && isUri) {
         m_gameUriDeferred = true;
-        const QFileInfo fi(exe);
-        process->setWorkingDirectory(fi.absolutePath());
-        resetLogWatch();
         qWarning().noquote() << "[EA] cache launch: EADesktop, URI после FSM-проверки:" << exe;
         process->start(exe, QStringList{});
         return;
     }
 
     // Interactive: сначала только EADesktop, URI после логина командой.
-    const QFileInfo fi(exe);
-    process->setWorkingDirectory(fi.absolutePath());
     QStringList args;
     if (m_expectInteractive && isUri) {
         m_gameUriDeferred = true;
@@ -697,7 +983,6 @@ void EaAuth::startLauncher(QProcess *process,
 
     qWarning().noquote() << "[EA] Launch exe:" << exe;
     qWarning().noquote() << "[EA] Launch args:" << (args.isEmpty() ? QStringLiteral("(none)") : args.join(QLatin1Char(' ')));
-    resetLogWatch();
     process->start(exe, args);
 }
 
@@ -866,11 +1151,240 @@ void EaAuth::pollEaLogs()
 
 void EaAuth::stopScout()
 {
-    if (!m_scoutTimer)
+    if (m_scoutTimer) {
+        m_scoutTimer->stop();
+        m_scoutTimer->deleteLater();
+        m_scoutTimer = nullptr;
+    }
+    m_sendInputBusy = false;
+    m_overlayHoldOffUntilMs = 0;
+    // Конец сессии / accept game — гасим и ready-watch (finishScoutSuccess стартует его заново)
+    stopLibraryReadyWatch();
+}
+
+void EaAuth::stopLibraryReadyWatch()
+{
+    if (!m_libraryReadyTimer)
         return;
-    m_scoutTimer->stop();
-    m_scoutTimer->deleteLater();
-    m_scoutTimer = nullptr;
+    m_libraryReadyTimer->stop();
+    m_libraryReadyTimer->deleteLater();
+    m_libraryReadyTimer = nullptr;
+}
+
+bool EaAuth::isEaLibraryReadyUi() const
+{
+#ifdef Q_OS_WIN
+    EaLoginEnumCtx ctx;
+    ctx.eaPids = collectEaPids();
+    EnumWindows(enumEaLoginProc, reinterpret_cast<LPARAM>(&ctx));
+    // Библиотека готова: главное окно есть, формы логина нет
+    return ctx.bestMain != nullptr && ctx.bestLogin == nullptr;
+#else
+    return false;
+#endif
+}
+
+bool EaAuth::isClubGameLikelyRunning() const
+{
+#ifdef Q_OS_WIN
+    // Полноэкранное окно с игровым классом — не EADesktop/Origin
+    struct Ctx {
+        bool found = false;
+    } ctx;
+    EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+        auto *c = reinterpret_cast<Ctx *>(lp);
+        if (!IsWindowVisible(h))
+            return TRUE;
+        RECT rc{};
+        GetWindowRect(h, &rc);
+        const int w = rc.right - rc.left;
+        const int hgt = rc.bottom - rc.top;
+        const int sw = GetSystemMetrics(SM_CXSCREEN);
+        const int sh = GetSystemMetrics(SM_CYSCREEN);
+        if (w < sw - 16 || hgt < sh - 16)
+            return TRUE;
+        char name[256];
+        if (GetClassNameA(h, name, sizeof(name)) <= 0)
+            return TRUE;
+        const QString cls = QString::fromLatin1(name);
+        const bool gameCls = cls == QLatin1String("UnrealWindow")
+                             || cls == QLatin1String("UnityWndClass")
+                             || cls == QLatin1String("Valve001")
+                             || cls.startsWith(QLatin1String("CryENGINE"), Qt::CaseInsensitive);
+        if (!gameCls)
+            return TRUE;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE)
+            return TRUE;
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        QString img;
+        if (Process32FirstW(snap, &pe)) {
+            do {
+                if (pe.th32ProcessID == pid) {
+                    img = QString::fromWCharArray(pe.szExeFile);
+                    break;
+                }
+            } while (Process32NextW(snap, &pe));
+        }
+        CloseHandle(snap);
+        if (img.compare(QStringLiteral("EADesktop.exe"), Qt::CaseInsensitive) == 0
+            || img.compare(QStringLiteral("Origin.exe"), Qt::CaseInsensitive) == 0
+            || img.contains(QStringLiteral("EACef"), Qt::CaseInsensitive)
+            || img.contains(QStringLiteral("EALauncher"), Qt::CaseInsensitive))
+            return TRUE;
+        c->found = true;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.found;
+#else
+    return false;
+#endif
+}
+
+void EaAuth::warnTitleOfferMismatch() const
+{
+    const QString title = m_gameTitle.toLower();
+    const QString args = m_launchArgs.toLower();
+    if (title.isEmpty() || args.isEmpty())
+        return;
+
+    const bool titleDiablo = title.contains(QStringLiteral("diablo"));
+    const bool titleSwgoh = title.contains(QStringLiteral("galaxy of heroes"))
+                            || title.contains(QStringLiteral("swgoh"))
+                            || title.contains(QStringLiteral("star wars"));
+    const bool argsSwgoh = args.contains(QStringLiteral("swgoh"))
+                           || args.contains(QStringLiteral("galaxy-of-heroes"));
+    const bool argsHasOffer = args.contains(QStringLiteral("offerids="));
+    const bool pathSwgoh = args.contains(QStringLiteral("swgoh.exe"))
+                           || args.contains(QStringLiteral("/swgoh/"));
+
+    // Diablo IV title + SWGoH path/exe, или наоборот — битые данные в БД
+    if (titleDiablo && (argsSwgoh || pathSwgoh)) {
+        qWarning().noquote() << "[EA] WARN: title/offer inconsistent — title looks Diablo,"
+                             << "args/path look SWGoH; launching origin2 as-is (fix DB if wrong game)."
+                             << "title:" << m_gameTitle << "| args:" << m_launchArgs;
+    } else if (titleSwgoh && argsHasOffer && !argsSwgoh && !pathSwgoh
+               && args.contains(QStringLiteral("origin.ofr"))) {
+        qWarning().noquote() << "[EA] WARN: title looks SWGoH / Star Wars, but offerId path"
+                             << "has no SWGoH marker — verify DB offerIds."
+                             << "title:" << m_gameTitle << "| args:" << m_launchArgs;
+    } else if (!title.isEmpty() && argsHasOffer) {
+        // Мягкий WARN: ни один значимый токен title не встречается в args
+        static const QRegularExpression splitter(QStringLiteral("[^a-z0-9]+"));
+        bool any = false;
+        const QStringList parts = title.split(splitter, Qt::SkipEmptyParts);
+        for (const QString &p : parts) {
+            if (p.size() < 4)
+                continue;
+            if (args.contains(p)) {
+                any = true;
+                break;
+            }
+        }
+        if (!any && (titleDiablo || titleSwgoh || title.contains(QStringLiteral("battlefield"))
+                     || title.contains(QStringLiteral("apex")))) {
+            qWarning().noquote() << "[EA] WARN: game_title tokens not found in launch args/offer —"
+                                 << "possible DB mismatch. title:" << m_gameTitle
+                                 << "| args:" << m_launchArgs;
+        }
+    }
+}
+
+void EaAuth::scheduleLibraryReadyLaunch(const QString &why)
+{
+#ifdef Q_OS_WIN
+    stopLibraryReadyWatch();
+    m_libraryReadyTicks = 0;
+    m_libraryReadySinceTick = -1;
+    m_origin2Fired = false;
+    m_origin2Retried = false;
+    m_origin2FiredAtMs = 0;
+
+    warnTitleOfferMismatch();
+
+    qWarning() << "[EA] library-ready wait before origin2:" << why
+               << "| logFSM:" << logAuthStateName(m_logAuth)
+               << "readyExt:" << m_logReadyForActions
+               << "| same club account — no ownership wipe, no UI OK/Play";
+
+    m_libraryReadyTimer = new QTimer(this);
+    m_libraryReadyTimer->setInterval(400);
+    connect(m_libraryReadyTimer, &QTimer::timeout, this, [this]() {
+        if (!m_libraryReadyTimer || m_personalLaunch)
+            return;
+
+        ++m_libraryReadyTicks;
+        pollEaLogs();
+
+        const bool uiReady = isEaLibraryReadyUi();
+        const bool logReady = m_logReadyForActions
+                              || m_logAuth == LogAuthState::Authenticated;
+        const bool readyNow = (logReady && uiReady)
+                              || (m_logReadyForActions && m_libraryReadyTicks >= 8)
+                              || (uiReady && m_libraryReadyTicks >= 20);
+
+        if (readyNow && m_libraryReadySinceTick < 0) {
+            m_libraryReadySinceTick = m_libraryReadyTicks;
+            qWarning() << "[EA] library ready signal at tick" << m_libraryReadyTicks
+                       << "| readyExt:" << m_logReadyForActions
+                       << "| uiReady:" << uiReady
+                       << "— settle ~5s then origin2";
+        }
+
+        // Settle 5s (~12 ticks) after ready; hard cap ~25s
+        const bool settleDone = m_libraryReadySinceTick >= 0
+                                && (m_libraryReadyTicks - m_libraryReadySinceTick) >= 12;
+        const bool hardCap = m_libraryReadyTicks >= 62; // ~25s
+
+        if (!m_origin2Fired && (settleDone || hardCap)) {
+            if (hardCap && !settleDone)
+                qWarning() << "[EA] library-ready hard cap — fire origin2 anyway";
+            m_origin2Fired = true;
+            m_allowsGameDetect = true;
+            fireGameUri(false);
+            m_origin2FiredAtMs = QDateTime::currentMSecsSinceEpoch();
+            return;
+        }
+
+        // origin2 fired — if no game in ~12s, protocol retry once (not UI clicks)
+        if (m_origin2Fired && !m_origin2Retried && m_origin2FiredAtMs > 0) {
+            const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_origin2FiredAtMs;
+            if (elapsed >= 12000) {
+                if (isClubGameLikelyRunning()) {
+                    qWarning() << "[EA] game window detected after origin2 — stop ready-watch";
+                    stopLibraryReadyWatch();
+                    return;
+                }
+                m_origin2Retried = true;
+                qWarning() << "[EA] no game ~12s after origin2 — protocol retry once";
+                fireGameUri(true);
+                m_origin2FiredAtMs = QDateTime::currentMSecsSinceEpoch();
+            }
+        }
+
+        if (m_origin2Retried && m_origin2FiredAtMs > 0) {
+            const qint64 afterRetry = QDateTime::currentMSecsSinceEpoch() - m_origin2FiredAtMs;
+            if (afterRetry >= 15000 || isClubGameLikelyRunning()) {
+                if (isClubGameLikelyRunning())
+                    qWarning() << "[EA] game detected after origin2 retry";
+                else
+                    qWarning() << "[EA] origin2 retry done — leave EA; user/Play or detect later";
+                stopLibraryReadyWatch();
+            }
+        }
+
+        // Absolute stop ~45s
+        if (m_libraryReadyTicks >= 112)
+            stopLibraryReadyWatch();
+    });
+    m_libraryReadyTimer->start();
+#else
+    Q_UNUSED(why);
+    fireGameUri(false);
+#endif
 }
 
 void EaAuth::finishScoutSuccess(const QString &why)
@@ -879,24 +1393,45 @@ void EaAuth::finishScoutSuccess(const QString &why)
     m_phase = Phase::Done;
     m_allowsGameDetect = false;
     m_needBackup = true;
-    stopScout();
+    // Только scout-timer; library-ready стартует ниже
+    if (m_scoutTimer) {
+        m_scoutTimer->stop();
+        m_scoutTimer->deleteLater();
+        m_scoutTimer = nullptr;
+    }
 
     QTimer::singleShot(120000, this, [this]() {
         if (m_phase == Phase::Done)
             m_allowsGameDetect = true;
     });
 
+    if (m_personalLaunch) {
+        qWarning() << "[EA] personal policy: scout success ignored — игру НЕ запускаем:" << why;
+        m_gameUriDeferred = false;
+        m_allowsGameDetect = true;
+        return;
+    }
+
     if (!m_gameUriDeferred)
         return;
     m_gameUriDeferred = false;
 
-    // Живой EA залогинен → игра напрямую .exe (origin2:// врёт EntitlementNotFound).
-    const int uriDelayMs = m_passwordSent ? 6000 : 3000;
-    qWarning() << "[EA] старт игры через" << uriDelayMs << "мс (прямой exe предпочтительнее URI)"
-               << m_launchArgs;
-    QTimer::singleShot(uriDelayMs, this, [this]() {
-        fireGameUri();
-    });
+    // DIRECT exe (как раньше) — короткий delay; origin2-only — library-ready + retry.
+    const QString directExe = resolveDirectGameExe(m_launchArgs);
+    if (!directExe.isEmpty()) {
+        const int uriDelayMs = m_passwordSent ? 6000 : 3000;
+        qWarning() << "[EA] старт DIRECT через" << uriDelayMs << "мс:" << directExe
+                   << "| title:" << (m_gameTitle.isEmpty() ? QStringLiteral("(none)") : m_gameTitle);
+        warnTitleOfferMismatch();
+        QTimer::singleShot(uriDelayMs, this, [this]() {
+            m_allowsGameDetect = true;
+            fireGameUri(false);
+        });
+        return;
+    }
+
+    // Нет локального exe — origin2 после library-ready (не UI OK/Play)
+    scheduleLibraryReadyLaunch(why);
 }
 
 QString EaAuth::normalizeEaGameUri(const QString &args)
@@ -906,6 +1441,21 @@ QString EaAuth::normalizeEaGameUri(const QString &args)
     if (sep >= 0)
         return args.left(sep).trimmed();
     return args.trimmed();
+}
+
+static QString resolveSwgohInstallExe()
+{
+    const QStringList candidates = {
+        QStringLiteral("C:/Program Files/EA Games/SWGoH/SWGoH.exe"),
+        QStringLiteral("C:/Program Files (x86)/EA Games/SWGoH/SWGoH.exe"),
+        QStringLiteral("D:/Program Files/EA Games/SWGoH/SWGoH.exe"),
+        QStringLiteral("D:/EA Games/SWGoH/SWGoH.exe"),
+    };
+    for (const QString &c : candidates) {
+        if (QFileInfo::exists(c))
+            return QDir::toNativeSeparators(c);
+    }
+    return {};
 }
 
 QString EaAuth::resolveDirectGameExe(const QString &args)
@@ -930,25 +1480,36 @@ QString EaAuth::resolveDirectGameExe(const QString &args)
         return QDir::toNativeSeparators(trimmed);
     }
 
-    // Авто: известные установки под EA Games (обход сломанного origin2 → contentIds)
-    const QStringList candidates = {
-        QStringLiteral("C:/Program Files/EA Games/SWGoH/SWGoH.exe"),
-        QStringLiteral("C:/Program Files (x86)/EA Games/SWGoH/SWGoH.exe"),
-        QStringLiteral("D:/Program Files/EA Games/SWGoH/SWGoH.exe"),
-        QStringLiteral("D:/EA Games/SWGoH/SWGoH.exe"),
-    };
-    const bool looksSwgoh = trimmed.contains(QStringLiteral("OFR.50.0005369"), Qt::CaseInsensitive)
-                            || trimmed.contains(QStringLiteral("1012586"))
-                            || trimmed.contains(QStringLiteral("SWGoH"), Qt::CaseInsensitive)
+    const bool looksSwgoh = trimmed.contains(QStringLiteral("SWGoH"), Qt::CaseInsensitive)
                             || trimmed.contains(QStringLiteral("galaxy-of-heroes"), Qt::CaseInsensitive);
-    if (looksSwgoh) {
-        for (const QString &c : candidates) {
-            if (QFileInfo::exists(c))
-                return QDir::toNativeSeparators(c);
+
+    // Club DB: offerIds=Origin.OFR.50.0005369 часто помечен как «Diablo IV», но на ПК
+    // стоит SWGoH — раньше DIRECT по этому offer работал. Не блокируем: WARN + SWGoH.exe.
+    if (trimmed.contains(QStringLiteral("Origin.OFR.50.0005369"), Qt::CaseInsensitive)
+        || trimmed.contains(QStringLiteral("OFR.50.0005369"), Qt::CaseInsensitive)) {
+        const QString swgoh = resolveSwgohInstallExe();
+        if (!swgoh.isEmpty()) {
+            qWarning().noquote() << "[EA] offer OFR.50.0005369 → DIRECT"
+                                 << swgoh
+                                 << "(DB title may say Diablo IV; install on disk is SWGoH)";
+            return swgoh;
         }
     }
 
-    // Общий поиск: C:\Program Files\EA Games\<Game>\<Game>.exe
+    if (looksSwgoh) {
+        const QString swgoh = resolveSwgohInstallExe();
+        if (!swgoh.isEmpty())
+            return swgoh;
+    }
+
+    const bool hasOriginUri = trimmed.contains(QStringLiteral("origin2://"), Qt::CaseInsensitive)
+                              || trimmed.contains(QStringLiteral("origin://"), Qt::CaseInsensitive)
+                              || trimmed.contains(QStringLiteral("eadm://"), Qt::CaseInsensitive);
+    // origin2 без известного offer/map — не угадываем первый EA Games exe
+    if (hasOriginUri)
+        return {};
+
+    // Без URI: общий поиск C:\Program Files\EA Games\<Game>\<Game>.exe
     const QStringList roots = {
         QStringLiteral("C:/Program Files/EA Games"),
         QStringLiteral("C:/Program Files (x86)/EA Games"),
@@ -962,17 +1523,60 @@ QString EaAuth::resolveDirectGameExe(const QString &args)
         for (const QFileInfo &di : dirs) {
             const QString guess = di.absoluteFilePath() + QLatin1Char('/') + di.fileName()
                                   + QStringLiteral(".exe");
-            if (QFileInfo::exists(guess)) {
-                // Если в URI один конкретный OFR/slug — не берём первый попавшийся
-                if (looksSwgoh
-                    && !guess.contains(QStringLiteral("SWGoH"), Qt::CaseInsensitive))
-                    continue;
-                if (looksSwgoh || !trimmed.contains(QStringLiteral("origin2://"), Qt::CaseInsensitive))
-                    return QDir::toNativeSeparators(guess);
-            }
+            if (!QFileInfo::exists(guess))
+                continue;
+            if (looksSwgoh
+                && !guess.contains(QStringLiteral("SWGoH"), Qt::CaseInsensitive))
+                continue;
+            return QDir::toNativeSeparators(guess);
         }
     }
     return {};
+}
+
+bool EaAuth::directExeMatchesGame(const QString &gameExe,
+                                  const QString &launchArgs,
+                                  const QString &gameTitle)
+{
+    // Совместимость: раньше title-mismatch блокировал DIRECT → origin2 modal.
+    // Теперь только WARN, всегда разрешаем найденный exe.
+    if (gameExe.isEmpty())
+        return false;
+
+    const QString path = QDir::fromNativeSeparators(gameExe).toLower();
+    const QString base = QFileInfo(gameExe).completeBaseName().toLower();
+    const QString title = gameTitle.toLower();
+
+    if (title.isEmpty())
+        return true;
+
+    const bool exeIsSwgoh = base.contains(QStringLiteral("swgoh"))
+                            || path.contains(QStringLiteral("/swgoh/"));
+    const bool titleDiablo = title.contains(QStringLiteral("diablo"));
+    if (exeIsSwgoh && titleDiablo) {
+        qWarning().noquote() << "[EA] WARN: title/exe mismatch (DB?) — DIRECT всё равно:"
+                             << QFileInfo(gameExe).fileName() << "vs title:" << gameTitle
+                             << "| args:" << launchArgs;
+        return true;
+    }
+
+    static const QRegularExpression splitter(QStringLiteral("[^a-z0-9]+"));
+    bool any = false;
+    const QStringList parts = title.split(splitter, Qt::SkipEmptyParts);
+    for (const QString &p : parts) {
+        if (p.size() < 4)
+            continue;
+        if (path.contains(p) || base.contains(p)) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) {
+        qWarning().noquote() << "[EA] WARN: DIRECT exe basename не совпадает с title —"
+                             << QFileInfo(gameExe).fileName() << "vs" << gameTitle
+                             << "(не блокируем DIRECT)";
+    }
+    return true;
 }
 
 QStringList EaAuth::directGameExtraArgs(const QString &gameExe)
@@ -999,36 +1603,16 @@ QString EaAuth::eaLauncherBeside(const QString &eaDesktopExe)
     return {};
 }
 
-void EaAuth::fireGameUri()
+void EaAuth::fireOrigin2Protocol(const QString &uri, bool isRetry)
 {
 #ifdef Q_OS_WIN
-    if (m_launchArgs.trimmed().isEmpty()) {
-        qWarning() << "[EA] fireGameUri: args пусты";
-        return;
-    }
-
-    // 1) Прямой .exe — как ручной Play, без кривого origin2/contentIds
-    const QString gameExe = resolveDirectGameExe(m_launchArgs);
-    if (!gameExe.isEmpty()) {
-        const QString workDir = QFileInfo(gameExe).absolutePath();
-        const QStringList gargs = directGameExtraArgs(gameExe);
-        const bool ok = QProcess::startDetached(gameExe, gargs, workDir);
-        qWarning().noquote() << "[EA] DIRECT game exe (обход origin2):" << ok
-                             << gameExe << gargs.join(QLatin1Char(' '))
-                             << "| cwd:" << workDir;
-        return;
-    }
-
-    QString uri = normalizeEaGameUri(m_launchArgs);
-    qWarning() << "[EA] прямой exe не найден — fallback origin2:// (может быть EntitlementNotFound)"
-               << uri;
-
     const HINSTANCE r = ShellExecuteW(
         nullptr, L"open",
         reinterpret_cast<LPCWSTR>(uri.utf16()),
         nullptr, nullptr, SW_SHOWNORMAL);
     const auto code = int(reinterpret_cast<quintptr>(r));
-    qWarning() << "[EA] game URI ShellExecute:" << code << uri;
+    qWarning() << "[EA] origin2 ShellExecute" << (isRetry ? "(retry)" : "(first)")
+               << code << uri;
     if (code > 32)
         return;
 
@@ -1036,13 +1620,65 @@ void EaAuth::fireGameUri()
     if (!launcher.isEmpty()) {
         const bool ok = QProcess::startDetached(
             launcher, QStringList{uri}, QFileInfo(launcher).absolutePath());
-        qWarning() << "[EA] game URI через EALauncher.exe:" << ok << launcher << uri;
+        qWarning() << "[EA] origin2 via EALauncher.exe" << (isRetry ? "(retry)" : "(first)")
+                   << ok << launcher << uri;
+        return;
+    }
+    qWarning() << "[EA] fireOrigin2 FAIL: ShellExecute" << code << "EALauncher не найден";
+#else
+    Q_UNUSED(uri);
+    Q_UNUSED(isRetry);
+#endif
+}
+
+void EaAuth::fireGameUri(bool protocolRetry)
+{
+#ifdef Q_OS_WIN
+    if (m_personalLaunch) {
+        qWarning() << "[EA] personal policy: fireGameUri blocked (no auto origin2/DIRECT)";
+        return;
+    }
+    if (m_launchArgs.trimmed().isEmpty()) {
+        qWarning() << "[EA] fireGameUri: args пусты";
         return;
     }
 
-    qWarning() << "[EA] fireGameUri FAIL: нет прямого exe, ShellExecute" << code
-               << "EALauncher не найден";
+    QString uri = normalizeEaGameUri(m_launchArgs);
+    const bool hasUri = uri.startsWith(QStringLiteral("origin2://"), Qt::CaseInsensitive)
+                        || uri.startsWith(QStringLiteral("origin://"), Qt::CaseInsensitive)
+                        || uri.startsWith(QStringLiteral("eadm://"), Qt::CaseInsensitive);
+
+    // Как до регрессии: DIRECT exe если резолвится; origin2 только без exe.
+    // Title≠exe (Diablo vs SWGoH) — WARN, не блок.
+    if (!protocolRetry) {
+        warnTitleOfferMismatch();
+        const QString gameExe = resolveDirectGameExe(m_launchArgs);
+        if (!gameExe.isEmpty() && directExeMatchesGame(gameExe, m_launchArgs, m_gameTitle)) {
+            const QString workDir = QFileInfo(gameExe).absolutePath();
+            const QStringList gargs = directGameExtraArgs(gameExe);
+            const bool ok = QProcess::startDetached(gameExe, gargs, workDir);
+            qWarning().noquote() << "[EA] DIRECT game exe" << ok
+                                 << gameExe << gargs.join(QLatin1Char(' '))
+                                 << "| cwd:" << workDir
+                                 << "| title:" << (m_gameTitle.isEmpty()
+                                                       ? QStringLiteral("(none)") : m_gameTitle);
+            return;
+        }
+    }
+
+    if (hasUri) {
+        fireOrigin2Protocol(uri, protocolRetry);
+        return;
+    }
+
+    if (protocolRetry) {
+        qWarning() << "[EA] origin2 retry skipped — no protocol URI / DIRECT already tried";
+        return;
+    }
+
+    qWarning() << "[EA] нет подходящего DIRECT exe и нет origin2 URI" << m_launchArgs;
 #else
+    Q_UNUSED(protocolRetry);
     Q_UNUSED(m_launchArgs);
 #endif
 }
@@ -1050,6 +1686,10 @@ void EaAuth::fireGameUri()
 void EaAuth::relaunchGameArgs()
 {
 #ifdef Q_OS_WIN
+    if (m_personalLaunch) {
+        qWarning() << "[EA] personal policy: relaunchGameArgs blocked";
+        return;
+    }
     if (m_launchArgs.isEmpty()) {
         qWarning() << "[EA] relaunch: args пусты";
         return;
@@ -1090,11 +1730,12 @@ void EaAuth::injectEmail(quintptr hwndVal, const QString &email)
     if (!hwnd || !IsWindow(hwnd))
         return;
 
+    beginInjectBurst();
     AllowSetForegroundWindow(ASFW_ANY);
-    setShellTopmostFrom(this, false);
-    placeWindowForegroundOnly(hwnd);
+    // Club scout: foreground EA для SendInput; TOPMOST shell — только ~400ms после Enter на Далее.
+    placeWindowForegroundOnly(hwnd, this);
     // Клик в шапку формы → фокус в CEF (без SetFocus на HWND, иначе Tab мимо поля)
-    clickFieldPercent(hwnd, 0.50, 0.12, "activate CEF (не поле)");
+    clickFieldPercent(hwnd, this, 0.50, 0.12, "activate CEF (не поле)");
 
     // Tab: 6 = email, 11 = Далее
     QTimer::singleShot(900, this, [this, hwndVal, email]() {
@@ -1102,26 +1743,27 @@ void EaAuth::injectEmail(quintptr hwndVal, const QString &email)
         if (!h || !IsWindow(h) || !m_scoutTimer)
             return;
         AllowSetForegroundWindow(ASFW_ANY);
-        placeWindowForegroundOnly(h);
+        placeWindowForegroundOnly(h, this);
         sendTabs(6, "→ поле email (Tab #6)");
         QTimer::singleShot(400, this, [this, hwndVal, email]() {
             HWND h2 = reinterpret_cast<HWND>(hwndVal);
             if (!h2 || !IsWindow(h2) || !m_scoutTimer)
                 return;
-            placeWindowForegroundOnly(h2);
+            placeWindowForegroundOnly(h2, this);
             qWarning() << "[EA] type email unicode, len" << email.size();
             typeUnicode(email);
             QTimer::singleShot(600, this, [this, hwndVal]() {
                 HWND h3 = reinterpret_cast<HWND>(hwndVal);
                 if (!h3 || !IsWindow(h3) || !m_scoutTimer)
                     return;
-                placeWindowForegroundOnly(h3);
+                placeWindowForegroundOnly(h3, this);
                 sendTabs(5, "→ Далее (Tab #11)");
                 Sleep(200);
                 sendReturnKey();
-                qWarning() << "[EA] Enter на Далее — ждём пароль";
+                qWarning() << "[EA] Enter на Далее — hold overlay ~400ms, затем TOPMOST; ждём пароль";
                 m_phase = Phase::WaitPassword;
                 m_phaseTick = m_ticks;
+                endInjectBurstRestoreOverlay(400);
             });
         });
     });
@@ -1140,9 +1782,9 @@ void EaAuth::injectPassword(quintptr hwndVal, const QString &password)
     if (!hwnd || !IsWindow(hwnd))
         return;
 
+    beginInjectBurst();
     AllowSetForegroundWindow(ASFW_ANY);
-    setShellTopmostFrom(this, false);
-    placeWindowForegroundOnly(hwnd);
+    placeWindowForegroundOnly(hwnd, this);
 
     // Второе окно: фокус уже в пароле — не кликаем и не Tab до поля
     QTimer::singleShot(700, this, [this, hwndVal, password]() {
@@ -1150,7 +1792,7 @@ void EaAuth::injectPassword(quintptr hwndVal, const QString &password)
         if (!h || !IsWindow(h) || !m_scoutTimer)
             return;
         AllowSetForegroundWindow(ASFW_ANY);
-        placeWindowForegroundOnly(h);
+        placeWindowForegroundOnly(h, this);
         qWarning() << "[EA] type password unicode, len" << password.size();
         typeUnicode(password);
 
@@ -1158,7 +1800,7 @@ void EaAuth::injectPassword(quintptr hwndVal, const QString &password)
             HWND h2 = reinterpret_cast<HWND>(hwndVal);
             if (!h2 || !IsWindow(h2) || !m_scoutTimer)
                 return;
-            placeWindowForegroundOnly(h2);
+            placeWindowForegroundOnly(h2, this);
             sendTabs(2, "→ Войти (Tab #2 с поля)");
             Sleep(200);
             sendReturnKey();
@@ -1166,7 +1808,8 @@ void EaAuth::injectPassword(quintptr hwndVal, const QString &password)
             m_phase = Phase::PasswordSubmitted;
             m_phaseTick = m_ticks;
             m_errorBackClicked = false;
-            qWarning() << "[EA] Enter на Войти — ждём закрытия формы";
+            qWarning() << "[EA] Enter на Войти — hold overlay ~450ms, затем TOPMOST";
+            endInjectBurstRestoreOverlay(450);
         });
     });
 #else
@@ -1181,8 +1824,8 @@ void EaAuth::clickBackOnError(quintptr hwndVal)
     HWND hwnd = reinterpret_cast<HWND>(hwndVal);
     if (!hwnd || !IsWindow(hwnd))
         return;
-    setShellTopmostFrom(this, false);
-    placeWindowForInput(hwnd);
+    beginInjectBurst();
+    placeWindowForInput(hwnd, this);
     RECT rc{};
     GetClientRect(hwnd, &rc);
     // Синяя кнопка «НАЗАД» внизу диалога ошибки
@@ -1190,8 +1833,48 @@ void EaAuth::clickBackOnError(quintptr hwndVal)
     const int y = int((rc.bottom - rc.top) * 0.88);
     qWarning() << "[EA] click НАЗАД (ошибка IP/входа)" << x << y;
     clickClient(hwnd, x, y);
+    endInjectBurstRestoreOverlay(350);
 #else
     Q_UNUSED(hwndVal);
+#endif
+}
+
+void EaAuth::startPersonalLoginWatch()
+{
+#ifdef Q_OS_WIN
+    stopScout();
+    m_ticks = 0;
+    m_personalEarlyAuthWarned = false;
+    m_phase = Phase::Done;
+    m_allowsGameDetect = true;
+    m_gameUriDeferred = false;
+    if (m_logPath.isEmpty())
+        resetLogWatch();
+
+    qWarning() << "[EA] personal login-watch: FSM только WARN, без URI/DIRECT";
+
+    m_scoutTimer = new QTimer(this);
+    m_scoutTimer->setInterval(500);
+    connect(m_scoutTimer, &QTimer::timeout, this, [this]() {
+        if (!m_scoutTimer || !m_personalLaunch)
+            return;
+        ++m_ticks;
+        pollEaLogs();
+
+        // После wipe authenticated за первые ~15с = wipe неполный; игру всё равно не трогаем
+        if (m_logAuth == LogAuthState::Authenticated && m_ticks <= 30) {
+            if (!m_personalEarlyAuthWarned) {
+                m_personalEarlyAuthWarned = true;
+                qWarning() << "[EA] WARN: personal — FSM authenticated слишком рано после wipe;"
+                           << "auto-launch запрещён (ручной логин / Play в EA)";
+            }
+        }
+
+        if (m_ticks > 80) { // ~40с достаточно для WARN
+            stopScout();
+        }
+    });
+    m_scoutTimer->start();
 #endif
 }
 
@@ -1206,11 +1889,22 @@ void EaAuth::startScout(const QString &login, const QString &password)
     m_emailSent = false;
     m_passwordSent = false;
     m_errorBackClicked = false;
+    m_sendInputBusy = false;
+    m_overlayHoldOffUntilMs = 0;
+    m_lastOverlayRaiseMs = 0;
     // offset уже выставлен в startLauncher; повторный seek EOF срежет ранний FSM
     if (m_logPath.isEmpty())
         resetLogWatch();
 
-    // Без пароля — только ждать FSM/URI (редко)
+    // Personal: никогда soft-silent scout и никогда auto-URI по FSM authenticated
+    if (m_personalLaunch) {
+        qWarning() << "[EA] Scout пропущен (personal) — kill/wipe уже сделан,"
+                   << "EADesktop empty args, ждём ручной логин; без auto-URI/DIRECT";
+        startPersonalLoginWatch();
+        return;
+    }
+
+    // Клубный cache без пароля — только ждать FSM/URI
     if (login.isEmpty() || password.isEmpty()) {
         qWarning() << "[EA] Scout: нет login/password — только URI по FSM";
         if (!m_expectInteractive && m_gameUriDeferred) {
@@ -1276,6 +1970,14 @@ void EaAuth::startScout(const QString &login, const QString &password)
 
         const bool hasLogin = ctx.bestLogin != nullptr;
         const bool hasMain = ctx.bestMain != nullptr;
+
+        // Club interactive / soft-silent: idle — throttle TOPMOST; never during SendInput burst.
+        if (hasLogin && !m_personalLaunch) {
+            keepOverlayUp(false);
+            if (m_ticks == 1 || m_ticks == 5 || m_ticks % 25 == 0)
+                qWarning() << "[EA] Интерактивный логин (under overlay):" << ctx.loginTitle
+                           << ctx.loginW << "x" << ctx.loginH;
+        }
         const bool logAuthOk = (m_logAuth == LogAuthState::Authenticated);
         const bool logNeedsLogin = (m_logAuth == LogAuthState::AwaitingAuth);
         const bool canType = !login.isEmpty() && !password.isEmpty();
@@ -1369,7 +2071,8 @@ void EaAuth::startScout(const QString &login, const QString &password)
 #endif
 }
 
-void EaAuth::backupCache(NetworkManager *net, int terminalId, const QString &login)
+void EaAuth::backupCache(NetworkManager *net, int terminalId, const QString &login,
+                         int accountId, int gameId)
 {
     if (login.isEmpty()) {
         qWarning() << "[EA] cache backup: login пуст";
@@ -1389,6 +2092,10 @@ void EaAuth::backupCache(NetworkManager *net, int terminalId, const QString &log
     QJsonObject rootPayload;
     rootPayload.insert(QStringLiteral("login"), login);
     rootPayload.insert(QStringLiteral("terminal_id"), terminalId);
+    if (accountId > 0)
+        rootPayload.insert(QStringLiteral("account_id"), accountId);
+    if (gameId > 0)
+        rootPayload.insert(QStringLiteral("game_id"), gameId);
     rootPayload.insert(QStringLiteral("platform"), QStringLiteral("ea"));
     rootPayload.insert(QStringLiteral("local_vdf"), blob);
     rootPayload.insert(QStringLiteral("config_vdf"), blob);
@@ -1399,7 +2106,8 @@ void EaAuth::backupCache(NetworkManager *net, int terminalId, const QString &log
 
     const QByteArray jsonData = QJsonDocument(rootPayload).toJson(QJsonDocument::Compact);
     qWarning() << "[EA] cache backup → server, bytes:" << jsonData.size()
-               << "login:" << login << "terminal:" << terminalId;
+               << "login:" << login << "account_id:" << accountId << "game_id:" << gameId
+               << "terminal:" << terminalId;
 
     QNetworkReply *reply = net->networkAccessManager()->post(request, jsonData);
     connect(reply, &QNetworkReply::finished, reply, [reply]() {

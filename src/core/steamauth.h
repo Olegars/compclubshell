@@ -27,7 +27,9 @@ public:
 
     void backupCache(NetworkManager *net,
                      int terminalId,
-                     const QString &login) override;
+                     const QString &login,
+                     int accountId = 0,
+                     int gameId = 0) override;
 
     QString launcherProcessName() const override { return QStringLiteral("steam.exe"); }
 
@@ -41,8 +43,16 @@ private:
                                const QString &persona,
                                const QString &existing) const;
 
+    // Personal: kill steam family + wait until gone (file locks).
+    void killSteamAndWait(int timeoutMs = 8000);
+    // Personal: hard logout — registry / VDF / ssfn / local.vdf connect-cache.
+    void wipePersonalSession();
+    static QString sanitizeLoginUsersForLogout(const QString &vdf);
+    static QString sanitizeConfigVdfForLogout(const QString &vdf);
+
     QTimer *m_authScoutTimer = nullptr;
     bool m_needBackup = false;
+    bool m_personalLaunch = false;
     int m_scoutTicks = 0;
     int m_scoutInjectTick = 0;
     bool m_scoutInjected = false;

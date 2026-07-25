@@ -422,6 +422,11 @@ void ProcessManager::setShellTopmost(bool enabled)
 #endif
 }
 
+bool ProcessManager::isSessionBusy() const
+{
+    return m_gameSessionActive && !m_shellHiddenForGame;
+}
+
 void ProcessManager::hideShellForGame()
 {
     if (!m_mainWindow)
@@ -534,6 +539,25 @@ void ProcessManager::launch(const QString &exePath, const QString &args,
     launchPlatformSession(auth);
 }
 
+void ProcessManager::launchFirstExisting(const QStringList &candidatePaths, const QString &args)
+{
+    QStringList tried;
+    for (const QString &raw : candidatePaths) {
+        const QString path = raw.trimmed();
+        if (path.isEmpty())
+            continue;
+        tried << path;
+        if (QFileInfo::exists(path)) {
+            qWarning().noquote() << "[LAUNCH] лаунчер найден:" << path;
+            launch(path, args);
+            return;
+        }
+        qWarning().noquote() << "[LAUNCH] нет файла:" << path;
+    }
+    qCritical().noquote() << "[LAUNCH] лаунчер не установлен / путь не найден. Проверено:"
+                          << tried.join(QStringLiteral(" | "));
+}
+
 void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QString &appIdHint)
 {
     const QString platformRaw = authData.value(QStringLiteral("platform")).toString().trimmed();
@@ -625,8 +649,12 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
         m_currentTerminalId = authData.value(QStringLiteral("terminal_id")).toInt();
     if (authData.contains(QStringLiteral("game_id")))
         m_currentGameId = authData.value(QStringLiteral("game_id")).toInt();
+    m_currentAccountId = authData.value(QStringLiteral("account_id")).toInt();
     m_currentLogin = authData.value(QStringLiteral("login")).toString();
     m_currentPlatform = platform;
+    m_personalAccount = (authMode == QLatin1String("personal"))
+        || m_currentLogin.trimmed().isEmpty()
+        || platformSource == QLatin1String("personal_account");
 
     qWarning().noquote() << "[SESSION] ========== LAUNCH DEBUG ==========";
     qWarning().noquote() << "[SESSION] game_id:" << m_currentGameId
@@ -644,6 +672,17 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
     qWarning().noquote() << "[SESSION] auth.mode:" << (authMode.isEmpty() ? QStringLiteral("(n/a)") : authMode)
                          << "| looksEpic:" << looksEpic << "| looksSteam:" << looksSteam
                          << "| looksEa:" << looksEa << "| looksRiot:" << looksRiot;
+    {
+        const QString resolvedApp = SteamAuth::resolveAppId(authData, appIdHint);
+        const QString titleLower = gameTitle.toLower();
+        if (!resolvedApp.isEmpty()
+            && (titleLower.contains(QStringLiteral("world of tanks"))
+                || titleLower.contains(QStringLiteral("wot")))
+            && resolvedApp == QLatin1String("440")) {
+            qWarning().noquote() << "[SESSION] WARN: title looks like World of Tanks but Steam app_id=440 (TF2)"
+                                 << "— возможные битые данные игры в БД";
+        }
+    }
     qWarning().noquote() << "[SESSION] ==================================";
 
     if (m_platformAuth) {
@@ -664,6 +703,7 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
     m_gameGoneTicks = 0;
     m_pendingGameHwnd = 0;
     m_pendingGameClass.clear();
+    m_personalLoginWait = false;
     m_gameExitTimer->stop();
     m_netWatchTimer->stop();
 
@@ -671,17 +711,57 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
 
     const int killDelayMs = (platform == QLatin1String("steam")
                              || platform == QLatin1String("epic")) ? 700
-                          : (platform == QLatin1String("ea")
-                             || platform == QLatin1String("riot") ? 1500 : 100);
+                          : (platform == QLatin1String("ea") ? 1500
+                          : (platform == QLatin1String("riot") ? 5000 : 100));
+    if (platform == QLatin1String("riot"))
+        qWarning() << "[SESSION] Riot: ждём" << killDelayMs
+                   << "ms после kill + рестарт vgc перед стартом";
 
     QTimer::singleShot(killDelayMs, this, [this, authData, appIdHint, platform]() {
         if (!m_gameSessionActive || !m_platformAuth)
             return;
 
-        const bool cacheOk = m_platformAuth->applyCache(authData);
-        m_platformAuth->setNeedsCacheBackup(!cacheOk);
-        qWarning() << "[SESSION]" << platform.toUpper()
-                   << (cacheOk ? "тихий вход (cache)" : "без cache → scout + backup после входа");
+        // Sanitize personal payload BEFORE applyCache: never pass DB machine-cache.
+        QJsonObject data = authData;
+        const QString authMode = data.value(QStringLiteral("auth")).toObject()
+                                     .value(QStringLiteral("mode")).toString();
+        const QString platformSource = data.value(QStringLiteral("platform_source")).toString();
+        const bool personal = m_personalAccount
+            || (authMode.compare(QStringLiteral("personal"), Qt::CaseInsensitive) == 0)
+            || (platformSource.compare(QStringLiteral("personal_account"),
+                                       Qt::CaseInsensitive) == 0)
+            || data.value(QStringLiteral("login")).toString().trimmed().isEmpty();
+        if (personal) {
+            const bool hadVdf = data.contains(QStringLiteral("vdf_files"));
+            const bool hadAuthCache = data.value(QStringLiteral("auth")).toObject()
+                                          .contains(QStringLiteral("cache"));
+            data.remove(QStringLiteral("vdf_files"));
+            data.remove(QStringLiteral("local_vdf"));
+            data.remove(QStringLiteral("config_vdf"));
+            QJsonObject authObj = data.value(QStringLiteral("auth")).toObject();
+            authObj.remove(QStringLiteral("cache"));
+            authObj.insert(QStringLiteral("mode"), QStringLiteral("personal"));
+            data.insert(QStringLiteral("auth"), authObj);
+            data.insert(QStringLiteral("login"), QString());
+            data.insert(QStringLiteral("password"), QString());
+            qWarning() << "[SESSION]" << platform.toUpper()
+                       << "personal: stripped DB cache from payload"
+                       << "| had vdf_files:" << hadVdf
+                       << "| had auth.cache:" << hadAuthCache;
+        }
+
+        const bool cacheOk = m_platformAuth->applyCache(data);
+        // Personal: never club backup. Club: preserve needBackup from applyCache (scout path).
+        if (personal) {
+            m_platformAuth->setNeedsCacheBackup(false);
+            qWarning() << "[SESSION]" << platform.toUpper()
+                       << "личный аккаунт — clear session, без scout / backup";
+        } else {
+            const bool wantBackupAfterApply = m_platformAuth->needsCacheBackup();
+            m_platformAuth->setNeedsCacheBackup(!cacheOk || wantBackupAfterApply);
+            qWarning() << "[SESSION]" << platform.toUpper()
+                       << (cacheOk ? "тихий вход (cache)" : "без cache → scout + backup после входа");
+        }
 
         if (g_pGameHook) UnhookWinEvent(g_pGameHook);
         g_pGameHook = SetWinEventHook(
@@ -699,9 +779,9 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
         connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                 this, &ProcessManager::onProcessFinished);
 
-        const QString login = authData.value(QStringLiteral("login")).toString();
-        const QString password = authData.value(QStringLiteral("password")).toString();
-        connect(m_process, &QProcess::started, this, [this, login, password, platform]() {
+        const QString login = data.value(QStringLiteral("login")).toString();
+        const QString password = data.value(QStringLiteral("password")).toString();
+        connect(m_process, &QProcess::started, this, [this, login, password, platform, personal]() {
             qWarning() << "[SESSION] process started:" << (m_process ? m_process->program() : QString())
                        << (m_process ? m_process->arguments() : QStringList());
             emit gameStarted();
@@ -709,44 +789,64 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
                 m_platformAuth->startScout(login, password);
             startGameFindPoll();
 
-            // Личный Steam (кнопка STEAM): нет fullscreen-игры → оверлей/шелл не снимутся
-            // через acceptGameWindow. Считаем лаунчер сессией и следим за steam.exe.
-            if (platform == QLatin1String("steam") && login.isEmpty()) {
-                QTimer::singleShot(2500, this, [this]() {
+            // Личный аккаунт: НЕ hideShell, НЕ m_gamePid=launcher (иначе flicker → kill).
+            // Ждём реальный game window; exit-watch только следит за смертью лаунчера.
+            if (personal || login.isEmpty()) {
+                QTimer::singleShot(2500, this, [this, platform]() {
                     if (!m_gameSessionActive || m_gameHwnd != 0)
                         return;
-                    if (!isProcessRunning(QStringLiteral("steam.exe")))
+
+                    QString image = m_platformAuth
+                        ? m_platformAuth->launcherProcessName()
+                        : QString();
+                    bool alive = !image.isEmpty() && isProcessRunning(image);
+                    if (platform == QLatin1String("riot")) {
+                        alive = isProcessRunning(QStringLiteral("RiotClientServices.exe"))
+                                || isProcessRunning(QStringLiteral("RiotClientUx.exe"))
+                                || isProcessRunning(QStringLiteral("LeagueClientUx.exe"));
+                        if (alive) {
+                            image = isProcessRunning(QStringLiteral("LeagueClientUx.exe"))
+                                ? QStringLiteral("LeagueClientUx.exe")
+                                : QStringLiteral("RiotClientServices.exe");
+                        }
+                    } else if (platform == QLatin1String("epic")) {
+                        alive = isProcessRunning(QStringLiteral("EpicGamesLauncher.exe"))
+                                || isProcessRunning(QStringLiteral("EpicWebHelper.exe"));
+                        if (alive)
+                            image = QStringLiteral("EpicGamesLauncher.exe");
+                    } else if (platform == QLatin1String("ea")) {
+                        alive = isProcessRunning(QStringLiteral("EADesktop.exe"))
+                                || isProcessRunning(QStringLiteral("Origin.exe"));
+                        if (alive)
+                            image = QStringLiteral("EADesktop.exe");
+                    } else if (platform == QLatin1String("steam")) {
+                        alive = isProcessRunning(QStringLiteral("steam.exe"));
+                        if (alive)
+                            image = QStringLiteral("steam.exe");
+                    }
+                    if (!alive)
                         return;
-                    qWarning() << "[SESSION] личный Steam — accept launcher session";
-                    emit gameStartedSuccessfully();
-                    m_gamePid = getProcessIdByName(QStringLiteral("steam"));
-                    if (!m_gamePid)
-                        m_gamePid = getProcessIdByName(QStringLiteral("steam.exe"));
-                    m_gameProcessImage = QStringLiteral("steam.exe");
-                    m_gameAcceptedAtMs = QDateTime::currentMSecsSinceEpoch();
+
+                    qWarning() << "[SESSION] личный" << platform.toUpper()
+                               << "— login wait (shell visible, no hide, no launcher-as-game)";
+                    emit gameStartedSuccessfully(); // снять loading overlay → видна форма входа
+                    // НЕ ставим m_gamePid / m_gameAcceptedAtMs на лаунчер — только флаг ожидания
+                    m_personalLoginWait = true;
+                    m_gamePid = 0;
+                    m_gameProcessImage.clear();
+                    m_gameAcceptedAtMs = 0;
                     m_gameGoneTicks = 0;
-                    m_gameFindTimer->stop();
+                    if (!m_gameFindTimer->isActive())
+                        m_gameFindTimer->start();
                     if (!m_gameExitTimer->isActive())
                         m_gameExitTimer->start(2000);
-                    // Оверлей ещё виден → снять TOPMOST → hide → мягкий wake Steam
-                    const int hideGen = m_hideShellGeneration;
-                    QTimer::singleShot(1800, this, [this, hideGen]() {
-                        if (hideGen != m_hideShellGeneration || !m_gameSessionActive)
-                            return;
-                        setShellTopmost(false);
-                    });
-                    QTimer::singleShot(2500, this, [this, hideGen]() {
-                        if (hideGen != m_hideShellGeneration || !m_gameSessionActive)
-                            return;
-                        hideShellForGame();
-                        // Не трогаем HWND Steam (wake/ShowWindow) — всплывает лишний чёрный фрейм.
-                        // После hide шелла CEF сам дорисует логин.
-                    });
+                    setShellTopmost(false);
+                    // hideShellForGame — только из acceptGameWindow после окна игры
                 });
             }
         });
 
-        m_platformAuth->startLauncher(m_process, authData, appIdHint);
+        m_platformAuth->startLauncher(m_process, data, appIdHint);
         qWarning() << "[SESSION] startLauncher queued:"
                    << (m_process ? m_process->program() : QString())
                    << (m_process ? m_process->arguments() : QStringList())
@@ -757,10 +857,27 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
         QTimer::singleShot(20000, this, [this, platform]() {
             if (!m_gameSessionActive || m_gameHwnd != 0)
                 return;
+            // Личный login-wait / принятый лаунчер — не фейлим по parent QProcess
+            if (m_personalLoginWait || m_gamePid != 0 || m_gameAcceptedAtMs > 0) {
+                qWarning() << "[SESSION]" << platform.toUpper()
+                           << (m_personalLoginWait ? "personal login-wait" : "лаунчер в session watch")
+                           << "— skip fail-timer";
+                return;
+            }
 
             if (m_platformAuth && !m_platformAuth->allowsGameDetect()) {
                 qWarning() << "[SESSION]" << platform.toUpper()
                            << "QProcess мог завершиться — scout/логин ещё идёт, не фейлим";
+                return;
+            }
+
+            const bool riotFamilyAlive =
+                platform == QLatin1String("riot")
+                && (isProcessRunning(QStringLiteral("RiotClientServices.exe"))
+                    || isProcessRunning(QStringLiteral("RiotClientUx.exe"))
+                    || isProcessRunning(QStringLiteral("LeagueClientUx.exe")));
+            if (riotFamilyAlive) {
+                qWarning() << "[SESSION] RIOT процесс жив — OK (parent QProcess мог отвалиться)";
                 return;
             }
 
@@ -842,6 +959,7 @@ void ProcessManager::acceptGameWindow(quintptr hwnd, const QString &className)
 
     qWarning() << "[SESSION] Игра запущена:" << className
                << "| platform:" << m_currentPlatform;
+    m_personalLoginWait = false; // реальная игра — выходим из login-wait
     m_pendingGameHwnd = 0;
     m_pendingGameClass.clear();
     m_gameFindTimer->stop();
@@ -886,11 +1004,16 @@ void ProcessManager::acceptGameWindow(quintptr hwnd, const QString &className)
         hideShellForGame();
     });
 
-    // Epic/EA: бэкап всегда после детекта игры (даже если scout не нашёл окно логина).
-    const bool platformAlwaysBackup = (m_currentPlatform == QLatin1String("epic")
-                                       || m_currentPlatform == QLatin1String("ea"));
-    if (m_platformAuth && (m_platformAuth->needsCacheBackup() || platformAlwaysBackup)) {
-        const int delayMs = 3000;
+    // Epic/EA/Riot: бэкап после детекта игры (yaml/ini часто пишутся после логина).
+    // Личный аккаунт — не трогаем клубный machine-cache на сервере.
+    const bool platformAlwaysBackup = !m_personalAccount
+        && (m_currentPlatform == QLatin1String("epic")
+            || m_currentPlatform == QLatin1String("ea")
+            || m_currentPlatform == QLatin1String("riot"));
+    if (m_platformAuth && !m_personalAccount
+        && (m_platformAuth->needsCacheBackup() || platformAlwaysBackup)) {
+        // Riot: Cookies/Sessions CEF дописываются после RSO — ждём дольше (persist + flush)
+        const int delayMs = (m_currentPlatform == QLatin1String("riot")) ? 10000 : 3000;
         QTimer::singleShot(delayMs, this, [this, platformAlwaysBackup]() {
             if (!m_platformAuth)
                 return;
@@ -898,7 +1021,8 @@ void ProcessManager::acceptGameWindow(quintptr hwnd, const QString &className)
                 return;
             qWarning() << "[" << m_currentPlatform.toUpper()
                        << "] cache backup → сервер";
-            m_platformAuth->backupCache(m_netManager, m_currentTerminalId, m_currentLogin);
+            m_platformAuth->backupCache(m_netManager, m_currentTerminalId, m_currentLogin,
+                                        m_currentAccountId, m_currentGameId);
             m_platformAuth->setNeedsCacheBackup(false);
         });
     }
@@ -1067,17 +1191,66 @@ void ProcessManager::checkGameExit()
         }
     }
 
-    // Личный Steam / лаунчер без fullscreen HWND — сессия живёт, пока процесс жив
-    if (m_currentPlatform == QLatin1String("steam") && m_gameHwnd == 0) {
-        if (isProcessRunning(QStringLiteral("steam.exe")) || isPidAlive(m_gamePid)) {
+    // Личный login-wait: лаунчер ≠ игра. Сессия жива, пока лаунчер жив; не «game window closed».
+    if ((m_personalLoginWait || m_personalAccount) && m_gameHwnd == 0) {
+        bool launcherAlive = false;
+        if (m_platformAuth) {
+            const QString img = m_platformAuth->launcherProcessName();
+            if (!img.isEmpty())
+                launcherAlive = isProcessRunning(img);
+        }
+        if (!launcherAlive && m_currentPlatform == QLatin1String("riot")) {
+            launcherAlive = isProcessRunning(QStringLiteral("RiotClientServices.exe"))
+                            || isProcessRunning(QStringLiteral("RiotClientUx.exe"))
+                            || isProcessRunning(QStringLiteral("LeagueClientUx.exe"));
+        }
+        if (!launcherAlive && m_currentPlatform == QLatin1String("steam"))
+            launcherAlive = isProcessRunning(QStringLiteral("steam.exe"));
+        if (!launcherAlive && m_currentPlatform == QLatin1String("epic")) {
+            launcherAlive = isProcessRunning(QStringLiteral("EpicGamesLauncher.exe"))
+                            || isProcessRunning(QStringLiteral("EpicWebHelper.exe"));
+        }
+        if (!launcherAlive && m_currentPlatform == QLatin1String("ea")) {
+            launcherAlive = isProcessRunning(QStringLiteral("EADesktop.exe"))
+                            || isProcessRunning(QStringLiteral("Origin.exe"));
+        }
+        if (launcherAlive) {
             m_gameGoneTicks = 0;
             return;
+        }
+        // Лаунчер реально умер во время ручного логина
+        ++m_gameGoneTicks;
+        qWarning() << "[SESSION] personal login-wait: launcher gone tick" << m_gameGoneTicks
+                   << "| platform:" << m_currentPlatform;
+        if (m_gameGoneTicks >= 3)
+            finishGameSession(QStringLiteral("launcher closed during personal login"));
+        return;
+    }
+
+    // Не завершать сессию, если watched pid — сам лаунчер (защита от старых путей)
+    if (m_gameHwnd == 0 && !m_gameProcessImage.isEmpty()) {
+        const QString img = m_gameProcessImage.toLower();
+        const bool watchedIsLauncher =
+            img.contains(QStringLiteral("eadesktop"))
+            || img.contains(QStringLiteral("origin.exe"))
+            || img.contains(QStringLiteral("epicgameslauncher"))
+            || img.contains(QStringLiteral("epicwebhelper"))
+            || img.contains(QStringLiteral("steam.exe"))
+            || img.contains(QStringLiteral("riotclient"));
+        if (watchedIsLauncher) {
+            const bool alive = isPidAlive(m_gamePid) || isProcessRunning(m_gameProcessImage);
+            if (alive) {
+                m_gameGoneTicks = 0;
+                return;
+            }
         }
     }
 
     // Grace только для splash→main (окно пропало, процесс ещё грузит).
+    // Не применять grace к лаунчеру — только к реальной игре (m_gameHwnd был принят).
     const qint64 aliveForMs = QDateTime::currentMSecsSinceEpoch() - m_gameAcceptedAtMs;
-    if (aliveForMs < 45000 && isPidAlive(m_gamePid)) {
+    if (m_gameAcceptedAtMs > 0 && aliveForMs < 45000 && isPidAlive(m_gamePid)
+        && !m_personalLoginWait) {
         m_gameGoneTicks = 0;
         return;
     }
@@ -1103,6 +1276,7 @@ void ProcessManager::finishGameSession(const QString &reason)
         return;
 
     m_gameSessionActive = false;
+    m_personalLoginWait = false;
     m_gameExitTimer->stop();
     m_gameFindTimer->stop();
     m_gameHwnd = 0;
@@ -1122,22 +1296,56 @@ void ProcessManager::finishGameSession(const QString &reason)
     showShellAfterGame();
     emit gameFinished();
 
+    // Riot: soft close → ждать flush CEF (persist yaml) → backup → force kill.
+    // Жёсткий taskkill /F сразу после логина сбрасывает Persisting 0 cookies.
+    if (m_currentPlatform == QLatin1String("riot") && m_platformAuth) {
+        auto *riot = qobject_cast<RiotAuth *>(m_platformAuth);
+        if (riot) {
+            riot->prepareGracefulShutdown();
+            const QString login = m_currentLogin;
+            const int termId = m_currentTerminalId;
+            const int accountId = m_currentAccountId;
+            const int gameId = m_currentGameId;
+            const bool needBackup = !m_personalAccount
+                && (riot->needsCacheBackup() || riot->didInteractiveLogin());
+            IPlatformAuth *auth = m_platformAuth;
+            NetworkManager *net = m_netManager;
+            qWarning() << "[SESSION] Riot graceful: ждём 10s flush yaml, потом"
+                       << (needBackup ? "backup+forceKill" : "forceKill (personal — без backup)");
+            QTimer::singleShot(10000, this, [riot, auth, net, termId, login, accountId, gameId, needBackup]() {
+                if (needBackup && auth && net) {
+                    qWarning() << "[SESSION] Riot backup после soft-close flush";
+                    auth->backupCache(net, termId, login, accountId, gameId);
+                    auth->setNeedsCacheBackup(false);
+                }
+                if (riot)
+                    riot->forceKillRemaining();
+            });
+            m_netWatchTimer->start(5000);
+            return;
+        }
+    }
+
     if (m_platformAuth)
         m_platformAuth->killLauncher();
 
-    if (m_platformAuth
+    if (m_platformAuth && !m_personalAccount
         && (m_platformAuth->needsCacheBackup()
             || m_currentPlatform == QLatin1String("epic")
-            || m_currentPlatform == QLatin1String("ea"))) {
+            || m_currentPlatform == QLatin1String("ea")
+            || m_currentPlatform == QLatin1String("riot"))) {
         const QString login = m_currentLogin;
         const int termId = m_currentTerminalId;
+        const int accountId = m_currentAccountId;
+        const int gameId = m_currentGameId;
         IPlatformAuth *auth = m_platformAuth;
         NetworkManager *net = m_netManager;
         qWarning() << "[SESSION] cache backup после killLauncher (отложенный)";
-        QTimer::singleShot(2500, this, [auth, net, termId, login]() {
+        const int postKillMs = (m_currentPlatform == QLatin1String("riot")) ? 8000 : 2500;
+        QTimer::singleShot(postKillMs, this, [auth, net, termId, login, accountId, gameId]() {
             if (!auth || !net)
                 return;
-            auth->backupCache(net, termId, login);
+            auth->backupCache(net, termId, login, accountId, gameId);
             auth->setNeedsCacheBackup(false);
         });
     }
@@ -1148,7 +1356,8 @@ void ProcessManager::finishGameSession(const QString &reason)
 void ProcessManager::backupAndSendVdfPayload()
 {
     if (m_platformAuth)
-        m_platformAuth->backupCache(m_netManager, m_currentTerminalId, m_currentLogin);
+        m_platformAuth->backupCache(m_netManager, m_currentTerminalId, m_currentLogin,
+                                    m_currentAccountId, m_currentGameId);
 }
 
 void ProcessManager::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)

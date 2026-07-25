@@ -35,6 +35,15 @@ qt_add_qml_module(appsector0451
         LoadingOverlay.qml
     RESOURCES
         images/hex_bg.png
+        images/launchers/steam.png
+        images/launchers/epic.png
+        images/launchers/ea.png
+        images/launchers/riot.png
+        images/launchers/battlenet.png
+        images/launchers/ubisoft.png
+        images/launchers/lesta.png
+        images/launchers/vkplay.png
+        images/launchers/roblox.png
     SOURCES
         src/models/gamemodel.h src/models/gamemodel.cpp
         src/models/storemodel.h src/models/storemodel.cpp

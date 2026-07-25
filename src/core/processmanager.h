@@ -22,6 +22,8 @@ public:
     Q_INVOKABLE void setShellTopmost(bool enabled);
     Q_INVOKABLE void hideShellForGame();
     Q_INVOKABLE void showShellAfterGame();
+    // true while club/personal session launch is in progress (blocks Dashboard tile re-clicks)
+    Q_INVOKABLE bool isSessionBusy() const;
 
 public slots:
     // Универсальный вход: authData.platform = steam|epic|direct|…
@@ -40,6 +42,10 @@ public slots:
                             const QString &a = QString(),
                             const QString &b = QString(),
                             const QString &c = QString());
+
+    // Первый существующий путь из списка (Battle.net / Ubisoft / Lesta / VK …)
+    Q_INVOKABLE void launchFirstExisting(const QStringList &candidatePaths,
+                                         const QString &args = QString());
 
     void backupAndSendVdfPayload();
     void applyQosPolicies(bool enable);
@@ -86,8 +92,12 @@ private:
 
     int m_currentTerminalId;
     int m_currentGameId;
+    int m_currentAccountId = 0;
     QString m_currentLogin;
     QString m_currentPlatform;
+    bool m_personalAccount = false;
+    // Личный логин: ждём окно игры, НЕ watch PID лаунчера как «игру»
+    bool m_personalLoginWait = false;
 
     bool m_gameSessionActive;
     quintptr m_gameHwnd;

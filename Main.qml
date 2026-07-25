@@ -39,6 +39,7 @@ Window {
     property string sessionPhone: ""
     property string sessionUserBeforePause: ""
     property bool isLoggingIn: false
+    property bool gameLoadingVisible: false
     property var pendingOverlaysData: null
     property string loadingPlatform: ""
     property string loadingGameTitle: ""
@@ -53,6 +54,8 @@ Window {
         steamLoadingOverlay.gameTitle = root.loadingGameTitle || "ИГРЫ"
         steamLoadingOverlay.running = true
         steamLoadingOverlay.visible = true
+        root.gameLoadingVisible = true
+        root.isLoggingIn = true
         if (typeof Launcher !== "undefined")
             Launcher.setShellTopmost(true)
         root.raise()
@@ -74,6 +77,7 @@ Window {
         hideGameLoadingTimer.stop()
         steamLoadingOverlay.running = false
         steamLoadingOverlay.visible = false
+        root.gameLoadingVisible = false
         root.isLoggingIn = false
         // Только оверлей. Shell hide/show — только из C++ (hideShellForGame / showShellAfterGame).
     }
@@ -232,8 +236,12 @@ Window {
         }
 
         function onGameStartedSuccessfully() {
-            // Оверлей держим, пока C++ не спрячет shell (~2.5с) — без мигания рабочего стола
-            hideGameLoadingTimer.interval = 2500
+            // Держим оверлей дольше: Riot/League UI грузится не мгновенно
+            hideGameLoadingTimer.interval =
+                (String(root.loadingPlatform || "").toLowerCase().indexOf("riot") >= 0
+                 || String(root.loadingGameTitle || "").toLowerCase().indexOf("league") >= 0
+                 || String(root.loadingGameTitle || "").toLowerCase().indexOf("riot") >= 0)
+                ? 6000 : 2500
             hideGameLoadingTimer.restart()
         }
 
@@ -241,6 +249,7 @@ Window {
             // Не вызывать hideGameLoading→hide shell: C++ уже showShellAfterGame()
             steamLoadingOverlay.running = false
             steamLoadingOverlay.visible = false
+            root.gameLoadingVisible = false
             root.isLoggingIn = false
             NetworkManager.freeGameAccount(parseInt(root.terminalId), parseInt(root.currentGameId))
         }

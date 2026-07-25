@@ -46,7 +46,18 @@ void DirectLaunchAuth::killLauncher()
 
 bool DirectLaunchAuth::applyCache(const QJsonObject &authData)
 {
-    Q_UNUSED(authData);
+    const QString mode = authData.value(QStringLiteral("auth")).toObject()
+                             .value(QStringLiteral("mode")).toString();
+    const QString platformSource = authData.value(QStringLiteral("platform_source")).toString();
+    const QString login = authData.value(QStringLiteral("login")).toString().trimmed();
+    const bool personal = (mode.compare(QStringLiteral("personal"), Qt::CaseInsensitive) == 0)
+        || (platformSource.compare(QStringLiteral("personal_account"), Qt::CaseInsensitive) == 0)
+        || login.isEmpty();
+    if (personal) {
+        // Нет machine-cache на диске — ProcessManager уже killLauncher + strip DB payload.
+        qWarning() << "[" << m_platformId.toUpper()
+                   << "] personal: full logout wipe | (no local session cache) → manual login via exe";
+    }
     return true; // кэша нет — scout не нужен
 }
 
