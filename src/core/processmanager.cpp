@@ -8,17 +8,149 @@
 
 #include <QDateTime>
 #include <QDebug>
+#include <QEvent>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonDocument>
+#include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPainterPath>
 #include <QProcess>
+#include <QRasterWindow>
+#include <QScreen>
 #include <QSettings>
 #include <QTimer>
 #include <QVector>
+#include <functional>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#endif
+
+/*
+ * Windowed / fullscreen note (club shell ↔ game toggle):
+ * Games often run exclusive or borderless fullscreen — we do NOT force windowed mode.
+ * The floating SHELL side-tab is a separate Qt::Tool + WindowStaysOnTopHint HWND,
+ * flush to the right screen edge (vertically near center), and we reassert
+ * SetWindowPos(HWND_TOPMOST) on a timer. Exclusive fullscreen (D3D flip /
+ * exclusive mode) can still cover TOPMOST overlays on some GPUs/drivers; borderless
+ * fullscreen usually leaves the button visible. Prefer TOPMOST over forcing windowed.
+ */
+
+// Thin right-edge side tab: switch back to club shell without ending the game session.
+// Flush to the screen edge (HUD-safe), left corners rounded, right side square.
+class ShellToggleWindow : public QRasterWindow
+{
+public:
+    std::function<void()> onClicked;
+
+    ShellToggleWindow()
+        : QRasterWindow()
+    {
+        // Independent tool HWND (not a child of the shell) so it stays visible while shell is Hidden.
+        setFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+        resize(kTabW, kTabH);
+        setTitle(QStringLiteral("REACTOR Shell Toggle"));
+    }
+
+    void repositionSideEdge()
+    {
+        QScreen *screen = QGuiApplication::primaryScreen();
+        if (!screen)
+            return;
+        const QRect geo = screen->availableGeometry();
+        // Flush to right edge; slightly above vertical center (game HUDs rarely place controls here).
+        const int x = geo.x() + geo.width() - width();
+        const int y = geo.y() + geo.height() / 2 - height() / 2 - geo.height() / 12;
+        setPosition(x, y);
+    }
+
+    void raiseTopmostNative()
+    {
+#ifdef Q_OS_WIN
+        const HWND hwnd = reinterpret_cast<HWND>(winId());
+        if (!hwnd)
+            return;
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+#endif
+    }
+
+protected:
+    bool event(QEvent *ev) override
+    {
+        if (ev->type() == QEvent::Leave && m_hover) {
+            m_hover = false;
+            update();
+        }
+        return QRasterWindow::event(ev);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRect area(0, 0, width(), height());
+        p.fillRect(area, Qt::transparent);
+
+        // Inset left/top/bottom for AA stroke; right edge flush to screen (no outer radius).
+        const QRectF r = QRectF(area).adjusted(1.0, 1.0, 0.0, -1.0);
+        const qreal radius = 10.0;
+
+        QPainterPath path;
+        path.moveTo(r.right(), r.top());
+        path.lineTo(r.left() + radius, r.top());
+        path.quadTo(r.left(), r.top(), r.left(), r.top() + radius);
+        path.lineTo(r.left(), r.bottom() - radius);
+        path.quadTo(r.left(), r.bottom(), r.left() + radius, r.bottom());
+        path.lineTo(r.right(), r.bottom());
+        path.closeSubpath();
+
+        p.setBrush(QColor(3, 7, 4, 235));
+        p.setPen(QPen(QColor(0x22, 0xc5, 0x5e, m_hover ? 255 : 190), 1.5));
+        p.drawPath(path);
+
+        p.setPen(QColor(0x22, 0xc5, 0x5e));
+        QFont f = p.font();
+        f.setBold(true);
+        f.setPixelSize(11);
+        f.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
+        p.setFont(f);
+
+        // Vertical label: rotate around tab center.
+        p.save();
+        p.translate(area.center());
+        p.rotate(-90);
+        p.drawText(QRectF(-area.height() / 2.0, -area.width() / 2.0,
+                          area.height(), area.width()),
+                   Qt::AlignCenter, QStringLiteral("☰ SHELL"));
+        p.restore();
+    }
+
+    void mousePressEvent(QMouseEvent *ev) override
+    {
+        if (ev->button() == Qt::LeftButton && onClicked)
+            onClicked();
+    }
+
+    void mouseMoveEvent(QMouseEvent *) override
+    {
+        if (!m_hover) {
+            m_hover = true;
+            update();
+        }
+    }
+
+private:
+    static constexpr int kTabW = 28;
+    static constexpr int kTabH = 96;
+    bool m_hover = false;
+};
+
+#ifdef Q_OS_WIN
 
 static QString processImageForPid(DWORD pid)
 {
@@ -361,6 +493,7 @@ ProcessManager::ProcessManager(NetworkManager *netManager, QObject *parent)
     , m_netWatchTimer(new QTimer(this))
     , m_gameExitTimer(new QTimer(this))
     , m_gameFindTimer(new QTimer(this))
+    , m_shellToggleTopmostTimer(new QTimer(this))
     , m_alertActive(false)
     , m_offendingPid(0)
     , m_highActivityCounter(0)
@@ -377,8 +510,14 @@ ProcessManager::ProcessManager(NetworkManager *netManager, QObject *parent)
     connect(m_netWatchTimer, &QTimer::timeout, this, &ProcessManager::monitorNetworkTraffic);
     connect(m_gameExitTimer, &QTimer::timeout, this, &ProcessManager::checkGameExit);
     connect(m_gameFindTimer, &QTimer::timeout, this, &ProcessManager::pollForGameWindow);
+    connect(m_shellToggleTopmostTimer, &QTimer::timeout, this, &ProcessManager::reassertShellToggleTopmost);
     m_gameFindTimer->setInterval(500);
+    m_shellToggleTopmostTimer->setInterval(1500);
     m_netWatchTimer->start(5000);
+
+    m_shellToggle = new ShellToggleWindow();
+    m_shellToggle->onClicked = [this]() { switchToShell(); };
+    m_shellToggle->repositionSideEdge();
 }
 
 ProcessManager::~ProcessManager()
@@ -386,6 +525,9 @@ ProcessManager::~ProcessManager()
 #ifdef Q_OS_WIN
     if (g_pGameHook) UnhookWinEvent(g_pGameHook);
 #endif
+    showShellToggle(false);
+    delete m_shellToggle;
+    m_shellToggle = nullptr;
     if (m_platformAuth) {
         m_platformAuth->stopScout();
         m_platformAuth->deleteLater();
@@ -396,6 +538,115 @@ ProcessManager::~ProcessManager()
 void ProcessManager::setMainWindow(QWindow *window)
 {
     m_mainWindow = window;
+}
+
+bool ProcessManager::hasActiveGame() const
+{
+    return m_hasActiveGame;
+}
+
+QString ProcessManager::gameTitle() const
+{
+    return m_gameTitle;
+}
+
+bool ProcessManager::shellHiddenForGame() const
+{
+    return m_shellHiddenForGame;
+}
+
+void ProcessManager::setHasActiveGame(bool active)
+{
+    if (m_hasActiveGame == active)
+        return;
+    m_hasActiveGame = active;
+    emit hasActiveGameChanged();
+}
+
+void ProcessManager::setGameTitle(const QString &title)
+{
+    if (m_gameTitle == title)
+        return;
+    m_gameTitle = title;
+    emit gameTitleChanged();
+}
+
+void ProcessManager::setShellHiddenForGame(bool hidden)
+{
+    if (m_shellHiddenForGame == hidden)
+        return;
+    m_shellHiddenForGame = hidden;
+    emit shellHiddenForGameChanged();
+}
+
+void ProcessManager::showShellToggle(bool show)
+{
+    if (!m_shellToggle)
+        return;
+    if (show) {
+        m_shellToggle->repositionSideEdge();
+        m_shellToggle->setVisible(true);
+        m_shellToggle->show();
+        m_shellToggle->raise();
+        m_shellToggle->raiseTopmostNative();
+        if (!m_shellToggleTopmostTimer->isActive())
+            m_shellToggleTopmostTimer->start();
+    } else {
+        m_shellToggleTopmostTimer->stop();
+        m_shellToggle->hide();
+    }
+}
+
+void ProcessManager::reassertShellToggleTopmost()
+{
+    if (!m_shellToggle || !m_shellToggle->isVisible())
+        return;
+    m_shellToggle->raiseTopmostNative();
+}
+
+void ProcessManager::focusGameWindow()
+{
+#ifdef Q_OS_WIN
+    HWND gameHwnd = reinterpret_cast<HWND>(m_gameHwnd);
+    if ((!gameHwnd || !IsWindow(gameHwnd)) && findAliveGameWindow(&m_gameHwnd))
+        gameHwnd = reinterpret_cast<HWND>(m_gameHwnd);
+    if (!gameHwnd || !IsWindow(gameHwnd))
+        return;
+    ShowWindow(gameHwnd, SW_RESTORE);
+    AllowSetForegroundWindow(ASFW_ANY);
+    SetWindowPos(gameHwnd, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(gameHwnd);
+    BringWindowToTop(gameHwnd);
+#else
+    Q_UNUSED(this);
+#endif
+}
+
+void ProcessManager::restoreShellUi(bool /*endSessionPath*/)
+{
+    if (!m_mainWindow)
+        return;
+    qWarning() << "[SESSION] restoreShellUi — fullscreen shell (frameless)";
+    m_mainWindow->setFlags(Qt::Window | Qt::FramelessWindowHint);
+    m_mainWindow->setVisibility(QWindow::FullScreen);
+    m_mainWindow->showFullScreen();
+    setShellTopmost(true);
+    m_mainWindow->raise();
+    m_mainWindow->requestActivate();
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(m_mainWindow->winId());
+    if (hwnd) {
+        LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+        SetWindowLongW(hwnd, GWL_STYLE, style);
+        const int sw = GetSystemMetrics(SM_CXSCREEN);
+        const int sh = GetSystemMetrics(SM_CYSCREEN);
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, sw, sh,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        SetForegroundWindow(hwnd);
+    }
+#endif
 }
 
 void ProcessManager::setShellTopmost(bool enabled)
@@ -424,6 +675,7 @@ void ProcessManager::setShellTopmost(bool enabled)
 
 bool ProcessManager::isSessionBusy() const
 {
+    // Busy while session is active and shell is on screen (launching OR paused-over-game).
     return m_gameSessionActive && !m_shellHiddenForGame;
 }
 
@@ -431,7 +683,7 @@ void ProcessManager::hideShellForGame()
 {
     if (!m_mainWindow)
         return;
-    m_shellHiddenForGame = true;
+    setShellHiddenForGame(true);
 #ifdef Q_OS_WIN
     const HWND hwnd = reinterpret_cast<HWND>(m_mainWindow->winId());
     qWarning() << "[SESSION] hideShellForGame hwnd:"
@@ -447,6 +699,9 @@ void ProcessManager::hideShellForGame()
 #else
     m_mainWindow->hide();
 #endif
+    // Floating toggle only after a real game window was accepted (switchable session).
+    if (m_hasActiveGame)
+        showShellToggle(true);
 }
 
 void ProcessManager::showShellAfterGame()
@@ -454,28 +709,52 @@ void ProcessManager::showShellAfterGame()
     if (!m_mainWindow)
         return;
     ++m_hideShellGeneration; // отменить отложенные hideShellForGame
-    m_shellHiddenForGame = false;
+    showShellToggle(false);
+    setShellHiddenForGame(false);
     qWarning() << "[SESSION] showShellAfterGame — fullscreen shell (frameless)";
-    // Без рамки/меню; иначе после hide() Windows возвращает оконный режим
-    m_mainWindow->setFlags(Qt::Window | Qt::FramelessWindowHint);
-    m_mainWindow->setVisibility(QWindow::FullScreen);
-    m_mainWindow->showFullScreen();
-    setShellTopmost(true);
-    m_mainWindow->raise();
-    m_mainWindow->requestActivate();
-#ifdef Q_OS_WIN
-    const HWND hwnd = reinterpret_cast<HWND>(m_mainWindow->winId());
-    if (hwnd) {
-        LONG style = GetWindowLongW(hwnd, GWL_STYLE);
-        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
-        SetWindowLongW(hwnd, GWL_STYLE, style);
-        const int sw = GetSystemMetrics(SM_CXSCREEN);
-        const int sh = GetSystemMetrics(SM_CYSCREEN);
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, sw, sh,
-                     SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        SetForegroundWindow(hwnd);
+    restoreShellUi(true);
+}
+
+void ProcessManager::showShellKeepGame()
+{
+    // Mid-session overlay: restore shell, keep watching game. Do NOT finishGameSession /
+    // backup / forceKill. Game may stay running under the shell (not minimized).
+    if (!m_mainWindow)
+        return;
+    if (!m_gameSessionActive && !m_hasActiveGame) {
+        qWarning() << "[SESSION] showShellKeepGame ignored — no active game session";
+        return;
     }
-#endif
+    ++m_hideShellGeneration; // cancel delayed hideShellForGame if still pending
+    showShellToggle(false);
+    setShellHiddenForGame(false);
+    qWarning() << "[SESSION] showShellKeepGame — shell overlay, game session kept alive"
+               << "| title:" << (m_gameTitle.isEmpty() ? QStringLiteral("(n/a)") : m_gameTitle);
+    restoreShellUi(false);
+}
+
+void ProcessManager::switchToShell()
+{
+    showShellKeepGame();
+}
+
+void ProcessManager::switchToGame()
+{
+    if (!m_hasActiveGame && !m_gameSessionActive) {
+        qWarning() << "[SESSION] switchToGame ignored — no active game";
+        return;
+    }
+    if (!isGameWindowAlive()) {
+        qWarning() << "[SESSION] switchToGame — game gone, ending session";
+        finishGameSession(QStringLiteral("game gone on switchToGame"));
+        return;
+    }
+    qWarning() << "[SESSION] switchToGame — hide shell, focus game"
+               << "| title:" << (m_gameTitle.isEmpty() ? QStringLiteral("(n/a)") : m_gameTitle);
+    focusGameWindow();
+    hideShellForGame();
+    focusGameWindow();
+    showShellToggle(true);
 }
 
 IPlatformAuth *ProcessManager::createPlatformAuth(const QString &platform)
@@ -656,6 +935,8 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
         || m_currentLogin.trimmed().isEmpty()
         || platformSource == QLatin1String("personal_account");
 
+    setGameTitle(gameTitle);
+
     qWarning().noquote() << "[SESSION] ========== LAUNCH DEBUG ==========";
     qWarning().noquote() << "[SESSION] game_id:" << m_currentGameId
                          << "| title:" << (gameTitle.isEmpty() ? QStringLiteral("(n/a)") : gameTitle);
@@ -695,6 +976,9 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
 
 #ifdef Q_OS_WIN
     m_gameSessionActive = true;
+    setHasActiveGame(false); // becomes true only after acceptGameWindow
+    showShellToggle(false);
+    setShellHiddenForGame(false);
     m_gameHwnd = 0;
     m_gameWindowClass.clear();
     m_gamePid = 0;
@@ -1100,6 +1384,7 @@ void ProcessManager::startGameExitWatch(quintptr hwnd, const QString &className)
     m_gameWindowClass = className;
     m_gameGoneTicks = 0;
     m_gameSessionActive = true;
+    setHasActiveGame(true);
     m_gameAcceptedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_gamePid = 0;
     m_gameProcessImage.clear();
@@ -1276,6 +1561,8 @@ void ProcessManager::finishGameSession(const QString &reason)
         return;
 
     m_gameSessionActive = false;
+    setHasActiveGame(false);
+    showShellToggle(false);
     m_personalLoginWait = false;
     m_gameExitTimer->stop();
     m_gameFindTimer->stop();
@@ -1293,7 +1580,9 @@ void ProcessManager::finishGameSession(const QString &reason)
                << "| platform:" << m_currentPlatform;
 
     // Сначала шелл на экран, потом taskkill; Epic ini часто дописывается при выходе лаунчера
+    // (showShellAfterGame ends the *visual* session return — not the mid-session toggle path)
     showShellAfterGame();
+    setGameTitle(QString());
     emit gameFinished();
 
     // Riot: soft close → ждать flush CEF (persist yaml) → backup → force kill.

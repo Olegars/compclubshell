@@ -79,7 +79,8 @@ Window {
         steamLoadingOverlay.visible = false
         root.gameLoadingVisible = false
         root.isLoggingIn = false
-        // Только оверлей. Shell hide/show — только из C++ (hideShellForGame / showShellAfterGame).
+        // Только оверлей. Shell hide/show — C++ (hideShellForGame / showShellAfterGame /
+        // showShellKeepGame|switchToShell / switchToGame). Mid-session toggle ≠ session end.
     }
 
     function scheduleHideGameLoading() {

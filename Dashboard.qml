@@ -467,9 +467,93 @@ Item {
         }
     }
 
+    // Mid-session: game still running under shell — return without ending session
+    readonly property bool showReturnToGame: typeof Launcher !== "undefined"
+        && Launcher.hasActiveGame
+        && !Launcher.shellHiddenForGame
+        && !(typeof root !== "undefined" && root !== null && root.gameLoadingVisible)
+
+    Rectangle {
+        id: returnToGameBanner
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: 16
+        height: 52
+        radius: 6
+        z: 250
+        visible: dashboardRoot.showReturnToGame
+        color: "#0a1f12"
+        border.color: accentColor
+        border.width: 1
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 18
+            anchors.rightMargin: 12
+            spacing: 14
+
+            Text {
+                text: "▶"
+                color: accentColor
+                font.pixelSize: 18
+                font.bold: true
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                Text {
+                    text: "ИГРА НА ПАУЗЕ ОВЕРЛЕЯ"
+                    color: accentColor
+                    font.pixelSize: 10
+                    font.bold: true
+                    font.letterSpacing: 1.5
+                    opacity: 0.7
+                }
+                Text {
+                    text: (typeof Launcher !== "undefined" && Launcher.gameTitle)
+                          ? ("Сессия: " + Launcher.gameTitle)
+                          : "Игровая сессия активна"
+                    color: "#e5e5e5"
+                    font.pixelSize: 13
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+            }
+            Rectangle {
+                Layout.preferredWidth: returnGameLabel.implicitWidth + 28
+                Layout.preferredHeight: 36
+                radius: 4
+                color: returnGameMouse.containsMouse ? accentColor : "#052e16"
+                border.color: accentColor
+                border.width: 1
+                Text {
+                    id: returnGameLabel
+                    anchors.centerIn: parent
+                    text: "ВЕРНУТЬСЯ В ИГРУ"
+                    color: returnGameMouse.containsMouse ? "#030704" : accentColor
+                    font.pixelSize: 13
+                    font.bold: true
+                    font.letterSpacing: 1
+                }
+                MouseArea {
+                    id: returnGameMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (typeof Launcher !== "undefined")
+                            Launcher.switchToGame()
+                    }
+                }
+            }
+        }
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: 40
+        anchors.topMargin: dashboardRoot.showReturnToGame ? 84 : 40
         spacing: 40
 
         Rectangle {
