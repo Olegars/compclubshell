@@ -10,8 +10,10 @@
 // Инфраструктура ядра REACTOR
 #include "src/core/hwidprovider.h"
 #include "src/core/networkmanager.h"
+#include "src/core/sessionalertmanager.h"
 #include "src/core/securitymanager.h"
 #include "src/core/processmanager.h"
+#include "src/core/hidinputmonitor.h"
 
 // C++ Модели данных для QML слоя
 #include "src/models/gamemodel.h"
@@ -45,11 +47,15 @@ int main(int argc, char *argv[])
 
     // Инициализация C++ моделей данных
     GameModel *gamesModel = new GameModel(&app);
+    GameModel *featuredGamesModel = new GameModel(&app);
     StoreModel *storeModel = new StoreModel(&app);
 
     // Инициализация менеджеров ядра REACTOR
     NetworkManager *networkManager = new NetworkManager(gamesModel, storeModel, &app);
+    networkManager->setFeaturedGamesModel(featuredGamesModel);
     ProcessManager *processManager = new ProcessManager(networkManager, &app);
+    SessionAlertManager *sessionAlertManager = new SessionAlertManager(&app);
+    HidInputMonitor *hidMonitor = new HidInputMonitor(networkManager, &app);
 
     networkManager->fetchTerminalConfig(HwidProvider::machineHwid());
     networkManager->checkTerminalStatus();
@@ -58,9 +64,12 @@ int main(int argc, char *argv[])
     QQmlContext *rootContext = engine.rootContext();
     rootContext->setContextProperty("NetworkManager", networkManager);
     rootContext->setContextProperty("gamesModel", gamesModel);
+    rootContext->setContextProperty("featuredGamesModel", featuredGamesModel);
     rootContext->setContextProperty("storeModel", storeModel);
     rootContext->setContextProperty("Launcher", processManager);
     rootContext->setContextProperty("launcher", processManager);
+    rootContext->setContextProperty("SessionAlert", sessionAlertManager);
+    rootContext->setContextProperty("HidMonitor", hidMonitor);
 
     qDebug() << "[REACTOR-MAIN] Рабочая директория приложения:" << QDir::currentPath();
     qDebug() << "[REACTOR-MAIN] Поиск корневого интерфейса в QRC ресурсах...";

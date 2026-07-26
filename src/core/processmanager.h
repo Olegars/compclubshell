@@ -64,7 +64,7 @@ public slots:
 
     void backupAndSendVdfPayload();
     void applyQosPolicies(bool enable);
-    void setSystemVolume(int level);
+    Q_INVOKABLE void setSystemVolume(int level);
     void toggleSystemLanguage();
     void handleDownloadDecision(bool continueDownload);
     void applyEnterprisePolicies(bool enable);

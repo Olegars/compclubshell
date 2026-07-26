@@ -170,6 +170,9 @@ Window {
                     screenSwitcher.sourceComponent = loginScreenComponent
                 }
             } else if (root.sessionUser === "GUEST" || root.sessionUser === "") {
+                if (typeof SessionAlert !== "undefined")
+                    SessionAlert.reset()
+                root.sessionTime = "00:00:00"
                 // ИСПРАВЛЕНО: Если лаунчер прямо сейчас находится в процессе отправки запроса, НЕ сбрасываем форму!
                 if (!root.isLoggingIn) {
                     root.resetAuthForm()
@@ -179,6 +182,14 @@ Window {
                     screenSwitcher.sourceComponent = loginScreenComponent
                 }
             }
+        }
+    }
+
+    Connections {
+        target: typeof SessionAlert !== "undefined" ? SessionAlert : null
+        function onTimeRemainingChanged() {
+            if (typeof SessionAlert !== "undefined")
+                root.sessionTime = SessionAlert.timeRemaining
         }
     }
 
@@ -209,10 +220,18 @@ Window {
             root.sessionUser = userName
             root.sessionBalance = balance
             root.sessionTime = timeRemaining
+            if (typeof SessionAlert !== "undefined")
+                SessionAlert.startSession(timeRemaining)
             screenSwitcher.sourceComponent = null
             dashboardLoader.source = "Dashboard.qml"
             NetworkManager.fetchGames()
             NetworkManager.fetchProducts()
+            if (typeof HidMonitor !== "undefined") {
+                var cid = NetworkManager.computerId > 0 ? NetworkManager.computerId : root.terminalId
+                var bid = NetworkManager.lastBookingId || 0
+                HidMonitor.captureAndBind(cid, bid)
+                HidMonitor.startWatch(cid, bid)
+            }
         }
 
         function onLoginFailed(message) {

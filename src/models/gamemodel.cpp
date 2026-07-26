@@ -48,28 +48,39 @@ QHash<int, QByteArray> GameModel::roleNames() const
 
 void GameModel::setGames(const std::vector<GameItem> &games)
 {
-    // beginResetModel заставляет QML полностью перерисовать GridView
-    beginResetModel();
     m_allGames = games;
-    m_displayGames = games; // По умолчанию показываем всё
-    endResetModel();
+    applyFilters();
 }
 
 void GameModel::setFilter(const QString &filter)
 {
+    m_currentFilter = filter.isEmpty() ? QStringLiteral("ВСЕ ИГРЫ") : filter;
+    applyFilters();
+}
+
+void GameModel::setSearchQuery(const QString &query)
+{
+    m_searchQuery = query.trimmed();
+    applyFilters();
+}
+
+void GameModel::applyFilters()
+{
     beginResetModel();
 
-    if (filter == "ВСЕ ИГРЫ" || filter.isEmpty()) {
-        m_displayGames = m_allGames;
-    } else {
-        m_displayGames.clear();
-        const bool riotTab = filter.compare(QStringLiteral("RIOT"), Qt::CaseInsensitive) == 0;
+    m_displayGames.clear();
 
-        // Пробегаемся по полному списку и ищем совпадения
-        for (const auto &game : m_allGames) {
-            // Ищем совпадение либо по платформе (напр. "Steam"), либо по категории (напр. "Утилиты")
-            // Используем Qt::CaseInsensitive, чтобы не было проблем с регистром (Steam == STEAM)
-            bool match = game.platform.contains(filter, Qt::CaseInsensitive)
+    const QString &filter = m_currentFilter;
+    const bool showAll = filter == QStringLiteral("ВСЕ ИГРЫ") || filter.isEmpty();
+    const bool riotTab = filter.compare(QStringLiteral("RIOT"), Qt::CaseInsensitive) == 0;
+    const bool hasSearch = !m_searchQuery.isEmpty();
+
+    for (const auto &game : m_allGames) {
+        bool match = showAll;
+
+        if (!showAll) {
+            // Совпадение по платформе (Steam) или категории (Утилиты)
+            match = game.platform.contains(filter, Qt::CaseInsensitive)
                 || game.category.contains(filter, Qt::CaseInsensitive);
 
             if (!match && riotTab) {
@@ -82,11 +93,17 @@ void GameModel::setFilter(const QString &filter)
                     || hay.contains(QLatin1String("league of legends"))
                     || hay.contains(QLatin1String("league_of_legends"));
             }
-
-            if (match)
-                m_displayGames.push_back(game);
         }
+
+        if (match && hasSearch
+            && !game.title.contains(m_searchQuery, Qt::CaseInsensitive)) {
+            match = false;
+        }
+
+        if (match)
+            m_displayGames.push_back(game);
     }
 
     endResetModel();
+    emit countChanged();
 }

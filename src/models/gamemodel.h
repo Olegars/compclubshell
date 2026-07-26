@@ -18,6 +18,7 @@ struct GameItem {
 class GameModel : public QAbstractListModel
 {
     Q_OBJECT
+    Q_PROPERTY(int count READ count NOTIFY countChanged)
 
 public:
     // Роли нужны для связи полей C++ с QML
@@ -44,7 +45,19 @@ public:
     // Метод для вызова из QML (фильтрация по категориям/платформам)
     Q_INVOKABLE void setFilter(const QString &filter);
 
+    // Поиск по названию игры (case-insensitive contains); пустая строка = без поиска
+    Q_INVOKABLE void setSearchQuery(const QString &query);
+
+    int count() const { return static_cast<int>(m_displayGames.size()); }
+
+signals:
+    void countChanged();
+
 private:
+    void applyFilters();
+
     std::vector<GameItem> m_allGames;     // Кэш всех скачанных игр
     std::vector<GameItem> m_displayGames; // Игры, которые сейчас отображаются на экране
+    QString m_currentFilter = QStringLiteral("ВСЕ ИГРЫ");
+    QString m_searchQuery;
 };

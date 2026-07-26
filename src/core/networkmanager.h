@@ -10,6 +10,7 @@
 #include <QUrl>
 #include <QJsonObject>
 #include <QVariantMap>
+#include <QVariantList>
 
 class GameModel;
 class StoreModel;
@@ -20,6 +21,9 @@ class NetworkManager : public QObject
     Q_PROPERTY(QString serverUrl READ serverUrl CONSTANT)
     Q_PROPERTY(int computerId READ computerId NOTIFY computerIdChanged)
     Q_PROPERTY(int lastBookingId READ lastBookingId NOTIFY lastBookingIdChanged)
+    Q_PROPERTY(int userId READ userId NOTIFY userIdChanged)
+    Q_PROPERTY(QString featuredLabel READ featuredLabel NOTIFY featuredChanged)
+    Q_PROPERTY(QString featuredMode READ featuredMode NOTIFY featuredChanged)
 public:
     explicit NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent = nullptr);
 
@@ -27,9 +31,15 @@ public:
     QString serverUrl() const;
     int computerId() const;
     int lastBookingId() const { return m_lastBookingId; }
+    int userId() const { return m_userId; }
+    QString featuredLabel() const { return m_featuredLabel; }
+    QString featuredMode() const { return m_featuredMode; }
 
     QNetworkAccessManager* networkAccessManager() const { return m_networkManager; }
     void setRootQmlObject(QObject* rootObj) { m_rootQml = rootObj; }
+
+    /** Second model for «Вы часто играете» / «Популярно в клубе». */
+    void setFeaturedGamesModel(GameModel *model) { m_featuredGamesModel = model; }
 
     Q_INVOKABLE QString getMachineHwid() const;
     Q_INVOKABLE void fetchTerminalConfig(const QString &hwid);
@@ -45,6 +55,8 @@ public:
     Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
     Q_INVOKABLE void fetchOverlays(int terminalId);
     Q_INVOKABLE void freeGameAccount(int terminalId, int gameId);
+    Q_INVOKABLE void recordGameLaunch(int gameId);
+    Q_INVOKABLE void clearSessionUser();
 
 signals:
     void pcRegistrationChanged();
@@ -58,9 +70,13 @@ signals:
     void freeAccountFinished(bool success);
     void computerIdChanged();
     void lastBookingIdChanged();
+    void userIdChanged();
+    void featuredChanged();
+    void gamesLoaded();
 
 private:
     static QString cleanDigits(const QString &value);
+    void applyGamesPayload(const QJsonDocument &doc);
 
     QNetworkAccessManager *m_networkManager;
     bool m_isPcRegistered;
@@ -71,9 +87,13 @@ private:
     QString m_pcNameString;
     int m_computerId;
     int m_lastBookingId;
+    int m_userId = 0;
+    QString m_featuredLabel;
+    QString m_featuredMode;
     QStringList m_activeDownloads;
 
     GameModel* m_gamesModel;
+    GameModel* m_featuredGamesModel = nullptr;
     StoreModel* m_storeModel;
     QObject* m_rootQml;
 };

@@ -12,13 +12,19 @@
 #include <QJsonValue>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QUrlQuery>
+#include <vector>
 
 NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent)
     : QObject(parent)
     , m_isPcRegistered(false)
     , m_computerId(0)
     , m_lastBookingId(0)
+    , m_userId(0)
+    , m_featuredLabel(QStringLiteral("Популярно в клубе"))
+    , m_featuredMode(QStringLiteral("club"))
     , m_gamesModel(gamesModel)
+    , m_featuredGamesModel(nullptr)
     , m_storeModel(storeModel)
     , m_rootQml(nullptr)
 {
@@ -232,10 +238,7 @@ void NetworkManager::logoutTerminal(int terminalId) {
 
             if (responseJson["status"].toString() == "success") {
                 qDebug() << "[DEBUG-C++ LOGOUT] <--- СЕССИЯ УСПЕШНО ЗАКРЫТА НА БЭКЕНДЕ";
-                if (m_lastBookingId != 0) {
-                    m_lastBookingId = 0;
-                    emit lastBookingIdChanged();
-                }
+                clearSessionUser();
                 // Сбрасываем кэш-имя и принудительно обновляем статус харда
                 this->checkTerminalStatus();
             } else {
@@ -315,6 +318,11 @@ void NetworkManager::fetchGames() {
     if (m_serverUrl.isEmpty()) return;
 
     QUrl url(m_serverUrl + "/api/shell/games");
+    if (m_userId > 0) {
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("user_id"), QString::number(m_userId));
+        url.setQuery(q);
+    }
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
@@ -324,35 +332,113 @@ void NetworkManager::fetchGames() {
         reply->deleteLater();
 
         if (reply->error() == QNetworkReply::NoError) {
-            QByteArray responseData = reply->readAll();
-            QJsonDocument doc = QJsonDocument::fromJson(responseData);
-
-            // ИСПРАВЛЕНО: Твой Laravel возвращает прямой массив объектов, а не словарь!
-            QJsonArray gamesArray = doc.array();
-
-            std::vector<GameItem> gamesVector;
-            for (const QJsonValue &value : gamesArray) {
-                QJsonObject obj = value.toObject();
-                GameItem item;
-
-                item.id = obj.value("id").toInt();
-                item.title = obj.value("title").toString();
-                item.exePath = obj.value("exe_path").toString();
-                item.args = obj.value("args").toString();
-                item.poster = obj.value("poster").toString();
-                item.category = obj.value("category").toString();
-                item.platform = obj.value("platform").toString();
-
-                gamesVector.push_back(item);
-            }
-
-            if (m_gamesModel) {
-                m_gamesModel->setGames(gamesVector);
-            }
+            applyGamesPayload(QJsonDocument::fromJson(reply->readAll()));
+            emit gamesLoaded();
         } else {
             qWarning() << "[NET] Ошибка получения списка игр:" << reply->errorString();
         }
     });
+}
+
+void NetworkManager::applyGamesPayload(const QJsonDocument &doc)
+{
+    auto parseItem = [](const QJsonObject &obj) {
+        GameItem item;
+        item.id = obj.value(QStringLiteral("id")).toInt();
+        item.title = obj.value(QStringLiteral("title")).toString();
+        item.exePath = obj.value(QStringLiteral("exe_path")).toString();
+        item.args = obj.value(QStringLiteral("args")).toString();
+        item.poster = obj.value(QStringLiteral("poster")).toString();
+        item.category = obj.value(QStringLiteral("category")).toString();
+        item.platform = obj.value(QStringLiteral("platform")).toString();
+        return item;
+    };
+
+    auto parseArray = [&parseItem](const QJsonArray &gamesArray) {
+        std::vector<GameItem> gamesVector;
+        gamesVector.reserve(static_cast<size_t>(gamesArray.size()));
+        for (const QJsonValue &value : gamesArray)
+            gamesVector.push_back(parseItem(value.toObject()));
+        return gamesVector;
+    };
+
+    QJsonArray gamesArray;
+    QJsonArray featuredArray;
+    QString featuredLabel = QStringLiteral("Популярно в клубе");
+    QString featuredMode = QStringLiteral("club");
+
+    if (doc.isArray()) {
+        gamesArray = doc.array();
+    } else if (doc.isObject()) {
+        const QJsonObject root = doc.object();
+        gamesArray = root.value(QStringLiteral("games")).toArray();
+        const QJsonObject featured = root.value(QStringLiteral("featured")).toObject();
+        featuredArray = featured.value(QStringLiteral("games")).toArray();
+        const QString label = featured.value(QStringLiteral("label")).toString();
+        const QString mode = featured.value(QStringLiteral("mode")).toString();
+        if (!label.isEmpty())
+            featuredLabel = label;
+        if (!mode.isEmpty())
+            featuredMode = mode;
+    }
+
+    if (m_gamesModel)
+        m_gamesModel->setGames(parseArray(gamesArray));
+
+    if (m_featuredGamesModel)
+        m_featuredGamesModel->setGames(parseArray(featuredArray));
+
+    if (m_featuredLabel != featuredLabel || m_featuredMode != featuredMode) {
+        m_featuredLabel = featuredLabel;
+        m_featuredMode = featuredMode;
+        emit featuredChanged();
+    } else {
+        m_featuredLabel = featuredLabel;
+        m_featuredMode = featuredMode;
+        emit featuredChanged();
+    }
+}
+
+void NetworkManager::recordGameLaunch(int gameId)
+{
+    if (m_serverUrl.isEmpty() || m_userId <= 0 || gameId <= 0)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/games/record-launch"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("user_id"), m_userId);
+    json.insert(QStringLiteral("game_id"), gameId);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply, gameId]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            qWarning() << "[NET] record-launch failed game" << gameId << reply->errorString();
+        else
+            qDebug() << "[NET] record-launch OK game" << gameId;
+    });
+}
+
+void NetworkManager::clearSessionUser()
+{
+    if (m_userId != 0) {
+        m_userId = 0;
+        emit userIdChanged();
+    }
+    if (m_lastBookingId != 0) {
+        m_lastBookingId = 0;
+        emit lastBookingIdChanged();
+    }
+    m_featuredLabel = QStringLiteral("Популярно в клубе");
+    m_featuredMode = QStringLiteral("club");
+    if (m_featuredGamesModel)
+        m_featuredGamesModel->setGames({});
+    emit featuredChanged();
 }
 
 void NetworkManager::fetchProducts() {
@@ -456,6 +542,11 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             if (m_lastBookingId != bookingId) {
                 m_lastBookingId = bookingId;
                 emit lastBookingIdChanged();
+            }
+            const int uid = user.value(QStringLiteral("id")).toInt(0);
+            if (m_userId != uid) {
+                m_userId = uid;
+                emit userIdChanged();
             }
             emit loginSucceeded(
                 user.value("name").toString("GUEST"),

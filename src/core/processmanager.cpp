@@ -1,4 +1,5 @@
 #include "processmanager.h"
+#include "audiomanager_win.h"
 #include "iplatformauth.h"
 #include "steamauth.h"
 #include "epicauth.h"
@@ -518,11 +519,16 @@ ProcessManager::ProcessManager(NetworkManager *netManager, QObject *parent)
     m_shellToggle = new ShellToggleWindow();
     m_shellToggle->onClicked = [this]() { switchToShell(); };
     m_shellToggle->repositionSideEdge();
+
+#ifdef Q_OS_WIN
+    win32_start_headphones_guard();
+#endif
 }
 
 ProcessManager::~ProcessManager()
 {
 #ifdef Q_OS_WIN
+    win32_stop_headphones_guard();
     if (g_pGameHook) UnhookWinEvent(g_pGameHook);
 #endif
     showShellToggle(false);
@@ -1805,17 +1811,13 @@ void ProcessManager::applyQosPolicies(bool enable)
 void ProcessManager::setSystemVolume(int level)
 {
 #ifdef Q_OS_WIN
-    HMODULE hWinmm = GetModuleHandleA("winmm.dll");
-    if (!hWinmm) hWinmm = LoadLibraryA("winmm.dll");
-    if (hWinmm) {
-        typedef MMRESULT (WINAPI *WaveOutSetVolumeProto)(HWAVEOUT, DWORD);
-        auto pWaveOutSetVolume = reinterpret_cast<WaveOutSetVolumeProto>(
-            GetProcAddress(hWinmm, "waveOutSetVolume"));
-        if (pWaveOutSetVolume) {
-            DWORD winVol = (0xFFFF * level) / 100;
-            pWaveOutSetVolume(nullptr, DWORD(winVol | (winVol << 16)));
-        }
-    }
+    // waveOutSetVolume does not control the modern Windows mixer / default
+    // playback endpoint — use IAudioEndpointVolume via audiomanager_win.
+    int clamped = level;
+    if (clamped < 0) clamped = 0;
+    if (clamped > 100) clamped = 100;
+    qWarning() << "[AUDIO] setVolume" << clamped << "(from UI)";
+    win32_set_master_volume(clamped);
 #else
     Q_UNUSED(level);
 #endif

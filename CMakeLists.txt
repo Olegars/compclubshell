@@ -21,6 +21,8 @@ qt_add_executable(appsector0451
     src/core/riotauth.h src/core/riotauth.cpp
     src/core/directlaunchauth.h src/core/directlaunchauth.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
+    src/core/sessionalertmanager.h src/core/sessionalertmanager.cpp
+    src/core/hidinputmonitor.h src/core/hidinputmonitor.cpp
     config.ini
 )
 
@@ -72,7 +74,10 @@ target_link_libraries(appsector0451
         ws2_32
         ole32
         oleaut32
+        winmm
         uiautomationcore
+        sapi
+        setupapi
 )
 
 install(TARGETS appsector0451

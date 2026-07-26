@@ -287,6 +287,8 @@ Item {
             "auth": { "mode": "personal" }
         }
         console.log("[LAUNCH] личный аккаунт →", plat, exe, args)
+        if (typeof NetworkManager !== 'undefined' && pendingGameId > 0)
+            NetworkManager.recordGameLaunch(pendingGameId)
         Launcher.launchPlatformSessionString(JSON.stringify(payload), "")
         // Оверлей держит C++ до hideShell / gameStartedSuccessfully — не scheduleHide рано
     }
@@ -374,6 +376,8 @@ Item {
 
                         if (typeof Launcher !== 'undefined') {
                             console.log("[SESSION] take-account OK:", res.platform, res.login, "→ launch")
+                            if (typeof NetworkManager !== 'undefined' && gameId > 0)
+                                NetworkManager.recordGameLaunch(parseInt(gameId))
                             Launcher.launchPlatformSessionString(JSON.stringify(res), String(res.platform_app_id || ""))
                         } else {
                             console.error("[SESSION] Launcher не найден")
@@ -764,6 +768,16 @@ Item {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 10
+                        ActionBtn {
+                            text: "ПРОДЛИТЬ ВРЕМЯ"
+                            icon: "⏱"
+                            baseColor: accentColor
+                            onClicked: {
+                                console.log("[SESSION] ПРОДЛИТЬ ВРЕМЯ — stub")
+                                if (typeof SessionAlert !== "undefined")
+                                    SessionAlert.requestExtendTime()
+                            }
+                        }
                         ActionBtn { id: storeActionBtn; text: "МАГАЗИН"; icon: "🛒"; baseColor: "#eab308"; isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false; orderIsFinished: (typeof root !== 'undefined' && root.orderStatusText === "ЗАКАЗ ВЫПОЛНЕН"); statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""; onClicked: storePopup.open() }
                         ActionBtn { text: "ПОПОЛНИТЬ БАЛАНС"; icon: "💳"; baseColor: "#eab308"; onClicked: depositPopup.open() }
                         ActionBtn {
@@ -815,6 +829,7 @@ Item {
                             icon: "🚪"
                             baseColor: "#525252"
                             onClicked: {
+                                if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
                                 if (typeof NetworkManager !== "undefined") NetworkManager.logoutTerminal(dashboardRoot.termId)
                                 if (typeof root !== 'undefined') root.sessionUser = ""
                                 dashboardRoot.visible = false
@@ -911,22 +926,191 @@ Item {
             Layout.fillHeight: true
             spacing: 25
             Text { text: "БИБЛИОТЕКА ИГР"; color: "white"; font.pixelSize: 24; font.bold: true; font.letterSpacing: 2 }
-            Row {
+            RowLayout {
                 id: filterRow
                 Layout.fillWidth: true
                 spacing: 30
                 property string activeTab: "ВСЕ ИГРЫ"
-                Repeater {
-                    model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "EA", "RIOT", "БРАУЗЕРЫ", "УТИЛИТЫ"]
-                    delegate: Text {
-                        text: modelData
-                        color: filterRow.activeTab === modelData ? accentColor : "#666666"
-                        font.pixelSize: 16
-                        font.bold: true
-                        font.letterSpacing: 1
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { filterRow.activeTab = modelData; if (typeof gamesModel !== 'undefined') gamesModel.setFilter(modelData) } }
+
+                Row {
+                    spacing: 30
+                    Layout.alignment: Qt.AlignVCenter
+                    Repeater {
+                        model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "EA", "RIOT", "БРАУЗЕРЫ", "УТИЛИТЫ"]
+                        delegate: Text {
+                            text: modelData
+                            color: filterRow.activeTab === modelData ? accentColor : "#666666"
+                            font.pixelSize: 16
+                            font.bold: true
+                            font.letterSpacing: 1
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    filterRow.activeTab = modelData
+                                    if (typeof gamesModel !== 'undefined')
+                                        gamesModel.setFilter(modelData)
+                                }
+                            }
+                        }
                     }
                 }
+
+                Rectangle {
+                    id: gameSearchBox
+                    Layout.preferredWidth: 220
+                    Layout.preferredHeight: 30
+                    Layout.alignment: Qt.AlignVCenter
+                    color: gameSearchInput.activeFocus ? "#08120a" : "#0a0a0a"
+                    border.color: gameSearchInput.activeFocus ? accentColor : "#1a1a1a"
+                    border.width: gameSearchInput.activeFocus ? 2 : 1
+                    radius: 4
+
+                    TextField {
+                        id: gameSearchInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: gameSearchClear.visible ? 28 : 10
+                        placeholderText: "Поиск игр…"
+                        placeholderTextColor: "#555555"
+                        color: "white"
+                        font.pixelSize: 13
+                        selectByMouse: true
+                        verticalAlignment: TextInput.AlignVCenter
+                        background: Item {}
+                        onTextChanged: {
+                            if (typeof gamesModel !== 'undefined')
+                                gamesModel.setSearchQuery(text)
+                        }
+                    }
+
+                    Text {
+                        id: gameSearchClear
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "✕"
+                        color: gameSearchClearArea.containsMouse ? accentColor : "#666666"
+                        font.pixelSize: 12
+                        visible: gameSearchInput.text.length > 0
+                        MouseArea {
+                            id: gameSearchClearArea
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            cursorShape: Qt.PointingHandCursor
+                            hoverEnabled: true
+                            onClicked: gameSearchInput.text = ""
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+
+            // Featured: «Вы часто играете» / «Популярно в клубе»
+            ColumnLayout {
+                id: featuredBlock
+                Layout.fillWidth: true
+                spacing: 8
+                visible: typeof featuredGamesModel !== 'undefined' && featuredGamesModel.count > 0
+                         && filterRow.activeTab === "ВСЕ ИГРЫ"
+                         && gameSearchInput.text.length === 0
+
+                Text {
+                    text: (typeof NetworkManager !== 'undefined' && NetworkManager.featuredLabel)
+                          ? NetworkManager.featuredLabel
+                          : "Популярно в клубе"
+                    color: accentColor
+                    font.pixelSize: 13
+                    font.bold: true
+                    font.letterSpacing: 1.5
+                    opacity: 0.9
+                }
+
+                ListView {
+                    id: featuredList
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 168
+                    orientation: ListView.Horizontal
+                    spacing: 12
+                    clip: true
+                    model: typeof featuredGamesModel !== 'undefined' ? featuredGamesModel : null
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    delegate: Item {
+                        width: 120
+                        height: featuredList.height
+
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#0a0a0a"
+                            radius: 5
+                            border.width: featArea.containsMouse ? 2 : 1
+                            border.color: featArea.containsMouse ? accentColor : "#1a1a1a"
+
+                            Image {
+                                anchors.top: parent.top
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                height: parent.height - 36
+                                source: {
+                                    var pUrl = model.poster !== undefined ? model.poster : ""
+                                    if (pUrl === "") return ""
+                                    if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0) return pUrl
+                                    var baseUrl = "http://192.168.222.2:22222"
+                                    if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
+                                        baseUrl = NetworkManager.serverUrl
+                                    return pUrl.indexOf("/") === 0 ? baseUrl + pUrl : baseUrl + "/" + pUrl
+                                }
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                                opacity: featArea.containsMouse ? 1.0 : 0.75
+                            }
+
+                            Text {
+                                anchors.bottom: parent.bottom
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.margins: 4
+                                height: 28
+                                text: model.title || ""
+                                color: featArea.containsMouse ? accentColor : "#cccccc"
+                                font.pixelSize: 11
+                                font.bold: true
+                                elide: Text.ElideRight
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            MouseArea {
+                                id: featArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                enabled: !dashboardRoot.isLaunchBlocked()
+                                onClicked: {
+                                    if (dashboardRoot.isLaunchBlocked())
+                                        return
+                                    dashboardRoot.openAccountChoice(
+                                        model.id,
+                                        model.platform || "",
+                                        model.title || "",
+                                        model.exePath || "",
+                                        model.args || "")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: "Все игры"
+                color: "#888888"
+                font.pixelSize: 12
+                font.bold: true
+                font.letterSpacing: 1.2
+                visible: featuredBlock.visible
             }
 
             GridView {
@@ -1873,8 +2057,20 @@ Item {
         Layout.fillWidth: true
         Layout.preferredHeight: 50
         radius: 4
-        color: "transparent"
-        border.color: baseColor
+        color: actionMouse.pressed
+               ? Qt.rgba(0.06, 0.12, 0.1, 1)
+               : (actionMouse.containsMouse ? Qt.rgba(0.08, 0.14, 0.11, 1) : "transparent")
+        border.color: actionMouse.containsMouse || actionMouse.pressed
+                      ? baseColor
+                      : Qt.darker(baseColor, 1.25)
+        border.width: actionMouse.containsMouse || actionMouse.pressed ? 2 : 1
+        scale: actionMouse.pressed ? 0.97 : (actionMouse.containsMouse ? 1.02 : 1.0)
+        opacity: actionMouse.containsMouse ? 1 : 0.94
+
+        Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 100 } }
+        Behavior on border.width { NumberAnimation { duration: 90 } }
+        Behavior on color { ColorAnimation { duration: 100 } }
 
         Row {
             anchors.centerIn: parent
@@ -1890,12 +2086,11 @@ Item {
         }
 
         MouseArea {
+            id: actionMouse
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: {
-                controlRoot.clicked()
-            }
+            onClicked: controlRoot.clicked()
         }
     }
 
