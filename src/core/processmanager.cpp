@@ -629,10 +629,20 @@ void ProcessManager::focusGameWindow()
 #endif
 }
 
+void ProcessManager::requestClearGameSearch()
+{
+    // Model filter first; QML TextField clears on clearGameSearchRequested (no password flash).
+    if (m_netManager)
+        m_netManager->clearGamesSearch();
+    emit clearGameSearchRequested();
+}
+
 void ProcessManager::restoreShellUi(bool /*endSessionPath*/)
 {
     if (!m_mainWindow)
         return;
+    // Belt-and-suspenders: drop any leaked credential text before shell is visible again.
+    requestClearGameSearch();
     qWarning() << "[SESSION] restoreShellUi — fullscreen shell (frameless)";
     m_mainWindow->setFlags(Qt::Window | Qt::FramelessWindowHint);
     m_mainWindow->setVisibility(QWindow::FullScreen);
@@ -845,6 +855,8 @@ void ProcessManager::launchFirstExisting(const QStringList &candidatePaths, cons
 
 void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QString &appIdHint)
 {
+    requestClearGameSearch();
+
     const QString platformRaw = authData.value(QStringLiteral("platform")).toString().trimmed();
     const QString platformSource = authData.value(QStringLiteral("platform_source")).toString();
     const QString exePath = authData.value(QStringLiteral("exe_path")).toString().trimmed();

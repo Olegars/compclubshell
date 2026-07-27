@@ -42,6 +42,8 @@ private:
                                const QString &login,
                                const QString &persona,
                                const QString &existing) const;
+    static QString forceSilentLoginUsersFlags(const QString &vdf);
+    static QString ensureConfigAutoLoginUser(const QString &vdf, const QString &login);
 
     // Personal: kill steam family + wait until gone (file locks).
     void killSteamAndWait(int timeoutMs = 8000);
@@ -53,8 +55,10 @@ private:
     QTimer *m_authScoutTimer = nullptr;
     bool m_needBackup = false;
     bool m_personalLaunch = false;
+    bool m_cacheApplied = false; // machine-cache written; prefer silent, delay interactive
     int m_scoutTicks = 0;
     int m_scoutInjectTick = 0;
+    int m_loginUiSeenTick = 0;
     bool m_scoutInjected = false;
     bool m_scoutAccountConfirmed = false;
 };

@@ -238,34 +238,74 @@ QString SteamAuth::localAppDataSteamVdfPath() const
     return localAppData + QStringLiteral("/Steam/local.vdf");
 }
 
+QString SteamAuth::forceSilentLoginUsersFlags(const QString &vdf)
+{
+    if (vdf.trimmed().isEmpty())
+        return vdf;
+    QString out = vdf;
+    auto setKey = [&out](const QString &key, const QString &val) {
+        const QRegularExpression re(
+            QStringLiteral("(\"%1\"\\s+)\"[^\"]*\"").arg(QRegularExpression::escape(key)),
+            QRegularExpression::CaseInsensitiveOption);
+        if (re.match(out).hasMatch())
+            out.replace(re, QStringLiteral("\\1\"%1\"").arg(val));
+    };
+    // Club silent path requires these even when server sent a stale/wiped loginusers.vdf
+    setKey(QStringLiteral("RememberPassword"), QStringLiteral("1"));
+    setKey(QStringLiteral("AllowAutoLogin"), QStringLiteral("1"));
+    setKey(QStringLiteral("MostRecent"), QStringLiteral("1"));
+    return out;
+}
+
+QString SteamAuth::ensureConfigAutoLoginUser(const QString &vdf, const QString &login)
+{
+    if (vdf.trimmed().isEmpty() || login.isEmpty())
+        return vdf;
+    QString out = vdf;
+    const QRegularExpression re(
+        QStringLiteral("(\"AutoLoginUser\"\\s+)\"[^\"]*\""),
+        QRegularExpression::CaseInsensitiveOption);
+    if (re.match(out).hasMatch())
+        out.replace(re, QStringLiteral("\\1\"%1\"").arg(login));
+    const QRegularExpression reRemember(
+        QStringLiteral("(\"RememberPassword\"\\s+)\"[^\"]*\""),
+        QRegularExpression::CaseInsensitiveOption);
+    if (reRemember.match(out).hasMatch())
+        out.replace(reRemember, QStringLiteral("\\1\"1\""));
+    return out;
+}
+
 QString SteamAuth::buildLoginUsersVdf(const QString &steamId,
                                       const QString &login,
                                       const QString &persona,
                                       const QString &existing) const
 {
-    if (!existing.trimmed().isEmpty() && !steamId.isEmpty() && existing.contains(steamId))
-        return existing;
+    QString base;
+    if (!existing.trimmed().isEmpty() && !steamId.isEmpty() && existing.contains(steamId)) {
+        base = existing;
+    } else {
+        const QString id = steamId.isEmpty() ? QStringLiteral("0") : steamId;
+        const QString name = persona.isEmpty() ? login : persona;
+        const QString ts = QString::number(QDateTime::currentSecsSinceEpoch());
 
-    const QString id = steamId.isEmpty() ? QStringLiteral("0") : steamId;
-    const QString name = persona.isEmpty() ? login : persona;
-    const QString ts = QString::number(QDateTime::currentSecsSinceEpoch());
-
-    return QString(
-        "\"users\"\n"
-        "{\n"
-        "\t\"%1\"\n"
-        "\t{\n"
-        "\t\t\"AccountName\"\t\t\"%2\"\n"
-        "\t\t\"PersonaName\"\t\t\"%3\"\n"
-        "\t\t\"RememberPassword\"\t\t\"1\"\n"
-        "\t\t\"WantsOfflineMode\"\t\t\"0\"\n"
-        "\t\t\"SkipOfflineModeWarning\"\t\t\"0\"\n"
-        "\t\t\"AllowAutoLogin\"\t\t\"1\"\n"
-        "\t\t\"MostRecent\"\t\t\"1\"\n"
-        "\t\t\"Timestamp\"\t\t\"%4\"\n"
-        "\t}\n"
-        "}\n"
-    ).arg(id, login, name, ts);
+        base = QString(
+            "\"users\"\n"
+            "{\n"
+            "\t\"%1\"\n"
+            "\t{\n"
+            "\t\t\"AccountName\"\t\t\"%2\"\n"
+            "\t\t\"PersonaName\"\t\t\"%3\"\n"
+            "\t\t\"RememberPassword\"\t\t\"1\"\n"
+            "\t\t\"WantsOfflineMode\"\t\t\"0\"\n"
+            "\t\t\"SkipOfflineModeWarning\"\t\t\"0\"\n"
+            "\t\t\"AllowAutoLogin\"\t\t\"1\"\n"
+            "\t\t\"MostRecent\"\t\t\"1\"\n"
+            "\t\t\"Timestamp\"\t\t\"%4\"\n"
+            "\t}\n"
+            "}\n"
+        ).arg(id, login, name, ts);
+    }
+    return forceSilentLoginUsersFlags(base);
 }
 
 static bool steamImageRunning(const QString &image)
@@ -483,6 +523,7 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
                                                     Qt::CaseInsensitive) == 0
                           || login.isEmpty();
     m_personalLaunch = personal;
+    m_cacheApplied = false;
 
     // Личный Steam: полный logout wipe → окно входа (не silent club session)
     if (personal) {
@@ -500,6 +541,9 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
         return true;
     }
 
+    // Club: wait until Steam releases config locks before writing machine-cache
+    killSteamAndWait(6000);
+
     QJsonObject vdf = authData.value(QStringLiteral("vdf_files")).toObject();
     if (vdf.isEmpty()) {
         const QJsonObject auth = authMeta;
@@ -514,14 +558,17 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
     const QString configDir = steamPath + QStringLiteral("/config");
     QDir().mkpath(configDir);
 
-    const QString configVdf = vdf.value(QStringLiteral("config_vdf")).toString();
+    const QString configVdfRaw = vdf.value(QStringLiteral("config_vdf")).toString();
+    const QString configVdf = ensureConfigAutoLoginUser(configVdfRaw, login);
+    bool wroteConfig = true;
     if (!configVdf.isEmpty())
-        writeTextFile(configDir + QStringLiteral("/config.vdf"), configVdf);
+        wroteConfig = writeTextFile(configDir + QStringLiteral("/config.vdf"), configVdf);
 
     const QString loginUsers = buildLoginUsersVdf(
         steamId, login, persona, vdf.value(QStringLiteral("loginusers_vdf")).toString()
     );
-    writeTextFile(configDir + QStringLiteral("/loginusers.vdf"), loginUsers);
+    const bool wroteLoginUsers =
+        writeTextFile(configDir + QStringLiteral("/loginusers.vdf"), loginUsers);
 
 #ifdef Q_OS_WIN
     if (!login.isEmpty()) {
@@ -529,18 +576,37 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
                            QSettings::NativeFormat);
         steamReg.setValue(QStringLiteral("AutoLoginUser"), login);
         steamReg.setValue(QStringLiteral("RememberPassword"), 1);
+        qWarning() << "[STEAM] applyCache: reg AutoLoginUser=" << login
+                   << "RememberPassword=1";
     }
 #endif
 
     const QString cachedLocal = vdf.value(QStringLiteral("local_vdf")).toString().trimmed();
+    bool wroteLocal = false;
     if (!cachedLocal.isEmpty()) {
-        writeTextFile(configDir + QStringLiteral("/local.vdf"), cachedLocal);
+        wroteLocal = writeTextFile(configDir + QStringLiteral("/local.vdf"), cachedLocal);
         const QString appLocal = localAppDataSteamVdfPath();
         if (!appLocal.isEmpty())
-            writeTextFile(appLocal, cachedLocal);
+            wroteLocal = writeTextFile(appLocal, cachedLocal) && wroteLocal;
+    }
+
+    qWarning().noquote() << "[STEAM] applyCache club | login:" << login
+                         << "| steamId:" << (steamId.isEmpty() ? QStringLiteral("(empty)") : steamId)
+                         << "| mode:" << (mode.isEmpty() ? QStringLiteral("(n/a)") : mode)
+                         << "| config_vdf:" << (!configVdf.isEmpty() ? QStringLiteral("yes") : QStringLiteral("no"))
+                         << "| loginusers:" << (wroteLoginUsers ? QStringLiteral("ok") : QStringLiteral("FAIL"))
+                         << "| config_write:" << (wroteConfig ? QStringLiteral("ok") : QStringLiteral("skip/fail"))
+                         << "| local_vdf bytes:" << cachedLocal.size()
+                         << "| local_write:" << (wroteLocal ? QStringLiteral("ok") : QStringLiteral("FAIL/empty"));
+
+    if (wroteLocal && wroteLoginUsers) {
+        m_cacheApplied = true;
+        m_needBackup = false;
+        qWarning() << "[STEAM] machine-cache applied — expect silent AutoLogin (scout waits before typing)";
         return true;
     }
 
+    m_cacheApplied = false;
     qWarning() << "[STEAM] Нет machine-cache — нужен логин/пароль";
     return false;
 }
@@ -606,30 +672,50 @@ void SteamAuth::startScout(const QString &login, const QString &password)
 #ifdef Q_OS_WIN
     stopScout();
 
-    if (login.isEmpty() || password.isEmpty()) {
+    // Watch login UI even without password when cache applied (confirm silent success).
+    // Interactive typing requires credentials.
+    if (login.isEmpty() && password.isEmpty() && !m_cacheApplied) {
         qWarning() << "[STEAM] Scout пропущен (личный аккаунт / нет credentials)";
         return;
     }
 
     m_scoutTicks = 0;
     m_scoutInjectTick = 0;
+    m_loginUiSeenTick = 0;
     m_scoutInjected = false;
     m_scoutAccountConfirmed = false;
+
+    // Cache path: Steam often shows "Войти в Steam" for many seconds while token refresh
+    // succeeds — do NOT type password until login UI stays up past this grace.
+    // ~350ms * 70 ≈ 24.5s after first login HWND. No-cache: ~4.2s (tick 12).
+    const int injectAfterTicks = m_cacheApplied ? 70 : 12;
+    const bool canTypeCredentials = !login.isEmpty() && !password.isEmpty();
+
+    if (m_cacheApplied) {
+        qWarning() << "[STEAM] Scout: cache applied — wait for silent AutoLogin"
+                   << "(interactive only if login UI persists ~"
+                   << (injectAfterTicks * 350 / 1000) << "s)";
+    }
 
     m_authScoutTimer = new QTimer(this);
     m_authScoutTimer->setInterval(350);
 
-    connect(m_authScoutTimer, &QTimer::timeout, this, [this, login, password]() {
+    connect(m_authScoutTimer, &QTimer::timeout, this,
+            [this, login, password, injectAfterTicks, canTypeCredentials]() {
         if (!m_authScoutTimer)
             return;
 
         ++m_scoutTicks;
 
         if (m_scoutTicks > 300) {
-            if (!m_scoutInjected)
-                qWarning() << "[STEAM] Scout timeout — окно входа не найдено";
-            else if (!m_scoutAccountConfirmed)
+            if (!m_scoutInjected) {
+                if (m_cacheApplied)
+                    qWarning() << "[STEAM] silent login OK (cache) — scout timeout, no password typed";
+                else
+                    qWarning() << "[STEAM] Scout timeout — окно входа не найдено";
+            } else if (!m_scoutAccountConfirmed) {
                 qWarning() << "[STEAM] Scout timeout — окно выбора аккаунта не подтверждено";
+            }
             stopScout();
             return;
         }
@@ -648,11 +734,57 @@ void SteamAuth::startScout(const QString &login, const QString &password)
                 pm->setShellTopmost(true);
         }
 
-        if (!m_scoutInjected && ctx.loginHwnd && m_scoutTicks >= 12) {
+        // Silent success: login UI appeared then vanished without us typing.
+        if (m_cacheApplied && !m_scoutInjected && m_loginUiSeenTick > 0 && !ctx.loginHwnd
+            && !ctx.pickerHwnd && !ctx.steamDlgHwnd
+            && m_scoutTicks >= m_loginUiSeenTick + 8) {
+            qWarning() << "[STEAM] silent login OK (cache) — login UI closed without typing";
+            m_needBackup = false;
+            stopScout();
+            return;
+        }
+
+        // Silent success: never saw login UI after Steam had time to settle.
+        if (m_cacheApplied && !m_scoutInjected && m_loginUiSeenTick == 0
+            && !ctx.loginHwnd && !ctx.pickerHwnd && m_scoutTicks >= 45) {
+            qWarning() << "[STEAM] silent login OK (cache) — no login UI";
+            m_needBackup = false;
+            stopScout();
+            return;
+        }
+
+        if (ctx.loginHwnd && m_loginUiSeenTick == 0) {
+            m_loginUiSeenTick = m_scoutTicks;
+            if (m_cacheApplied) {
+                qWarning() << "[STEAM] login UI seen during cache wait — holding off typing:"
+                           << ctx.loginTitle;
+            }
+        }
+
+        const bool loginUiPersisted = ctx.loginHwnd && m_loginUiSeenTick > 0
+            && (m_scoutTicks - m_loginUiSeenTick + 1) >= injectAfterTicks;
+
+        if (!m_scoutInjected && loginUiPersisted) {
+            if (!canTypeCredentials) {
+                if (m_cacheApplied && (m_scoutTicks % 20 == 0)) {
+                    qWarning() << "[STEAM] cache miss but no credentials — cannot interactive fallback";
+                }
+                return;
+            }
+
             m_scoutInjected = true;
             m_scoutInjectTick = m_scoutTicks;
             HWND authHwnd = ctx.loginHwnd;
-            qWarning() << "[STEAM] Интерактивный логин (off-screen):" << ctx.loginTitle;
+            if (m_cacheApplied) {
+                qWarning() << "[STEAM] cache miss → interactive fallback (login UI still up):"
+                           << ctx.loginTitle;
+            } else {
+                qWarning() << "[STEAM] Интерактивный логин (off-screen):" << ctx.loginTitle;
+            }
+
+            // Defocus/clear shell search before Ctrl+V credentials (SendInput leak guard).
+            if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+                pm->requestClearGameSearch();
 
             SetForegroundWindow(authHwnd);
             SetFocus(authHwnd);
@@ -683,6 +815,8 @@ void SteamAuth::startScout(const QString &login, const QString &password)
             QTimer::singleShot(400, this, [this, authHwnd, login, password, pasteText]() {
                 if (!m_authScoutTimer)
                     return;
+                if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+                    pm->requestClearGameSearch();
                 parkWindowOffscreen(authHwnd);
                 pasteText(login);
                 keybd_event(VK_TAB, 0, 0, 0);
@@ -691,6 +825,8 @@ void SteamAuth::startScout(const QString &login, const QString &password)
                 QTimer::singleShot(300, this, [this, authHwnd, password, pasteText]() {
                     if (!m_authScoutTimer)
                         return;
+                    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+                        pm->requestClearGameSearch();
                     pasteText(password);
 
                     QTimer::singleShot(200, this, [this, authHwnd]() {
@@ -709,9 +845,13 @@ void SteamAuth::startScout(const QString &login, const QString &password)
         const QString pickerLabel = ctx.pickerHwnd ? ctx.pickerTitle : ctx.steamDlgTitle;
         if (!m_scoutAccountConfirmed && picker) {
             const bool afterLogin = m_scoutInjected && (m_scoutTicks >= m_scoutInjectTick + 5);
-            const bool pickerOnly = !m_scoutInjected && ctx.pickerHwnd && m_scoutTicks >= 12;
+            // With cache: don't confirm picker early — AutoLogin may dismiss it; wait like login UI.
+            const int pickerAfter = m_cacheApplied ? injectAfterTicks : 12;
+            const bool pickerOnly = !m_scoutInjected && ctx.pickerHwnd
+                && m_loginUiSeenTick == 0
+                && m_scoutTicks >= pickerAfter;
             const bool steamDlgOnly = !m_scoutInjected && !ctx.loginHwnd && ctx.steamDlgHwnd
-                                      && m_scoutTicks >= 16;
+                                      && m_scoutTicks >= (m_cacheApplied ? injectAfterTicks : 16);
             if (afterLogin || pickerOnly || steamDlgOnly) {
                 m_scoutAccountConfirmed = true;
                 qWarning() << "[STEAM] Выбор аккаунта (off-screen):" << pickerLabel;

@@ -82,7 +82,21 @@ Item {
         "C:\\Program Files\\MyGames\\GameCenter\\GameCenter.exe"
     ]
 
+    function clearGameSearch() {
+        // Drop leaked SendInput / Ctrl+V credentials from search; blur so keys miss the field.
+        if (typeof gameSearchInput !== "undefined" && gameSearchInput) {
+            gameSearchInput.text = ""
+            gameSearchInput.focus = false
+            gameSearchInput.readOnly = (typeof root !== "undefined"
+                                        && root !== null
+                                        && (root.isLoggingIn || root.gameLoadingVisible))
+        }
+        if (typeof gamesModel !== "undefined" && gamesModel)
+            gamesModel.setSearchQuery("")
+    }
+
     function launchQuickClient(paths) {
+        clearGameSearch()
         if (typeof Launcher === "undefined") {
             console.warn("[LAUNCH] Launcher недоступен")
             return
@@ -94,6 +108,13 @@ Item {
         // fallback: старый API — первый путь
         if (paths && paths.length > 0)
             Launcher.launch(paths[0], "", "", "", "")
+    }
+
+    Connections {
+        target: typeof Launcher !== "undefined" ? Launcher : null
+        function onClearGameSearchRequested() {
+            dashboardRoot.clearGameSearch()
+        }
     }
 
     function looksLikeRiot(platform, exePath, args, title) {
@@ -261,6 +282,7 @@ Item {
         var args = resolvePersonalArgs(plat, pendingGameArgs, title, pendingGameExe)
         accountChoicePopup.close()
         clubBusyHintPopup.close()
+        clearGameSearch()
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = pendingGameId
@@ -299,6 +321,7 @@ Item {
         var title = pendingGameTitle || platformShortName(plat)
         accountChoicePopup.close()
         clubBusyHintPopup.close()
+        clearGameSearch()
         if (typeof root !== 'undefined') {
             root.isLoggingIn = true
             root.currentGameId = gameId
@@ -554,6 +577,120 @@ Item {
         }
     }
 
+    // Active shop order contents — compact neon panel, top-right
+    readonly property bool showOrderContents: typeof root !== "undefined" && root !== null
+        && root.hasActiveOrder
+        && (root.orderStatusCode === "pending" || root.orderStatusCode === "cooking"
+            || (root.orderStatusText.indexOf("ВЫПОЛНЕН") < 0
+                && root.orderStatusText.indexOf("ОТМЕН") < 0
+                && root.orderItems && root.orderItems.length > 0))
+        && root.orderItems && root.orderItems.length > 0
+
+    Rectangle {
+        id: orderContentsPanel
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: dashboardRoot.showReturnToGame ? 84 : 20
+        anchors.rightMargin: 20
+        z: 240
+        width: Math.min(280, parent.width * 0.22)
+        height: orderContentsCol.implicitHeight + 24
+        radius: 6
+        color: "#0a0c05"
+        border.color: (typeof root !== "undefined" && root.orderStatusCode === "cooking")
+                      ? "#facc15" : "#eab308"
+        border.width: 1
+        opacity: dashboardRoot.showOrderContents ? 1.0 : 0.0
+        visible: opacity > 0.01
+        scale: dashboardRoot.showOrderContents ? 1.0 : 0.96
+
+        Behavior on opacity { NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
+        Behavior on scale { NumberAnimation { duration: 280; easing.type: Easing.OutCubic } }
+        Behavior on border.color { ColorAnimation { duration: 180 } }
+
+        Column {
+            id: orderContentsCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 12
+            spacing: 8
+
+            Row {
+                spacing: 8
+                width: parent.width
+                Rectangle {
+                    width: 6
+                    height: 6
+                    radius: 3
+                    color: orderContentsPanel.border.color
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                    text: "ВАШ ЗАКАЗ"
+                    color: orderContentsPanel.border.color
+                    font.pixelSize: 10
+                    font.bold: true
+                    font.letterSpacing: 1.5
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                Item { width: 1; height: 1 }
+                Text {
+                    text: (typeof root !== "undefined") ? root.orderStatusText : ""
+                    color: (typeof root !== "undefined" && root.orderStatusCode === "cooking")
+                           ? "#facc15" : "#f59e0b"
+                    font.pixelSize: 9
+                    font.bold: true
+                    elide: Text.ElideRight
+                    width: Math.max(40, orderContentsCol.width - 120)
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignRight
+                }
+            }
+
+            Repeater {
+                model: (typeof root !== "undefined" && root.orderItems) ? root.orderItems : []
+                delegate: Row {
+                    width: orderContentsCol.width
+                    spacing: 6
+                    Text {
+                        text: (modelData.name || "") + (modelData.qty > 1 ? (" ×" + modelData.qty) : "")
+                        color: "#e5e5e5"
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                        width: parent.width - priceLbl.width - 8
+                    }
+                    Text {
+                        id: priceLbl
+                        text: (typeof modelData.price === "number"
+                               ? modelData.price.toFixed(0)
+                               : modelData.price) + " ₽"
+                        color: "#a3a3a3"
+                        font.pixelSize: 11
+                        font.family: "Monospace"
+                    }
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: Qt.rgba(0.92, 0.80, 0.08, 0.35)
+                visible: typeof root !== "undefined" && root.orderItemsTotal > 0
+            }
+
+            Text {
+                visible: typeof root !== "undefined" && root.orderItemsTotal > 0
+                text: "ИТОГО: " + (typeof root !== "undefined"
+                                   ? root.orderItemsTotal.toFixed(0) : "0") + " ₽"
+                color: "#facc15"
+                font.pixelSize: 12
+                font.bold: true
+                anchors.right: parent.right
+            }
+        }
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: 40
@@ -581,17 +718,24 @@ Item {
                     anchors.top: parent.top
                     anchors.right: parent.right
                     z: 100
-                    color: sosMouse.containsMouse ? "#dc2626" : "#450a0a"
+                    color: sosMouse.pressed
+                           ? "#991b1b"
+                           : (sosMouse.containsMouse ? "#dc2626" : "#450a0a")
                     border.color: "#dc2626"
                     border.width: 1
-                    layer.enabled: sosMouse.containsMouse
+                    scale: sosMouse.pressed ? 0.94 : (sosMouse.containsMouse ? 1.04 : 1.0)
+                    opacity: sosMouse.pressed ? 0.9 : 1.0
+                    layer.enabled: sosMouse.containsMouse || sosMouse.pressed
                     layer.effect: MultiEffect { blurEnabled: true; blur: 0.15 }
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
 
                     Column {
                         anchors.centerIn: parent
                         spacing: 2
                         Text { text: "⚠️"; font.pixelSize: 14; anchors.horizontalCenter: parent.horizontalCenter }
-                        Text { text: "SOS"; color: sosMouse.containsMouse ? "black" : "white"; font.pixelSize: 12; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                        Text { text: "SOS"; color: sosMouse.containsMouse || sosMouse.pressed ? "black" : "white"; font.pixelSize: 12; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
                     }
 
                     MouseArea {
@@ -599,12 +743,7 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            console.log("[QML-SOS] Нажата кнопка SOS! Форсированный пуш кэша...");
-                            if (typeof Launcher !== 'undefined') {
-                                Launcher.executeSosTestInject(dashboardRoot.lastToken, dashboardRoot.lastLogin, dashboardRoot.lastId, dashboardRoot.lastPersonaName);
-                            }
-                        }
+                        onClicked: sosReasonPopup.open()
                     }
                 }
 
@@ -778,7 +917,28 @@ Item {
                                     SessionAlert.requestExtendTime()
                             }
                         }
-                        ActionBtn { id: storeActionBtn; text: "МАГАЗИН"; icon: "🛒"; baseColor: "#eab308"; isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false; orderIsFinished: (typeof root !== 'undefined' && root.orderStatusText === "ЗАКАЗ ВЫПОЛНЕН"); statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""; onClicked: storePopup.open() }
+                        ActionBtn {
+                            id: storeActionBtn
+                            text: "МАГАЗИН"
+                            icon: "🛒"
+                            baseColor: "#eab308"
+                            isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
+                            orderIsFinished: (typeof root !== 'undefined'
+                                              && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
+                                                  || root.orderStatusText.indexOf("ОТМЕН") >= 0))
+                            orderIsCooking: (typeof root !== 'undefined'
+                                             && (root.orderStatusCode === "cooking"
+                                                 || root.orderStatusText.indexOf("В РАБОТЕ") >= 0
+                                                 || root.orderStatusText.indexOf("ГОТОВИТ") >= 0))
+                            statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
+                            onClicked: {
+                                console.log("[SHOP] open, termId=", dashboardRoot.termId,
+                                            "balance=", dashboardRoot.userBalance)
+                                if (typeof NetworkManager !== 'undefined')
+                                    NetworkManager.fetchProducts()
+                                storePopup.open()
+                            }
+                        }
                         ActionBtn { text: "ПОПОЛНИТЬ БАЛАНС"; icon: "💳"; baseColor: "#eab308"; onClicked: depositPopup.open() }
                         ActionBtn {
                             text: "ОТОЙТИ (ПАУЗА)"
@@ -978,6 +1138,19 @@ Item {
                         selectByMouse: true
                         verticalAlignment: TextInput.AlignVCenter
                         background: Item {}
+                        // Block focus/keys while overlay/login — prevents SendInput password leak
+                        enabled: !(typeof root !== "undefined" && root !== null
+                                   && (root.isLoggingIn || root.gameLoadingVisible))
+                        readOnly: typeof root !== "undefined" && root !== null
+                                  && (root.isLoggingIn || root.gameLoadingVisible)
+                        onEnabledChanged: {
+                            if (!enabled) {
+                                text = ""
+                                focus = false
+                                if (typeof gamesModel !== "undefined" && gamesModel)
+                                    gamesModel.setSearchQuery("")
+                            }
+                        }
                         onTextChanged: {
                             if (typeof gamesModel !== 'undefined')
                                 gamesModel.setSearchQuery(text)
@@ -1007,180 +1180,232 @@ Item {
                 Item { Layout.fillWidth: true }
             }
 
-            // Featured: «Вы часто играете» / «Популярно в клубе»
+            // One continuous library: first N cards = featured (white outline + caption),
+            // rest continue same size/Y via the same Row then GridView.
             ColumnLayout {
-                id: featuredBlock
+                id: gamesGridHost
                 Layout.fillWidth: true
+                Layout.fillHeight: true
                 spacing: 8
-                visible: typeof featuredGamesModel !== 'undefined' && featuredGamesModel.count > 0
-                         && filterRow.activeTab === "ВСЕ ИГРЫ"
-                         && gameSearchInput.text.length === 0
 
-                Text {
-                    text: (typeof NetworkManager !== 'undefined' && NetworkManager.featuredLabel)
-                          ? NetworkManager.featuredLabel
-                          : "Популярно в клубе"
-                    color: accentColor
-                    font.pixelSize: 13
-                    font.bold: true
-                    font.letterSpacing: 1.5
-                    opacity: 0.9
+                readonly property int cardW: 230
+                readonly property int cardH: 320
+                readonly property int featuredCaptionH: 22
+                readonly property int featuredBorderPad: 4
+                readonly property bool featuredStripVisible:
+                    (typeof gamesModel !== 'undefined' && gamesModel
+                     && gamesModel.featuredCount > 0)
+                    && filterRow.activeTab === "ВСЕ ИГРЫ"
+                    && gameSearchInput.text.length === 0
+                readonly property int featuredCount:
+                    featuredStripVisible && gamesModel ? gamesModel.featuredCount : 0
+                readonly property int columnsPerRow:
+                    Math.max(1, Math.floor(width / cardW))
+                // First visual row fills columns: featured (0..N-1) then normal games
+                readonly property int firstRowCount:
+                    featuredStripVisible
+                    ? Math.min(columnsPerRow,
+                               (typeof gamesModel !== 'undefined' && gamesModel)
+                               ? gamesModel.count : 0)
+                    : 0
+
+                function posterUrl(pUrl) {
+                    if (!pUrl || pUrl === "")
+                        return ""
+                    if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0)
+                        return pUrl
+                    var baseUrl = "http://192.168.222.2:22222"
+                    if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
+                        baseUrl = NetworkManager.serverUrl
+                    return pUrl.indexOf("/") === 0 ? baseUrl + pUrl : baseUrl + "/" + pUrl
                 }
 
-                ListView {
-                    id: featuredList
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 168
-                    orientation: ListView.Horizontal
-                    spacing: 12
-                    clip: true
-                    model: typeof featuredGamesModel !== 'undefined' ? featuredGamesModel : null
-                    boundsBehavior: Flickable.StopAtBounds
+                // Single source: gamesModel.get() — featured already prepended in C++ from catalog
+                function syncFirstRow() {
+                    firstRowModel.clear()
+                    if (typeof gamesModel === 'undefined' || !gamesModel)
+                        return
+                    var n = firstRowCount
+                    for (var i = 0; i < n; ++i) {
+                        var g = gamesModel.get(i)
+                        if (!g || g.gameId === undefined || g.gameId === null)
+                            break
+                        firstRowModel.append({
+                            "gameId": g.gameId,
+                            "title": g.title || "",
+                            "poster": g.poster || "",
+                            "platform": g.platform || "",
+                            "exePath": g.exePath || "",
+                            "args": g.args || ""
+                        })
+                    }
+                    if (typeof gamesModel.setGridSkip === 'function')
+                        gamesModel.setGridSkip(featuredStripVisible ? firstRowModel.count : 0)
+                }
 
-                    delegate: Item {
-                        width: 120
-                        height: featuredList.height
+                onFirstRowCountChanged: syncFirstRow()
+                onFeaturedStripVisibleChanged: syncFirstRow()
+                onWidthChanged: syncFirstRow()
+                Component.onCompleted: syncFirstRow()
+
+                Connections {
+                    target: (typeof gamesModel !== 'undefined') ? gamesModel : null
+                    function onCountChanged() { gamesGridHost.syncFirstRow() }
+                    function onFeaturedCountChanged() { gamesGridHost.syncFirstRow() }
+                }
+
+                ListModel { id: firstRowModel }
+
+                // Identical card for first-row Row and GridView (model.* only — no required props)
+                Component {
+                    id: gameCardDelegate
+                    Item {
+                        id: cardRoot
+                        width: gamesGridHost.cardW
+                        height: gamesGridHost.cardH
+
+                        // Bind from model roles so title and poster stay paired
+                        readonly property int cardGameId: model.gameId
+                        readonly property string cardTitle: model.title || ""
+                        readonly property string cardPoster: model.poster || ""
+                        readonly property string cardPlatform: model.platform || ""
+                        readonly property string cardExePath: model.exePath || ""
+                        readonly property string cardArgs: model.args || ""
 
                         Rectangle {
                             anchors.fill: parent
+                            anchors.margins: 10
                             color: "#0a0a0a"
-                            radius: 5
-                            border.width: featArea.containsMouse ? 2 : 1
-                            border.color: featArea.containsMouse ? accentColor : "#1a1a1a"
+                            radius: 6
+                            border.width: cardArea.containsMouse ? 2 : 1
+                            border.color: cardArea.containsMouse ? accentColor : "#1a1a1a"
+                            clip: true
 
-                            Image {
-                                anchors.top: parent.top
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                height: parent.height - 36
-                                source: {
-                                    var pUrl = model.poster !== undefined ? model.poster : ""
-                                    if (pUrl === "") return ""
-                                    if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0) return pUrl
-                                    var baseUrl = "http://192.168.222.2:22222"
-                                    if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
-                                        baseUrl = NetworkManager.serverUrl
-                                    return pUrl.indexOf("/") === 0 ? baseUrl + pUrl : baseUrl + "/" + pUrl
+                            Column {
+                                anchors.fill: parent
+
+                                Image {
+                                    id: posterImg
+                                    width: parent.width
+                                    height: parent.height - 45
+                                    // Unique URL per gameId keeps poster tied to title
+                                    source: cardRoot.cardPoster.length
+                                            ? (gamesGridHost.posterUrl(cardRoot.cardPoster)
+                                               + (cardRoot.cardPoster.indexOf("?") >= 0 ? "&" : "?")
+                                               + "gid=" + cardRoot.cardGameId)
+                                            : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    cache: false
+                                    opacity: (status === Image.Ready)
+                                             ? (cardArea.containsMouse ? 1.0 : 0.7) : 0.0
                                 }
-                                fillMode: Image.PreserveAspectCrop
-                                asynchronous: true
-                                opacity: featArea.containsMouse ? 1.0 : 0.75
-                            }
 
-                            Text {
-                                anchors.bottom: parent.bottom
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.margins: 4
-                                height: 28
-                                text: model.title || ""
-                                color: featArea.containsMouse ? accentColor : "#cccccc"
-                                font.pixelSize: 11
-                                font.bold: true
-                                elide: Text.ElideRight
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
+                                Rectangle {
+                                    width: parent.width
+                                    height: 45
+                                    color: cardArea.containsMouse ? accentColor : "#050505"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 12
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: cardRoot.cardTitle
+                                        color: cardArea.containsMouse ? "black" : "white"
+                                        font.bold: true
+                                    }
+                                }
                             }
-
                             MouseArea {
-                                id: featArea
+                                id: cardArea
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
                                 enabled: !dashboardRoot.isLaunchBlocked()
                                 onClicked: {
                                     if (dashboardRoot.isLaunchBlocked())
                                         return
                                     dashboardRoot.openAccountChoice(
-                                        model.id,
-                                        model.platform || "",
-                                        model.title || "",
-                                        model.exePath || "",
-                                        model.args || "")
+                                        cardRoot.cardGameId,
+                                        cardRoot.cardPlatform,
+                                        cardRoot.cardTitle,
+                                        cardRoot.cardExePath,
+                                        cardRoot.cardArgs)
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            Text {
-                text: "Все игры"
-                color: "#888888"
-                font.pixelSize: 12
-                font.bold: true
-                font.letterSpacing: 1.2
-                visible: featuredBlock.visible
-            }
+                // First row: caption + white outline around featured only; one Row of identical cards
+                Item {
+                    id: firstLibraryRow
+                    visible: gamesGridHost.featuredStripVisible
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: visible
+                        ? (gamesGridHost.featuredCaptionH + 6
+                           + gamesGridHost.cardH + gamesGridHost.featuredBorderPad * 2)
+                        : 0
 
-            GridView {
-                id: gamesGrid
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                cellWidth: 230
-                cellHeight: 320
-                clip: true
-                model: gamesModel
+                    Text {
+                        id: featuredCaption
+                        anchors.top: parent.top
+                        anchors.left: parent.left
+                        anchors.leftMargin: 6
+                        height: gamesGridHost.featuredCaptionH
+                        text: (typeof NetworkManager !== 'undefined' && NetworkManager.featuredLabel)
+                              ? NetworkManager.featuredLabel
+                              : "Вы часто играете"
+                        color: "white"
+                        font.pixelSize: 13
+                        font.bold: true
+                        font.letterSpacing: 1.2
+                        elide: Text.ElideRight
+                    }
 
-                delegate: Item {
-                    width: gamesGrid.cellWidth
-                    height: gamesGrid.cellHeight
-
+                    // Decorative white contour around featured cards only (not wrapping delegates)
                     Rectangle {
-                        anchors.fill: parent
-                        anchors.margins: 10
-                        color: "#0a0a0a"
-                        radius: 6
-                        border.width: gArea.containsMouse ? 2 : 1
-                        border.color: gArea.containsMouse ? accentColor : "#1a1a1a"
+                        id: featuredOutline
+                        anchors.top: featuredCaption.bottom
+                        anchors.topMargin: 6
+                        anchors.left: parent.left
+                        width: gamesGridHost.featuredCount * gamesGridHost.cardW
+                               + gamesGridHost.featuredBorderPad * 2
+                        height: gamesGridHost.cardH + gamesGridHost.featuredBorderPad * 2
+                        z: 0
+                        color: "transparent"
+                        border.width: 1
+                        border.color: "white"
+                        radius: 8
+                    }
 
-                        Image {
-                            width: parent.width
-                            height: parent.height - 45
-                            source: {
-                                var pUrl = model.poster !== undefined ? model.poster : ""
-                                if (pUrl === "") return ""
-                                if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0) return pUrl
-                                var baseUrl = "http://192.168.222.2:22222"
-                                if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined') {
-                                    baseUrl = NetworkManager.serverUrl
-                                }
-                                return pUrl.indexOf("/") === 0 ? baseUrl + pUrl : baseUrl + "/" + pUrl
-                            }
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
-                            opacity: gArea.containsMouse ? 1.0 : 0.7
-                        }
+                    Row {
+                        id: firstRowCards
+                        anchors.top: featuredCaption.bottom
+                        anchors.topMargin: 6 + gamesGridHost.featuredBorderPad
+                        anchors.left: parent.left
+                        anchors.leftMargin: gamesGridHost.featuredBorderPad
+                        height: gamesGridHost.cardH
+                        spacing: 0
+                        z: 1
 
-                        Rectangle {
-                            anchors.bottom: parent.bottom
-                            width: parent.width
-                            height: 45
-                            color: gArea.containsMouse ? accentColor : "#050505"
-                            Text {
-                                anchors.centerIn: parent
-                                text: model.title || ""
-                                color: gArea.containsMouse ? "black" : "white"
-                                font.bold: true
-                            }
-                        }
-                        MouseArea {
-                            id: gArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            enabled: !dashboardRoot.isLaunchBlocked()
-                            onClicked: {
-                                if (dashboardRoot.isLaunchBlocked())
-                                    return
-                                dashboardRoot.openAccountChoice(
-                                    model.id,
-                                    model.platform || "",
-                                    model.title || "",
-                                    model.exePath || "",
-                                    model.args || "")
-                            }
+                        Repeater {
+                            model: firstRowModel
+                            delegate: gameCardDelegate
                         }
                     }
+                }
+
+                GridView {
+                    id: gamesGrid
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    cellWidth: gamesGridHost.cardW
+                    cellHeight: gamesGridHost.cardH
+                    clip: true
+                    model: gamesModel
+                    boundsBehavior: Flickable.StopAtBounds
+                    reuseItems: false
+                    delegate: gameCardDelegate
                 }
             }
         }
@@ -1516,24 +1741,149 @@ Item {
                             MouseArea {
                                 anchors.fill: parent
                                 enabled: cartModel.count > 0
+                                cursorShape: Qt.PointingHandCursor
                                 onClicked: {
+                                    console.log("[SHOP] checkout click, cart=", cartModel.count,
+                                                "termId=", dashboardRoot.termId,
+                                                "balance=", dashboardRoot.userBalance)
+
                                     var baseUrl = "http://192.168.222.2:22222"
-                                    if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
+                                    if (typeof NetworkManager !== 'undefined'
+                                            && NetworkManager.serverUrl
+                                            && String(NetworkManager.serverUrl).length > 0) {
                                         baseUrl = NetworkManager.serverUrl
+                                    }
+
+                                    // Snapshot cart before async clears
+                                    var lines = []
                                     for (var i = 0; i < cartModel.count; i++) {
                                         var item = cartModel.get(i)
-                                        for (var q = 0; q < item.quantity; q++) {
-                                            var xhr = new XMLHttpRequest()
-                                            xhr.open("POST", baseUrl + "/api/shell/store/checkout")
-                                            xhr.setRequestHeader("Content-Type", "application/json")
-                                            xhr.send(JSON.stringify({
-                                                "product_id": item.productId,
-                                                "terminal_id": dashboardRoot.termId
-                                            }))
+                                        lines.push({
+                                            productId: item.productId,
+                                            name: item.name,
+                                            price: item.price,
+                                            quantity: item.quantity
+                                        })
+                                    }
+                                    if (lines.length === 0) {
+                                        console.warn("[SHOP] checkout aborted: empty cart snapshot")
+                                        return
+                                    }
+
+                                    var pending = 0
+                                    var failed = 0
+                                    var lastError = ""
+                                    var lastBalance = dashboardRoot.userBalance
+                                    var lastOrderId = 0
+                                    var lastStatusLabel = ""
+
+                                    function finishCheckout() {
+                                        console.log("[SHOP] checkout done remaining=", pending, "failed=", failed,
+                                                    "balance=", lastBalance, "order_id=", lastOrderId,
+                                                    "status=", lastStatusLabel, "err=", lastError)
+                                        if (failed === 0) {
+                                            cartModel.clear()
+                                            storePopup.close()
+                                            if (typeof root !== 'undefined' && root !== null) {
+                                                root.sessionBalance = lastBalance
+                                                if (lastOrderId > 0) {
+                                                    root.trackedOrderId = lastOrderId
+                                                    root.hasActiveOrder = true
+                                                    root.orderStatusCode = "pending"
+                                                    root.orderStatusText = lastStatusLabel.length > 0
+                                                            ? String(lastStatusLabel).toUpperCase()
+                                                            : "ЗАКАЗ ПРИНЯТ"
+                                                    // Seed contents panel from cart snapshot until poll arrives
+                                                    var seeded = []
+                                                    var seededTotal = 0
+                                                    for (var si = 0; si < lines.length; si++) {
+                                                        var sl = lines[si]
+                                                        seeded.push({
+                                                            name: sl.name,
+                                                            qty: sl.quantity,
+                                                            price: sl.price * sl.quantity
+                                                        })
+                                                        seededTotal += sl.price * sl.quantity
+                                                    }
+                                                    root.orderItems = seeded
+                                                    root.orderItemsTotal = seededTotal
+                                                } else {
+                                                    root.hasActiveOrder = true
+                                                    root.orderStatusCode = "pending"
+                                                    root.orderStatusText = "ЗАКАЗ ПРИНЯТ"
+                                                }
+                                                if (typeof NetworkManager !== 'undefined')
+                                                    NetworkManager.checkOrderStatus(
+                                                                parseInt(dashboardRoot.termId) || root.terminalId,
+                                                                root.trackedOrderId)
+                                            }
+                                            dashboardRoot.userBalance = lastBalance
+                                        } else {
+                                            console.error("[SHOP] checkout failed:", lastError)
                                         }
                                     }
-                                    cartModel.clear()
-                                    storePopup.close()
+
+                                    // One checkout = one order with all cart lines
+                                    var apiItems = []
+                                    for (var li = 0; li < lines.length; li++) {
+                                        apiItems.push({
+                                            product_id: lines[li].productId,
+                                            qty: lines[li].quantity
+                                        })
+                                    }
+
+                                    pending = 1
+                                    var xhr = new XMLHttpRequest()
+                                    var url = baseUrl + "/api/shell/store/checkout"
+                                    var body = JSON.stringify({
+                                        "terminal_id": parseInt(dashboardRoot.termId) || 0,
+                                        "items": apiItems
+                                    })
+                                    console.log("[SHOP] POST", url, body, "lines=", apiItems.length)
+                                    xhr.open("POST", url)
+                                    xhr.setRequestHeader("Content-Type", "application/json")
+                                    xhr.setRequestHeader("Accept", "application/json")
+                                    xhr.onreadystatechange = function() {
+                                        if (xhr.readyState !== XMLHttpRequest.DONE)
+                                            return
+                                        console.log("[SHOP] response HTTP", xhr.status, xhr.responseText)
+                                        try {
+                                            var res = xhr.responseText ? JSON.parse(xhr.responseText) : {}
+                                            if (xhr.status >= 200 && xhr.status < 300
+                                                    && res.status === "success") {
+                                                if (typeof res.balance === "number")
+                                                    lastBalance = res.balance
+                                                else if (typeof res.deposit_balance === "number")
+                                                    lastBalance = res.deposit_balance
+                                                if (typeof res.order_id === "number" && res.order_id > 0)
+                                                    lastOrderId = res.order_id
+                                                else if (res.order_id)
+                                                    lastOrderId = parseInt(res.order_id) || lastOrderId
+                                                if (res.status_label)
+                                                    lastStatusLabel = res.status_label
+                                            } else {
+                                                failed++
+                                                lastError = (res && res.message)
+                                                             ? res.message
+                                                             : ("HTTP " + xhr.status)
+                                                console.error("[SHOP] error:", lastError)
+                                            }
+                                        } catch (e) {
+                                            failed++
+                                            lastError = e.toString()
+                                            console.error("[SHOP] parse error:", e)
+                                        }
+                                        pending = 0
+                                        finishCheckout()
+                                    }
+                                    xhr.onerror = function() {
+                                        failed++
+                                        lastError = "network error"
+                                        console.error("[SHOP] network error")
+                                        pending = 0
+                                        finishCheckout()
+                                    }
+                                    xhr.send(body)
                                 }
                             }
                         }
@@ -1813,6 +2163,151 @@ Item {
     }
 
     Popup {
+        id: sosReasonPopup
+        width: Math.min(420, parent.width - 40)
+        height: 360
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            color: "#0a0505"
+            border.color: "#dc2626"
+            radius: 10
+        }
+
+        function sendReason(code, label) {
+            sosReasonPopup.close()
+            if (typeof NetworkManager !== 'undefined') {
+                NetworkManager.sendSos(code, label)
+            } else {
+                console.warn("[QML-SOS] NetworkManager unavailable")
+            }
+            sosToast.show()
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 24
+            spacing: 14
+
+            Text {
+                text: "SOS"
+                color: "#dc2626"
+                font.pixelSize: 22
+                font.bold: true
+                font.letterSpacing: 3
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                text: "Что случилось?"
+                color: "#e5e5e5"
+                font.pixelSize: 15
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Repeater {
+                model: [
+                    { code: "peripherals", label: "Не работают наушники / мышь / клавиатура" },
+                    { code: "auth_help", label: "Помочь с авторизацией" },
+                    { code: "other", label: "Другая проблема" }
+                ]
+                delegate: Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    color: reasonMouse.pressed
+                           ? "#991b1b"
+                           : (reasonMouse.containsMouse ? "#dc2626" : "#1a0a0a")
+                    border.color: "#dc2626"
+                    border.width: 1
+                    scale: reasonMouse.pressed ? 0.96 : (reasonMouse.containsMouse ? 1.02 : 1.0)
+                    opacity: reasonMouse.pressed ? 0.9 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                    Behavior on opacity { NumberAnimation { duration: 100 } }
+                    Behavior on color { ColorAnimation { duration: 100 } }
+
+                    Text {
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        text: modelData.label
+                        color: reasonMouse.containsMouse || reasonMouse.pressed ? "black" : "#f5f5f5"
+                        font.pixelSize: 13
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                        verticalAlignment: Text.AlignVCenter
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                    MouseArea {
+                        id: reasonMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: sosReasonPopup.sendReason(modelData.code, modelData.label)
+                    }
+                }
+            }
+
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "Отмена"
+                color: cancelSosMouse.pressed
+                       ? "#aaaaaa"
+                       : (cancelSosMouse.containsMouse ? "#999999" : "#666666")
+                font.pixelSize: 13
+                scale: cancelSosMouse.pressed ? 0.96 : 1.0
+                opacity: cancelSosMouse.pressed ? 0.85 : 1.0
+                Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                Behavior on opacity { NumberAnimation { duration: 100 } }
+                Behavior on color { ColorAnimation { duration: 100 } }
+                MouseArea {
+                    id: cancelSosMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: sosReasonPopup.close()
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        id: sosToast
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 48
+        width: 220
+        height: 44
+        radius: 8
+        z: 1000
+        visible: opacity > 0
+        opacity: 0
+        color: "#0a0505"
+        border.color: "#dc2626"
+        border.width: 1
+
+        function show() {
+            sosToast.opacity = 1
+            sosToastHide.restart()
+        }
+
+        Behavior on opacity { NumberAnimation { duration: 220 } }
+
+        Text {
+            anchors.centerIn: parent
+            text: "Запрос отправлен"
+            color: "#f5f5f5"
+            font.pixelSize: 14
+            font.bold: true
+        }
+
+        Timer {
+            id: sosToastHide
+            interval: 1800
+            onTriggered: sosToast.opacity = 0
+        }
+    }
+
+    Popup {
         id: accountChoicePopup
         width: Math.min(640, parent.width - 40)
         height: 420
@@ -2051,38 +2546,101 @@ Item {
         property string baseColor: accentColor
         property bool isActiveStatus: false
         property bool orderIsFinished: false
+        property bool orderIsCooking: false
         property string statusText: ""
+        readonly property color statusAccent: orderIsFinished ? "#22c55e"
+                                              : (orderIsCooking ? "#facc15" : "#ef4444")
         signal clicked()
 
         Layout.fillWidth: true
         Layout.preferredHeight: 50
         radius: 4
         color: actionMouse.pressed
-               ? Qt.rgba(0.06, 0.12, 0.1, 1)
+               ? (isActiveStatus ? Qt.rgba(0.12, 0.1, 0.02, 1) : Qt.rgba(0.06, 0.12, 0.1, 1))
                : (actionMouse.containsMouse ? Qt.rgba(0.08, 0.14, 0.11, 1) : "transparent")
-        border.color: actionMouse.containsMouse || actionMouse.pressed
-                      ? baseColor
+        border.color: actionMouse.containsMouse || actionMouse.pressed || isActiveStatus
+                      ? (isActiveStatus && !orderIsFinished ? statusAccent : baseColor)
                       : Qt.darker(baseColor, 1.25)
-        border.width: actionMouse.containsMouse || actionMouse.pressed ? 2 : 1
+        border.width: actionMouse.containsMouse || actionMouse.pressed || isActiveStatus ? 2 : 1
         scale: actionMouse.pressed ? 0.97 : (actionMouse.containsMouse ? 1.02 : 1.0)
-        opacity: actionMouse.containsMouse ? 1 : 0.94
+        opacity: actionMouse.containsMouse || isActiveStatus ? 1 : 0.94
 
         Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
         Behavior on opacity { NumberAnimation { duration: 100 } }
         Behavior on border.width { NumberAnimation { duration: 90 } }
         Behavior on color { ColorAnimation { duration: 100 } }
+        Behavior on border.color { ColorAnimation { duration: 120 } }
 
         Row {
-            anchors.centerIn: parent
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.leftMargin: 14
             spacing: 6
             Text {
                 text: icon
+                anchors.verticalCenter: parent.verticalCenter
             }
             Text {
                 text: controlRoot.text
-                color: "white"
+                color: actionMouse.pressed ? "black" : (actionMouse.containsMouse || isActiveStatus ? "white" : baseColor)
                 font.bold: true
+                font.pixelSize: 13
+                anchors.verticalCenter: parent.verticalCenter
             }
+            Text {
+                text: " (" + controlRoot.statusText + ")"
+                visible: controlRoot.isActiveStatus && controlRoot.statusText !== ""
+                color: controlRoot.statusAccent
+                font.bold: true
+                font.pixelSize: 12
+                anchors.verticalCenter: parent.verticalCenter
+            }
+        }
+
+        // Spinner while order is in progress
+        Item {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+            width: 16
+            height: 16
+            visible: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
+
+            Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.color: controlRoot.statusAccent
+                border.width: 2
+                radius: 8
+
+                Rectangle {
+                    width: 9
+                    height: 9
+                    color: darkBg
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    anchors.margins: -2
+                }
+
+                RotationAnimation on rotation {
+                    from: 0
+                    to: 360
+                    duration: 1000
+                    loops: Animation.Infinite
+                    running: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
+                }
+            }
+        }
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+            text: "✓"
+            color: "#22c55e"
+            font.bold: true
+            font.pixelSize: 16
+            visible: controlRoot.isActiveStatus && controlRoot.orderIsFinished
         }
 
         MouseArea {

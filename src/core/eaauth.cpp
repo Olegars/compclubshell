@@ -1730,6 +1730,9 @@ void EaAuth::injectEmail(quintptr hwndVal, const QString &email)
     if (!hwnd || !IsWindow(hwnd))
         return;
 
+    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+        pm->requestClearGameSearch();
+
     beginInjectBurst();
     AllowSetForegroundWindow(ASFW_ANY);
     // Club scout: foreground EA для SendInput; TOPMOST shell — только ~400ms после Enter на Далее.
@@ -1782,6 +1785,9 @@ void EaAuth::injectPassword(quintptr hwndVal, const QString &password)
     if (!hwnd || !IsWindow(hwnd))
         return;
 
+    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+        pm->requestClearGameSearch();
+
     beginInjectBurst();
     AllowSetForegroundWindow(ASFW_ANY);
     placeWindowForegroundOnly(hwnd, this);
@@ -1791,6 +1797,8 @@ void EaAuth::injectPassword(quintptr hwndVal, const QString &password)
         HWND h = reinterpret_cast<HWND>(hwndVal);
         if (!h || !IsWindow(h) || !m_scoutTimer)
             return;
+        if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+            pm->requestClearGameSearch();
         AllowSetForegroundWindow(ASFW_ANY);
         placeWindowForegroundOnly(h, this);
         qWarning() << "[EA] type password unicode, len" << password.size();

@@ -3766,6 +3766,8 @@ void RiotAuth::startScout(const QString &login, const QString &password)
                 m_phase = Phase::WaitLoginWindow;
                 break;
             }
+            if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+                pm->requestClearGameSearch();
             if (m_riotParkedOffscreen)
                 restoreRiotOnscreen("before username");
             AllowSetForegroundWindow(ASFW_ANY);
@@ -3799,6 +3801,8 @@ void RiotAuth::startScout(const QString &login, const QString &password)
         case Phase::TypePassword:
             if (m_ticks < m_phaseTick + 2)
                 break;
+            if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+                pm->requestClearGameSearch();
             if (HWND h = reinterpret_cast<HWND>(m_loginHwnd)) {
                 AllowSetForegroundWindow(ASFW_ANY);
                 SetForegroundWindow(h);

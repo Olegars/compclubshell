@@ -13,6 +13,12 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QUrlQuery>
+#include <QHash>
+#include <QPair>
+#include <QVariantMap>
+#include <QVariantList>
+#include <QtGlobal>
+#include <algorithm>
 #include <vector>
 
 NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent)
@@ -67,6 +73,50 @@ QString NetworkManager::serverUrl() const {
 QString NetworkManager::getMachineHwid() const
 {
     return HwidProvider::machineHwid();
+}
+
+double NetworkManager::jsonToDouble(const QJsonValue &value, double defaultValue)
+{
+    if (value.isDouble())
+        return value.toDouble(defaultValue);
+    if (value.isString()) {
+        bool ok = false;
+        const double parsed = value.toString().trimmed().toDouble(&ok);
+        return ok ? parsed : defaultValue;
+    }
+    if (value.isBool() || value.isNull() || value.isUndefined() || value.isArray() || value.isObject())
+        return defaultValue;
+    return value.toVariant().toDouble();
+}
+
+double NetworkManager::userBalanceFromJson(const QJsonObject &user)
+{
+    static const char *keys[] = {
+        "balance", "deposit_balance", "total_balance", "money", "wallet_balance"
+    };
+    for (const char *key : keys) {
+        if (!user.contains(QLatin1String(key)))
+            continue;
+        const double value = jsonToDouble(user.value(QLatin1String(key)), -1.0);
+        if (value >= 0.0)
+            return value;
+    }
+
+    if (user.value(QStringLiteral("wallet")).isObject()) {
+        const QJsonObject wallet = user.value(QStringLiteral("wallet")).toObject();
+        for (const char *key : keys) {
+            if (!wallet.contains(QLatin1String(key)))
+                continue;
+            const double value = jsonToDouble(wallet.value(QLatin1String(key)), -1.0);
+            if (value >= 0.0)
+                return value;
+        }
+        const double bonus = jsonToDouble(wallet.value(QStringLiteral("bonus_balance")), 0.0);
+        if (bonus > 0.0)
+            return bonus;
+    }
+
+    return 0.0;
 }
 
 QString NetworkManager::cleanDigits(const QString &value)
@@ -344,7 +394,10 @@ void NetworkManager::applyGamesPayload(const QJsonDocument &doc)
 {
     auto parseItem = [](const QJsonObject &obj) {
         GameItem item;
+        // Prefer id; accept game_id so featured payloads never land as id=0 (breaks catalog sync).
         item.id = obj.value(QStringLiteral("id")).toInt();
+        if (item.id <= 0)
+            item.id = obj.value(QStringLiteral("game_id")).toInt();
         item.title = obj.value(QStringLiteral("title")).toString();
         item.exePath = obj.value(QStringLiteral("exe_path")).toString();
         item.args = obj.value(QStringLiteral("args")).toString();
@@ -382,11 +435,48 @@ void NetworkManager::applyGamesPayload(const QJsonDocument &doc)
             featuredMode = mode;
     }
 
-    if (m_gamesModel)
-        m_gamesModel->setGames(parseArray(gamesArray));
+    auto allGames = parseArray(gamesArray);
+    auto featuredGames = parseArray(featuredArray);
+    if (static_cast<int>(featuredGames.size()) > GameModel::kMaxFeatured)
+        featuredGames.resize(static_cast<size_t>(GameModel::kMaxFeatured));
+
+    // Keep featured title/poster/launch fields in sync with the main catalog by id
+    // (avoids mismatched poster vs label when featured payload is incomplete/stale).
+    {
+        QHash<int, GameItem> byId;
+        byId.reserve(static_cast<int>(allGames.size()));
+        for (const auto &g : allGames) {
+            if (g.id > 0)
+                byId.insert(g.id, g);
+        }
+
+        featuredGames.erase(
+            std::remove_if(featuredGames.begin(), featuredGames.end(),
+                           [&byId](GameItem &fg) {
+                               if (fg.id <= 0)
+                                   return true;
+                               const auto it = byId.constFind(fg.id);
+                               if (it == byId.cend())
+                                   return true; // drop unknown ids — never show orphan title/poster
+                               const GameItem &full = it.value();
+                               fg.title = full.title;
+                               fg.poster = full.poster;
+                               fg.exePath = full.exePath;
+                               fg.args = full.args;
+                               fg.category = full.category;
+                               fg.platform = full.platform;
+                               return false;
+                           }),
+            featuredGames.end());
+    }
 
     if (m_featuredGamesModel)
-        m_featuredGamesModel->setGames(parseArray(featuredArray));
+        m_featuredGamesModel->setGames(featuredGames);
+
+    if (m_gamesModel) {
+        m_gamesModel->setFeaturedGames(featuredGames);
+        m_gamesModel->setGames(allGames);
+    }
 
     if (m_featuredLabel != featuredLabel || m_featuredMode != featuredMode) {
         m_featuredLabel = featuredLabel;
@@ -424,6 +514,56 @@ void NetworkManager::recordGameLaunch(int gameId)
     });
 }
 
+void NetworkManager::clearGamesSearch()
+{
+    if (m_gamesModel)
+        m_gamesModel->setSearchQuery(QString());
+}
+
+void NetworkManager::sendSos(const QString &reasonCode, const QString &reasonLabel)
+{
+    if (m_serverUrl.isEmpty() || m_computerId <= 0) {
+        qWarning() << "[SOS] cannot send: server or computer_id missing";
+        emit sosSent(false);
+        return;
+    }
+    if (reasonCode.isEmpty() || reasonLabel.isEmpty()) {
+        qWarning() << "[SOS] cannot send: empty reason";
+        emit sosSent(false);
+        return;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/sos"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject reason;
+    reason.insert(QStringLiteral("code"), reasonCode);
+    reason.insert(QStringLiteral("label"), reasonLabel);
+
+    QJsonObject json;
+    json.insert(QStringLiteral("computer_id"), m_computerId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    json.insert(QStringLiteral("reason"), reason);
+    json.insert(QStringLiteral("timestamp"),
+                QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, reasonCode]() {
+        reply->deleteLater();
+        const bool ok = reply->error() == QNetworkReply::NoError
+            && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200;
+        if (!ok)
+            qWarning() << "[SOS] POST failed:" << reasonCode << reply->errorString();
+        else
+            qDebug() << "[SOS] posted:" << reasonCode << "computer" << m_computerId;
+        emit sosSent(ok);
+    });
+}
+
 void NetworkManager::clearSessionUser()
 {
     if (m_userId != 0) {
@@ -438,55 +578,225 @@ void NetworkManager::clearSessionUser()
     m_featuredMode = QStringLiteral("club");
     if (m_featuredGamesModel)
         m_featuredGamesModel->setGames({});
+    if (m_gamesModel)
+        m_gamesModel->setFeaturedGames({});
     emit featuredChanged();
 }
 
-void NetworkManager::fetchProducts() {
-    if (m_serverUrl.isEmpty()) return;
+int NetworkManager::resolveTerminalId(int terminalId) const
+{
+    if (terminalId > 0)
+        return terminalId;
+    if (m_computerId > 0)
+        return m_computerId;
+    if (m_rootQml) {
+        const int fromRoot = m_rootQml->property("terminalId").toInt();
+        if (fromRoot > 0)
+            return fromRoot;
+    }
+    return 0;
+}
 
-    // Стучимся на прямой роут /api/shell/products, который прописан в web.php
-    QUrl url(m_serverUrl + "/api/shell/products");
+void NetworkManager::applyOrderStatusFromJson(const QJsonObject &rootObj)
+{
+    if (!m_rootQml)
+        return;
+
+    const bool hasActiveOrder = rootObj.value(QStringLiteral("has_active_order")).toBool();
+    QString statusCode = rootObj.value(QStringLiteral("order_status")).toString();
+    if (statusCode.isEmpty())
+        statusCode = rootObj.value(QStringLiteral("status")).toString();
+
+    QString statusText = rootObj.value(QStringLiteral("status_text")).toString();
+    if (statusText.isEmpty())
+        statusText = rootObj.value(QStringLiteral("status_label")).toString();
+    if (statusText.isEmpty() && hasActiveOrder) {
+        if (statusCode == QLatin1String("cooking"))
+            statusText = QStringLiteral("В РАБОТЕ");
+        else if (statusCode == QLatin1String("pending"))
+            statusText = QStringLiteral("ЗАКАЗ ПРИНЯТ");
+        else
+            statusText = QStringLiteral("В РАБОТЕ");
+    }
+
+    m_rootQml->setProperty("hasActiveOrder", hasActiveOrder);
+    m_rootQml->setProperty("orderStatusCode", statusCode);
+    if (!statusText.isEmpty())
+        m_rootQml->setProperty("orderStatusText", statusText.toUpper());
+
+    const int orderId = rootObj.value(QStringLiteral("order_id")).toInt(
+        rootObj.value(QStringLiteral("order_id")).toVariant().toInt());
+    if (orderId > 0)
+        m_rootQml->setProperty("trackedOrderId", orderId);
+
+    // Aggregate active order lines (pending/cooking) for Dashboard contents panel.
+    // Prefer per-order items[] (multi-item checkout); fall back to legacy product_name.
+    QVariantList items;
+    double total = 0.0;
+    QHash<QString, QPair<int, double>> aggregated;
+    auto addLine = [&](const QString &name, int qty, double lineTotal) {
+        if (name.isEmpty() || qty <= 0)
+            return;
+        auto &entry = aggregated[name];
+        entry.first += qty;
+        entry.second += lineTotal;
+        total += lineTotal;
+    };
+
+    const QJsonArray ordersArr = rootObj.value(QStringLiteral("orders")).toArray();
+    for (const QJsonValue &val : ordersArr) {
+        const QJsonObject o = val.toObject();
+        const QString st = o.value(QStringLiteral("status")).toString();
+        if (st != QLatin1String("pending") && st != QLatin1String("cooking"))
+            continue;
+
+        const QJsonArray itemsArr = o.value(QStringLiteral("items")).toArray();
+        if (!itemsArr.isEmpty()) {
+            for (const QJsonValue &iv : itemsArr) {
+                const QJsonObject item = iv.toObject();
+                const QString name = item.value(QStringLiteral("name")).toString();
+                const int qty = qMax(1, item.value(QStringLiteral("qty")).toInt(1));
+                double lineTotal = item.value(QStringLiteral("line_total")).toDouble(
+                    item.value(QStringLiteral("line_total")).toVariant().toDouble());
+                if (lineTotal <= 0.0) {
+                    const double unit = item.value(QStringLiteral("unit_price")).toDouble(
+                        item.value(QStringLiteral("price")).toDouble(
+                            item.value(QStringLiteral("price")).toVariant().toDouble()));
+                    lineTotal = unit * qty;
+                }
+                addLine(name, qty, lineTotal);
+            }
+            continue;
+        }
+
+        const QString name = o.value(QStringLiteral("product_name")).toString();
+        if (name.isEmpty())
+            continue;
+        const double price = o.value(QStringLiteral("price")).toDouble(
+            o.value(QStringLiteral("price")).toVariant().toDouble());
+        addLine(name, 1, price);
+    }
+    for (auto it = aggregated.constBegin(); it != aggregated.constEnd(); ++it) {
+        QVariantMap row;
+        row.insert(QStringLiteral("name"), it.key());
+        row.insert(QStringLiteral("qty"), it.value().first);
+        row.insert(QStringLiteral("price"), it.value().second);
+        items.append(row);
+    }
+    m_rootQml->setProperty("orderItems", items);
+    m_rootQml->setProperty("orderItemsTotal", total);
+
+    qDebug() << "[SHOP] order status → active=" << hasActiveOrder
+             << "code=" << statusCode << "text=" << statusText
+             << "order_id=" << orderId << "items=" << items.size();
+}
+
+void NetworkManager::fetchProducts() {
+    if (m_serverUrl.isEmpty()) {
+        qWarning() << "[SHOP] fetchProducts skipped: empty serverUrl";
+        return;
+    }
+
+    const int terminalId = resolveTerminalId(0);
+    QUrl url(m_serverUrl + "/api/shell/store/products");
+    QUrlQuery query;
+    if (terminalId > 0)
+        query.addQueryItem(QStringLiteral("terminal_id"), QString::number(terminalId));
+    url.setQuery(query);
+
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    qDebug() << "[SHOP] fetch products →" << url.toString();
 
     QNetworkReply* reply = m_networkManager->get(request);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         reply->deleteLater();
 
-        if (reply->error() == QNetworkReply::NoError) {
-            QByteArray responseData = reply->readAll();
-            QJsonDocument doc = QJsonDocument::fromJson(responseData);
-
-            // ИСПРАВЛЕНО: Маркет тоже отдает чистый массив объектов без ключей
-            QJsonArray productsArray = doc.array();
-
-            std::vector<StoreItem> productsVector;
-            for (const QJsonValue &value : productsArray) {
-                QJsonObject obj = value.toObject();
-                StoreItem item;
-
-                item.id = obj.value("id").toInt();
-                item.name = obj.value("name").toString();
-                QJsonValue priceVal = obj.value("price");
-                if (priceVal.isString()) {
-                    item.price = priceVal.toString().toDouble(); // Конвертируем из строки "150.00"
-                } else {
-                    item.price = priceVal.toDouble(); // Если пришло чистое число
-                }
-                item.stock = obj.value("stock").toInt();
-                item.image = obj.value("image").toString();
-                item.category = obj.value("category").toString();
-
-                productsVector.push_back(item);
-            }
-
-            if (m_storeModel) {
-                m_storeModel->setProducts(productsVector);
-            }
-        } else {
-            qWarning() << "[NET] Ошибка получения товаров маркета:" << reply->errorString();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[SHOP] fetch products error:" << reply->errorString();
+            return;
         }
+
+        const QByteArray responseData = reply->readAll();
+        const QJsonDocument doc = QJsonDocument::fromJson(responseData);
+        QJsonArray productsArray;
+
+        if (doc.isObject()) {
+            const QJsonObject rootObj = doc.object();
+            applyOrderStatusFromJson(rootObj);
+            productsArray = rootObj.value(QStringLiteral("products")).toArray();
+        } else if (doc.isArray()) {
+            // Legacy: bare product array without order status
+            productsArray = doc.array();
+        }
+
+        std::vector<StoreItem> productsVector;
+        for (const QJsonValue &value : productsArray) {
+            QJsonObject obj = value.toObject();
+            StoreItem item;
+
+            item.id = obj.value("id").toInt();
+            item.name = obj.value("name").toString();
+            QJsonValue priceVal = obj.value("price");
+            if (priceVal.isString()) {
+                item.price = priceVal.toString().toDouble();
+            } else {
+                item.price = priceVal.toDouble();
+            }
+            item.stock = obj.value("stock").toInt();
+            item.image = obj.value("image").toString();
+            item.category = obj.value("category").toString();
+
+            productsVector.push_back(item);
+        }
+
+        qDebug() << "[SHOP] products loaded:" << productsVector.size();
+        if (m_storeModel) {
+            m_storeModel->setProducts(productsVector);
+        }
+    });
+}
+
+void NetworkManager::checkOrderStatus(int terminalId, int orderId)
+{
+    if (m_serverUrl.isEmpty()) {
+        qWarning() << "[SHOP] checkOrderStatus skipped: empty serverUrl";
+        return;
+    }
+
+    const int tid = resolveTerminalId(terminalId);
+    if (tid <= 0) {
+        qWarning() << "[SHOP] checkOrderStatus skipped: no terminalId";
+        return;
+    }
+
+    int oid = orderId;
+    if (oid <= 0 && m_rootQml)
+        oid = m_rootQml->property("trackedOrderId").toInt();
+
+    QUrl url(m_serverUrl + "/api/shell/store/order-status");
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("terminal_id"), QString::number(tid));
+    if (oid > 0)
+        query.addQueryItem(QStringLiteral("order_id"), QString::number(oid));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    qDebug() << "[SHOP] poll order status →" << url.toString();
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[SHOP] order status error:" << reply->errorString();
+            return;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (!doc.isObject())
+            return;
+        applyOrderStatusFromJson(doc.object());
     });
 }
 
@@ -548,9 +858,13 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
                 m_userId = uid;
                 emit userIdChanged();
             }
+            const double balance = userBalanceFromJson(user);
+            qDebug() << "[NET] Login OK user=" << user.value("id").toInt(0)
+                     << "balance=" << balance
+                     << "rawKeys=" << user.keys();
             emit loginSucceeded(
                 user.value("name").toString("GUEST"),
-                user.value("balance").toDouble(0.0),
+                balance,
                 user.value("time_remaining").toString("00:00:00"),
                 cleanPhone);
         } else {

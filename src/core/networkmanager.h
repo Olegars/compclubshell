@@ -52,11 +52,16 @@ public:
     Q_INVOKABLE QStringList getAvailableZones();
     Q_INVOKABLE void fetchGames();
     Q_INVOKABLE void fetchProducts();
+    /** Poll shell order status for terminal (and optional order_id). Updates hasActiveOrder on Main.qml. */
+    Q_INVOKABLE void checkOrderStatus(int terminalId = 0, int orderId = 0);
     Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
     Q_INVOKABLE void fetchOverlays(int terminalId);
     Q_INVOKABLE void freeGameAccount(int terminalId, int gameId);
     Q_INVOKABLE void recordGameLaunch(int gameId);
+    Q_INVOKABLE void sendSos(const QString &reasonCode, const QString &reasonLabel);
     Q_INVOKABLE void clearSessionUser();
+    /** Clear games catalog search filter (TextField cleared via Launcher signal). */
+    void clearGamesSearch();
 
 signals:
     void pcRegistrationChanged();
@@ -73,10 +78,15 @@ signals:
     void userIdChanged();
     void featuredChanged();
     void gamesLoaded();
+    void sosSent(bool success);
 
 private:
     static QString cleanDigits(const QString &value);
+    static double jsonToDouble(const QJsonValue &value, double defaultValue = 0.0);
+    static double userBalanceFromJson(const QJsonObject &user);
     void applyGamesPayload(const QJsonDocument &doc);
+    void applyOrderStatusFromJson(const QJsonObject &rootObj);
+    int resolveTerminalId(int terminalId) const;
 
     QNetworkAccessManager *m_networkManager;
     bool m_isPcRegistered;

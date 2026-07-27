@@ -1237,6 +1237,8 @@ void EpicAuth::injectEmail(quintptr hwndVal, const QString &email)
 
     m_loginHwnd = hwndVal;
     m_phase = Phase::EmailSubmitted;
+    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+        pm->requestClearGameSearch();
     setShellTopmostFrom(this, true);
 
     // One continuous keyboard sequence; SetForeground once at phase start.
@@ -1245,6 +1247,8 @@ void EpicAuth::injectEmail(quintptr hwndVal, const QString &email)
         if (!h || !IsWindow(h) || !m_scoutTimer)
             return;
 
+        if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+            pm->requestClearGameSearch();
         qWarning() << "[EPIC] scout:1 email phase — SetForeground once (under overlay)";
         placeWindowForInput(h, this);
         Sleep(120);
@@ -1278,6 +1282,8 @@ void EpicAuth::injectPassword(quintptr hwndVal, const QString &password)
     if (!hwnd || !IsWindow(hwnd))
         return;
 
+    if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+        pm->requestClearGameSearch();
     setShellTopmostFrom(this, true);
 
     // Keyboard-only: Tab×3 → password → Tab×3 → Войти. No UIA/mouse mid-sequence.
@@ -1286,6 +1292,8 @@ void EpicAuth::injectPassword(quintptr hwndVal, const QString &password)
         if (!h || !IsWindow(h) || !m_scoutTimer)
             return;
 
+        if (auto *pm = qobject_cast<ProcessManager *>(parent()))
+            pm->requestClearGameSearch();
         qWarning() << "[EPIC] scout:3 password phase — SetForeground once (under overlay)";
         placeWindowForInput(h, this);
         Sleep(120);

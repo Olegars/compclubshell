@@ -29,7 +29,11 @@ Window {
     property bool isHardwareAdmin: false
 
     property bool hasActiveOrder: false
-    property string orderStatusText: "ЗАКАЗ В РАБОТЕ"
+    property string orderStatusText: "В РАБОТЕ"
+    property string orderStatusCode: ""
+    property var orderItems: []
+    property real orderItemsTotal: 0.0
+    property int trackedOrderId: 0
 
     property string pcNameString: "PC-UNKNOWN"
 
@@ -44,8 +48,14 @@ Window {
     property string loadingPlatform: ""
     property string loadingGameTitle: ""
 
+    function clearGameSearchField() {
+        if (typeof Launcher !== "undefined" && typeof Launcher.requestClearGameSearch === "function")
+            Launcher.requestClearGameSearch()
+    }
+
     function showGameLoading(platform, gameTitle) {
         hideGameLoadingTimer.stop()
+        clearGameSearchField()
         if (typeof platform === "string" && platform.length > 0)
             root.loadingPlatform = platform
         if (typeof gameTitle === "string" && gameTitle.length > 0)
@@ -173,6 +183,12 @@ Window {
                 if (typeof SessionAlert !== "undefined")
                     SessionAlert.reset()
                 root.sessionTime = "00:00:00"
+                root.hasActiveOrder = false
+                root.trackedOrderId = 0
+                root.orderStatusText = "В РАБОТЕ"
+                root.orderStatusCode = ""
+                root.orderItems = []
+                root.orderItemsTotal = 0.0
                 // ИСПРАВЛЕНО: Если лаунчер прямо сейчас находится в процессе отправки запроса, НЕ сбрасываем форму!
                 if (!root.isLoggingIn) {
                     root.resetAuthForm()
@@ -271,6 +287,7 @@ Window {
             steamLoadingOverlay.visible = false
             root.gameLoadingVisible = false
             root.isLoggingIn = false
+            // restoreShellUi already requestClearGameSearch; Dashboard clears TextField
             NetworkManager.freeGameAccount(parseInt(root.terminalId), parseInt(root.currentGameId))
         }
     }
@@ -290,6 +307,48 @@ Window {
         onTriggered: {
             root.isLoggingIn = false
             gameLoadingOverlay.opacity = 0.0
+        }
+    }
+
+    // Poll shop order status while session is active (faster while order is open)
+    Timer {
+        id: orderStatusPollTimer
+        interval: root.hasActiveOrder ? 5000 : 25000
+        running: root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.sessionUser !== "PAUSE"
+                 && root.terminalId > 0
+        repeat: true
+        triggeredOnStart: false
+        onTriggered: {
+            if (typeof NetworkManager === "undefined")
+                return
+            if (root.hasActiveOrder || root.trackedOrderId > 0)
+                NetworkManager.checkOrderStatus(root.terminalId, root.trackedOrderId)
+            else
+                NetworkManager.fetchProducts()
+        }
+    }
+
+    onHasActiveOrderChanged: {
+        if (!root.hasActiveOrder
+                && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
+                    || root.orderStatusText.indexOf("ОТМЕН") >= 0)) {
+            // Keep finished banner briefly, then clear tracker
+            orderFinishedClearTimer.restart()
+        }
+    }
+
+    Timer {
+        id: orderFinishedClearTimer
+        interval: 12000
+        repeat: false
+        onTriggered: {
+            if (!root.hasActiveOrder) {
+                root.trackedOrderId = 0
+                root.orderStatusText = "В РАБОТЕ"
+                root.orderStatusCode = ""
+                root.orderItems = []
+                root.orderItemsTotal = 0.0
+            }
         }
     }
 

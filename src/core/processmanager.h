@@ -69,6 +69,8 @@ public slots:
     void handleDownloadDecision(bool continueDownload);
     void applyEnterprisePolicies(bool enable);
     Q_INVOKABLE void rebootPC();
+    // Clear/blur game search before SendInput credentials and when shell returns
+    Q_INVOKABLE void requestClearGameSearch();
 
 signals:
     void gameStarted();
@@ -78,6 +80,7 @@ signals:
     void hasActiveGameChanged();
     void gameTitleChanged();
     void shellHiddenForGameChanged();
+    void clearGameSearchRequested();
 
 private slots:
     void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
