@@ -29,6 +29,13 @@ public:
 
     bool isPcRegistered() const;
     QString serverUrl() const;
+
+    /**
+     * Собирает базовый адрес бэкенда из Network/api_ip и Network/api_port.
+     * В api_ip допустимы схема, порт и слэш ("https://0451.space/"), поэтому
+     * простая склейка давала "http://https://0451.space:443".
+     */
+    static QString buildServerUrl(const QString &rawHost, const QString &rawPort);
     int computerId() const;
     int lastBookingId() const { return m_lastBookingId; }
     int userId() const { return m_userId; }

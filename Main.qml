@@ -151,9 +151,13 @@ Window {
         if (cleanPin.length !== 4 || cleanPin !== cleanTarget)
             return false
 
-        var baseUrl = "http://192.168.222.2:22222"
-        if (typeof NetworkManager !== 'undefined' && NetworkManager.serverUrl)
-            baseUrl = NetworkManager.serverUrl
+        // Адрес бэкенда берём только из config.ini через NetworkManager.
+        var baseUrl = (typeof NetworkManager !== 'undefined' && NetworkManager.serverUrl)
+                ? String(NetworkManager.serverUrl) : ""
+        if (baseUrl.length === 0) {
+            console.warn("[PAUSE] Адрес бэкенда не задан: проверьте Network/api_ip в config.ini")
+            return false
+        }
 
         var xhr = new XMLHttpRequest()
         xhr.open("POST", baseUrl + "/api/shell/games/unpause")
@@ -574,11 +578,15 @@ Window {
                 }
             }
 
+            Column {
+                id: authColumn
+                anchors.centerIn: parent
+                spacing: 18
+
             Rectangle {
                 id: authCenter
                 width: 420
                 height: 520
-                anchors.centerIn: parent
                 color: Theme.accentPanel
                 border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
                 border.width: 2
@@ -918,9 +926,6 @@ Window {
                 id: authClock
                 width: authCenter.width
                 height: 116
-                anchors.top: authCenter.bottom
-                anchors.topMargin: 18
-                anchors.horizontalCenter: authCenter.horizontalCenter
                 color: Theme.accentPanel
                 border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
                 border.width: 2
@@ -1001,6 +1006,7 @@ Window {
                     }
                 }
             }
+            } // authColumn
         }
     }
 

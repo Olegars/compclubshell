@@ -91,7 +91,7 @@ int main(int argc, char *argv[])
         QSettings settings(configPath, QSettings::IniFormat);
         const QString apiIp = settings.value("Network/api_ip", "192.168.222.2").toString().trimmed();
         const QString apiPort = settings.value("Network/api_port", "22222").toString().trimmed();
-        const QString origin = "http://" + apiIp + ":" + apiPort;
+        const QString origin = NetworkManager::buildServerUrl(apiIp, apiPort);
 
         QString extraArgs = qEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
         const auto appendArg = [&extraArgs](const QString &flag, const QString &marker) {
@@ -103,8 +103,11 @@ int main(int argc, char *argv[])
         };
 
         // 1) Секьюр-контекст для http-origin бэкенда (иначе форма ЮKassa не рисуется).
-        appendArg("--unsafely-treat-insecure-origin-as-secure=" + origin,
-                  QStringLiteral("unsafely-treat-insecure-origin-as-secure"));
+        //    Для https origin уже доверенный, и флаг только мешал бы.
+        if (origin.startsWith(QLatin1String("http://"))) {
+            appendArg("--unsafely-treat-insecure-origin-as-secure=" + origin,
+                      QStringLiteral("unsafely-treat-insecure-origin-as-secure"));
+        }
         // 2) Виджет ЮKassa схлопывает форму, если Chromium считает окно скрытым
         //    (document.visibilityState=hidden). Для встроенного WebView2 это
         //    ложное срабатывание расчёта перекрытия окон — отключаем его.

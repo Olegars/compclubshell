@@ -355,10 +355,19 @@ Item {
         startClubTakeAccount(gameId, plat, title, pendingGameExe, pendingGameArgs)
     }
 
+    // Единственный источник адреса бэкенда — Network/api_ip + Network/api_port
+    // из config.ini (нормализуются в NetworkManager::buildServerUrl).
+    function apiBase() {
+        if (typeof NetworkManager !== 'undefined' && NetworkManager.serverUrl)
+            return String(NetworkManager.serverUrl)
+        console.warn("[NET] Адрес бэкенда не задан: проверьте Network/api_ip в config.ini")
+        return ""
+    }
+
     function startClubTakeAccount(gameId, modelPlatform, modelTitle, modelExe, modelArgs) {
-        var baseUrl = "http://192.168.222.2:22222"
-        if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
-            baseUrl = NetworkManager.serverUrl
+        var baseUrl = dashboardRoot.apiBase()
+        if (baseUrl.length === 0)
+            return
 
         var EastonXhr = new XMLHttpRequest()
         EastonXhr.open("POST", baseUrl + "/api/shell/games/take-account")
@@ -982,10 +991,9 @@ Item {
                             icon: "⏳"
                             baseColor: "#3b82f6"
                             onClicked: {
-                                var baseUrl = "http://192.168.222.2:22222"
-                                if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined') {
-                                    baseUrl = NetworkManager.serverUrl
-                                }
+                                var baseUrl = dashboardRoot.apiBase()
+                                if (baseUrl.length === 0)
+                                    return
                                 var pcId = parseInt(dashboardRoot.termId)
                                 if (!pcId) {
                                     console.error("[PAUSE] terminalId пуст")
@@ -1282,9 +1290,9 @@ Item {
                         return ""
                     if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0)
                         return pUrl
-                    var baseUrl = "http://192.168.222.2:22222"
-                    if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
-                        baseUrl = NetworkManager.serverUrl
+                    var baseUrl = dashboardRoot.apiBase()
+                    if (baseUrl.length === 0)
+                        return ""
                     return pUrl.indexOf("/") === 0 ? baseUrl + pUrl : baseUrl + "/" + pUrl
                 }
 
@@ -1568,7 +1576,7 @@ Item {
             color: "#050505"
             border.color: Theme.shop
             border.width: 2
-            radius: 12
+            radius: Theme.radiusSm
         }
 
         ColumnLayout {
@@ -1701,9 +1709,9 @@ Item {
                                             return ""
                                         if (imgUrl.indexOf("http") === 0 || imgUrl.indexOf("file") === 0)
                                             return imgUrl
-                                        var baseUrl = "http://192.168.222.2:22222"
-                                        if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
-                                            baseUrl = NetworkManager.serverUrl
+                                        var baseUrl = dashboardRoot.apiBase()
+                                        if (baseUrl.length === 0)
+                                            return ""
                                         return imgUrl.indexOf("/") === 0 ? baseUrl + imgUrl : baseUrl + "/" + imgUrl
                                     }
                                 }
@@ -1918,12 +1926,9 @@ Item {
                                                 "termId=", dashboardRoot.termId,
                                                 "balance=", dashboardRoot.userBalance)
 
-                                    var baseUrl = "http://192.168.222.2:22222"
-                                    if (typeof NetworkManager !== 'undefined'
-                                            && NetworkManager.serverUrl
-                                            && String(NetworkManager.serverUrl).length > 0) {
-                                        baseUrl = NetworkManager.serverUrl
-                                    }
+                                    var baseUrl = dashboardRoot.apiBase()
+                                    if (baseUrl.length === 0)
+                                        return
 
                                     // Snapshot cart before async clears
                                     var lines = []
@@ -2113,17 +2118,39 @@ Item {
 
     Popup {
         id: depositPopup
-        width: Math.min(520, parent.width * 0.9)
-        height: Math.min(420, parent.height * 0.8)
+        width: Math.min(560, parent.width * 0.9)
+        height: Math.min(520, parent.height * 0.85)
         anchors.centerIn: parent
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 0
 
-        background: Rectangle { color: "#050505"; border.color: Theme.shop; radius: 8 }
+        background: Rectangle {
+            color: Theme.bgPanel
+            radius: Theme.radiusSm
+            border.width: 1
+            border.color: Qt.rgba(Theme.shop.r, Theme.shop.g, Theme.shop.b, 0.35)
+
+            // Акцентный блик по верхней кромке — как на карточках магазина.
+            Rectangle {
+                anchors.top: parent.top
+                anchors.topMargin: 1
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: parent.width * 0.55
+                height: 2
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: "transparent" }
+                    GradientStop { position: 0.5; color: Theme.shop }
+                    GradientStop { position: 1.0; color: "transparent" }
+                }
+            }
+        }
 
         property int selectedAmount: 500
         property bool waitingPayment: false
+        property bool creating: false
         property string statusText: ""
         property string lastError: ""
         property string widgetUrl: ""
@@ -2131,6 +2158,7 @@ Item {
 
         onOpened: {
             depositPopup.waitingPayment = false
+            depositPopup.creating = false
             depositPopup.statusText = ""
             depositPopup.lastError = ""
             depositPopup.widgetUrl = ""
@@ -2150,11 +2178,14 @@ Item {
         Connections {
             target: typeof NetworkManager !== "undefined" ? NetworkManager : null
             function onTopUpReady(widgetUrl, paymentId, amount) {
+                depositPopup.creating = false
+                depositCreateTimeout.stop()
                 depositPopup.waitingPayment = true
                 depositPopup.widgetUrl = widgetUrl
                 depositPopup.paymentId = paymentId
                 depositPopup.statusText = "Открываем форму оплаты…"
                 depositPopup.lastError = ""
+                payWindow.amount = amount > 0 ? amount : depositPopup.selectedAmount
                 payWindow.openWithUrl(widgetUrl)
                 if (typeof NetworkManager !== "undefined")
                     NetworkManager.refreshBalance()
@@ -2163,6 +2194,8 @@ Item {
                 depositPopup.close()
             }
             function onTopUpFailed(message) {
+                depositPopup.creating = false
+                depositCreateTimeout.stop()
                 depositPopup.waitingPayment = false
                 depositPopup.widgetUrl = ""
                 depositPopup.statusText = ""
@@ -2177,6 +2210,19 @@ Item {
                 payWindow.statusBanner = depositPopup.statusText
                 depositWaitTimer.stop()
                 depositWaitClose.start()
+            }
+        }
+
+        // Если сервер не ответил, кнопка иначе осталась бы навсегда заблокированной.
+        Timer {
+            id: depositCreateTimeout
+            interval: 25000
+            onTriggered: {
+                if (!depositPopup.creating)
+                    return
+                depositPopup.creating = false
+                depositPopup.statusText = ""
+                depositPopup.lastError = "Сервер не ответил. Попробуйте ещё раз."
             }
         }
 
@@ -2201,110 +2247,331 @@ Item {
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 20
-            spacing: 12
+            anchors.margins: 26
+            spacing: 18
 
             RowLayout {
                 Layout.fillWidth: true
-                Text {
-                    text: "ПОПОЛНЕНИЕ БАЛАНСА"
-                    color: Theme.shop
-                    font.bold: true
-                    font.pixelSize: 18
+                spacing: 12
+
+                ColumnLayout {
+                    spacing: 5
                     Layout.fillWidth: true
+
+                    Text {
+                        text: "ЮKASSA · ТЕСТОВЫЙ РЕЖИМ · ТОЛЬКО КАРТА"
+                        color: Theme.textMuted
+                        font.pixelSize: 9
+                        font.bold: true
+                        font.letterSpacing: 1.8
+                    }
+                    Text {
+                        text: "ПОПОЛНЕНИЕ БАЛАНСА"
+                        color: Theme.shop
+                        font.pixelSize: 21
+                        font.bold: true
+                        font.italic: true
+                        font.letterSpacing: 1.5
+                    }
                 }
-                Button {
-                    text: "✕"
-                    flat: true
-                    onClicked: depositPopup.close()
+
+                // Место под крестик: сам он живёт в углу попапа, вне колонок.
+                Item {
+                    Layout.preferredWidth: 34
+                    Layout.preferredHeight: 34
                 }
             }
 
-            Text {
-                text: depositPopup.waitingPayment
-                      ? (depositPopup.statusText || "Оплата открыта в отдельном окне")
-                      : "Виджет ЮKassa · тестовый режим · только карта"
-                color: Theme.textSecondary
-                font.pixelSize: 12
-                wrapMode: Text.WordWrap
+            Rectangle {
                 Layout.fillWidth: true
+                Layout.preferredHeight: 64
+                radius: Theme.radiusSm
+                color: "#101010"
+                border.width: 1
+                border.color: "#1d1d1d"
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 18
+                    anchors.rightMargin: 18
+
+                    Text {
+                        text: "ТЕКУЩИЙ БАЛАНС"
+                        color: Theme.textMuted
+                        font.pixelSize: 10
+                        font.bold: true
+                        font.letterSpacing: 1.4
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: Number(dashboardRoot.userBalance).toFixed(0) + " ₽"
+                        color: Theme.textPrimary
+                        font.pixelSize: 22
+                        font.bold: true
+                        font.italic: true
+                    }
+                }
             }
 
             ColumnLayout {
                 visible: !depositPopup.waitingPayment
                 Layout.fillWidth: true
+                Layout.fillHeight: true
                 spacing: 12
+
+                Text {
+                    text: "СУММА ПОПОЛНЕНИЯ"
+                    color: Theme.textMuted
+                    font.pixelSize: 10
+                    font.bold: true
+                    font.letterSpacing: 1.4
+                }
 
                 RowLayout {
                     spacing: 10
                     Layout.fillWidth: true
+
                     Repeater {
                         model: [100, 300, 500, 1000]
+
                         delegate: Rectangle {
+                            id: amountTile
+
+                            readonly property bool selected: depositPopup.selectedAmount === modelData
+
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 44
-                            radius: 4
-                            color: depositPopup.selectedAmount === modelData ? Theme.shop : "#0d0d0d"
-                            Text { anchors.centerIn: parent; text: modelData + " ₽"; color: "white" }
-                            MouseArea { anchors.fill: parent; onClicked: depositPopup.selectedAmount = modelData }
+                            Layout.preferredHeight: 54
+                            radius: Theme.radiusSm
+                            color: selected ? Theme.shop
+                                            : (tileHover.hovered ? "#181818" : "#101010")
+                            border.width: 1
+                            border.color: selected ? Theme.shop
+                                                   : (tileHover.hovered ? "#3a3a3a" : "#1d1d1d")
+
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                            HoverHandler { id: tileHover; cursorShape: Qt.PointingHandCursor }
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData + " ₽"
+                                color: amountTile.selected ? "#0a0a0a" : Theme.textBody
+                                font.pixelSize: 15
+                                font.bold: true
+                                font.italic: amountTile.selected
+                            }
+
+                            TapHandler {
+                                enabled: !depositPopup.creating
+                                onTapped: depositPopup.selectedAmount = modelData
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    visible: depositPopup.lastError.length > 0
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: errorText.implicitHeight + 22
+                    radius: Theme.radiusSm
+                    color: "#1a0c0c"
+                    border.width: 1
+                    border.color: "#4d1f1f"
+
+                    Text {
+                        id: errorText
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.margins: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: depositPopup.lastError
+                        color: "#fca5a5"
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                    }
+                }
+
+                // Кнопка прижата к низу карточки.
+                Item { Layout.fillHeight: true }
+
+                Rectangle {
+                    id: payButton
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 56
+                    radius: Theme.radiusSm
+                    color: depositPopup.creating
+                           ? "#3d3208"
+                           : (payTap.pressed ? Qt.darker(Theme.shop, 1.25)
+                                             : (payHover.hovered ? Theme.warning : Theme.shop))
+
+                    Behavior on color { ColorAnimation { duration: 120 } }
+
+                    HoverHandler {
+                        id: payHover
+                        enabled: !depositPopup.creating
+                        cursorShape: Qt.PointingHandCursor
+                    }
+
+                    RowLayout {
+                        anchors.centerIn: parent
+                        spacing: 10
+
+                        BusyIndicator {
+                            visible: depositPopup.creating
+                            running: visible
+                            implicitWidth: 20
+                            implicitHeight: 20
+                        }
+
+                        Text {
+                            text: depositPopup.creating
+                                  ? "СОЗДАЁМ ПЛАТЁЖ…"
+                                  : "ОПЛАТИТЬ КАРТОЙ · " + depositPopup.selectedAmount + " ₽"
+                            color: depositPopup.creating ? Theme.shop : "#0a0a0a"
+                            font.pixelSize: 15
+                            font.bold: true
+                            font.italic: true
+                            font.letterSpacing: 1.2
+                        }
+                    }
+
+                    TapHandler {
+                        id: payTap
+                        enabled: !depositPopup.creating
+                        onTapped: {
+                            depositPopup.lastError = ""
+                            depositPopup.statusText = "Создаём платёж…"
+                            if (typeof NetworkManager !== "undefined") {
+                                depositPopup.creating = true
+                                depositCreateTimeout.restart()
+                                NetworkManager.createTopUp(depositPopup.selectedAmount)
+                            } else {
+                                depositPopup.lastError = "NetworkManager недоступен"
+                            }
                         }
                     }
                 }
 
                 Text {
-                    visible: depositPopup.lastError.length > 0
-                    text: depositPopup.lastError
-                    color: "#f87171"
-                    wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                    font.pixelSize: 12
-                }
-
-                Button {
-                    Layout.fillWidth: true
-                    text: "Оплатить картой " + depositPopup.selectedAmount + " ₽"
-                    onClicked: {
-                        depositPopup.lastError = ""
-                        depositPopup.statusText = "Создаём платёж…"
-                        if (typeof NetworkManager !== "undefined")
-                            NetworkManager.createTopUp(depositPopup.selectedAmount)
-                        else
-                            depositPopup.lastError = "NetworkManager недоступен"
-                    }
+                    text: "Данные карты вводятся в защищённой форме ЮKassa"
+                    color: Theme.textMuted
+                    font.pixelSize: 10
+                    font.letterSpacing: 0.6
+                    horizontalAlignment: Text.AlignHCenter
                 }
             }
 
             ColumnLayout {
                 visible: depositPopup.waitingPayment
                 Layout.fillWidth: true
-                spacing: 10
+                Layout.fillHeight: true
+                spacing: 12
 
                 Text {
-                    text: "Форма карты открыта в окне оплаты. Не закрывайте его, пока не завершите платёж."
-                    color: "white"
+                    text: depositPopup.statusText.length > 0
+                          ? depositPopup.statusText
+                          : "Форма карты открыта в окне оплаты. Не закрывайте его, пока не завершите платёж."
+                    color: Theme.textBody
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                     font.pixelSize: 13
                 }
 
-                Button {
+                Item { Layout.fillHeight: true }
+
+                Rectangle {
                     Layout.fillWidth: true
-                    text: "Показать окно оплаты"
-                    onClicked: {
-                        if (depositPopup.widgetUrl.length > 0)
-                            payWindow.openWithUrl(depositPopup.widgetUrl)
+                    Layout.preferredHeight: 48
+                    radius: Theme.radiusSm
+                    color: showPayHover.hovered ? "#181818" : "#101010"
+                    border.width: 1
+                    border.color: showPayHover.hovered ? "#3a3a3a" : "#1d1d1d"
+
+                    HoverHandler { id: showPayHover; cursorShape: Qt.PointingHandCursor }
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "ПОКАЗАТЬ ОКНО ОПЛАТЫ"
+                        color: Theme.textBody
+                        font.pixelSize: 13
+                        font.bold: true
+                        font.letterSpacing: 1
+                    }
+
+                    TapHandler {
+                        onTapped: {
+                            if (depositPopup.widgetUrl.length > 0)
+                                payWindow.openWithUrl(depositPopup.widgetUrl)
+                        }
                     }
                 }
 
-                Button {
+                Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "Закрыть"
-                    onClicked: {
-                        payWindow.closePayment()
-                        depositPopup.close()
+                    text: "Отменить"
+                    color: cancelHover.hovered ? Theme.textBody : Theme.textMuted
+                    font.pixelSize: 12
+                    font.bold: true
+
+                    HoverHandler { id: cancelHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler {
+                        onTapped: {
+                            payWindow.closePayment()
+                            depositPopup.close()
+                        }
                     }
                 }
             }
+        }
+
+        // Крестик в самом углу карточки, поверх содержимого.
+        Rectangle {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.margins: 12
+            width: 34
+            height: 34
+            z: 10
+            radius: Theme.radiusSm
+            color: depositCloseHover.hovered ? "#171717" : "transparent"
+            border.width: 1
+            border.color: depositCloseHover.hovered ? "#4d4d4d" : "#232323"
+
+            HoverHandler { id: depositCloseHover; cursorShape: Qt.PointingHandCursor }
+
+            Text {
+                anchors.centerIn: parent
+                text: "✕"
+                color: depositCloseHover.hovered ? "#ffffff" : "#6b6b6b"
+                font.pixelSize: 14
+                font.bold: true
+            }
+
+            TapHandler { onTapped: depositPopup.close() }
+        }
+    }
+
+    // Затемнение дашборда, пока открыто окно оплаты. Popup гасит фон своим
+    // модальным слоем, а payWindow — отдельное нативное окно, и без этого
+    // слоя дашборд остаётся ярким прямо под формой оплаты.
+    Rectangle {
+        anchors.fill: parent
+        z: 9000
+        color: "#000000"
+        opacity: payWindow.visible ? 0.72 : 0
+        visible: opacity > 0.01
+
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+
+        // Гасим клики по дашборду, пока идёт оплата.
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            acceptedButtons: Qt.AllButtons
+            onWheel: function(wheel) { wheel.accepted = true }
         }
     }
 
@@ -2313,12 +2580,15 @@ Item {
     Window {
         id: payWindow
         title: "Оплата · ЮKassa"
-        width: 520
-        height: 720
+        width: 560
+        height: 780
         visible: false
-        color: "#050505"
-        flags: Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint
+        color: Theme.bgPanel
+        // Без системного заголовка: шапку с суммой и крестиком рисуем сами,
+        // рамку — тонкой зелёной линией.
+        flags: Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
 
+        property real amount: 0
         property string pendingUrl: ""
         property string statusBanner: ""
         property string loadError: ""
@@ -2347,6 +2617,19 @@ Item {
             if (s.indexOf(widgetOrigin) !== 0)
                 return false
             return s.indexOf(widgetPageUrl) !== 0
+        }
+
+        // Ручное закрытие (Escape, кнопка на заставке, крестик страницы):
+        // синхронизируем платёж на всякий случай и закрываем окно.
+        function userClose() {
+            if (!paymentCompleted && depositPopup.paymentId.length > 0
+                    && typeof NetworkManager !== "undefined") {
+                NetworkManager.syncTopUpPayment(depositPopup.paymentId)
+            }
+            closePayment()
+            depositPopup.waitingPayment = false
+            depositWaitTimer.stop()
+            depositPopup.close()
         }
 
         function completePayment(reason) {
@@ -2397,6 +2680,11 @@ Item {
             statusBanner = "Загрузка формы ЮKassa…"
             loadError = ""
             paymentCompleted = false
+            // Окно без системной рамки — центрируем сами.
+            if (typeof Screen !== "undefined" && Screen.width > 0) {
+                x = Math.round((Screen.width - width) / 2)
+                y = Math.round((Screen.height - height) / 2)
+            }
             visible = true
             raise()
             requestActivate()
@@ -2532,11 +2820,11 @@ Item {
             }
         }
 
-        // Страница-обёртка выставляет window.__payDone в колбэке виджета.
-        // Так окно закрывается сразу после оплаты, не дожидаясь редиректа.
+        // Страница выставляет window.__payDone в колбэке виджета (оплата прошла)
+        // и window.__payClose по клику на крестик в своей шапке. Опрашиваем оба.
         Timer {
             id: payDonePoll
-            interval: 700
+            interval: 500
             repeat: true
             running: payWindow.visible && !payWindow.paymentCompleted
             onTriggered: {
@@ -2544,10 +2832,12 @@ Item {
                 if (!wv)
                     return
                 wv.runJavaScript(
-                    "(function(){try{return window.__payDone===true}catch(e){return false}})()",
-                    function(done) {
-                        if (done === true)
+                    "(function(){try{return (window.__payDone===true?1:0)+(window.__payClose===true?2:0)}catch(e){return 0}})()",
+                    function(flags) {
+                        if (flags & 1)
                             payWindow.completePayment("колбэк виджета")
+                        else if (flags & 2)
+                            payWindow.userClose()
                     })
             }
         }
@@ -2567,19 +2857,95 @@ Item {
             }
         }
 
-        Item {
+        // Тонкая зелёная рамка вокруг всего окна — вся «шапка» уже на странице.
+        Rectangle {
             anchors.fill: parent
-            anchors.margins: 12
+            color: "transparent"
+            border.color: accentColor
+            border.width: 1
+            radius: Theme.radiusSm
+            z: 10
+        }
 
-            Text {
-                id: payStatusText
+        Item {
+            id: payContent
+            anchors.fill: parent
+            anchors.margins: 1
+
+            // Закрытие по Escape — системной кнопки окна больше нет.
+            focus: true
+            Keys.onEscapePressed: payWindow.userClose()
+
+            // Шапка окна: живёт над WebView, а не поверх него — нативный HWND
+            // WebView2 перекрывает любые QML-элементы, положенные сверху.
+            Rectangle {
+                id: payHeader
                 anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
-                text: payWindow.loadError.length > 0 ? payWindow.loadError : payWindow.statusBanner
-                color: payWindow.loadError.length > 0 ? "#f87171" : "#e5e5e5"
-                wrapMode: Text.WrapAnywhere
-                font.pixelSize: 11
+                height: 58
+                color: Theme.bgPanel
+
+                MouseArea {
+                    anchors.fill: parent
+                    onPressed: payWindow.startSystemMove()
+                }
+
+                Column {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 20
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 3
+
+                    Text {
+                        text: "REACTOR PAY"
+                        color: accentColor
+                        font.pixelSize: 10
+                        font.bold: true
+                        font.italic: true
+                        font.letterSpacing: 2.2
+                    }
+                    Text {
+                        text: Math.round(payWindow.amount).toLocaleString(Qt.locale("ru_RU"), 'f', 0) + " ₽"
+                        color: "#ffffff"
+                        font.pixelSize: 20
+                        font.bold: true
+                        font.italic: true
+                    }
+                }
+
+                Rectangle {
+                    id: payCloseBtn
+                    anchors.right: parent.right
+                    anchors.rightMargin: 16
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 36
+                    height: 36
+                    radius: Theme.radiusSm
+                    color: closeHover.hovered ? "#161616" : "transparent"
+                    border.width: 1
+                    border.color: closeHover.hovered ? "#4d4d4d" : "#1f1f1f"
+
+                    HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: closeHover.hovered ? "#ffffff" : "#6b6b6b"
+                        font.pixelSize: 15
+                        font.bold: true
+                    }
+
+                    TapHandler { onTapped: payWindow.userClose() }
+                }
+
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 1
+                    color: "#1a1a1a"
+                }
             }
 
             // WebView2 фиксирует видимость в момент создания контроллера.
@@ -2588,12 +2954,10 @@ Item {
             // (height: 0). Поэтому создаём WebView только после показа окна.
             Loader {
                 id: payViewLoader
-                anchors.top: payStatusText.bottom
-                anchors.topMargin: 8
+                anchors.top: payHeader.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.bottom: payCloseBtn.top
-                anchors.bottomMargin: 8
+                anchors.bottom: parent.bottom
 
                 active: payWindow.visible
                 sourceComponent: payViewComponent
@@ -2626,18 +2990,16 @@ Item {
                         }
 
                         if (loadRequest.status === WebView.LoadStartedStatus) {
-                            payWindow.statusBanner = "Загрузка: " + u
+                            payWindow.statusBanner = "Загрузка формы ЮKassa…"
                             payWindow.loadError = ""
                         } else if (loadRequest.status === WebView.LoadSucceededStatus) {
-                            payWindow.statusBanner = "Введите данные карты в форме ниже"
+                            payWindow.statusBanner = ""
                             payWindow.loadError = ""
-                            depositPopup.statusText = "Введите данные карты в форме ниже"
                             payWindow.diagnose("load")
                             payDiagLater.restart()
                         } else if (loadRequest.status === WebView.LoadFailedStatus) {
-                            payWindow.loadError = "Не удалось открыть виджет: "
+                            payWindow.loadError = "Не удалось открыть форму оплаты.\n"
                                     + (loadRequest.errorString || "ошибка загрузки")
-                                    + "\n" + u
                             depositPopup.lastError = payWindow.loadError
                             payNavigateRetry.restart()
                         }
@@ -2645,19 +3007,47 @@ Item {
                 }
             }
 
-            Button {
-                id: payCloseBtn
-                anchors.horizontalCenter: parent.horizontalCenter
+            // Заставка поверх WebView, пока страница ЮKassa грузится, — чтобы не
+            // мигало пустое чёрное окно до появления формы. Скрывается по загрузке.
+            Rectangle {
+                id: payLoadingCover
+                anchors.top: payHeader.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                text: "Закрыть"
-                onClicked: {
-                    // Кнопка «Закрыть» не вызывает onClosing — синхронизируем явно.
-                    if (!payWindow.paymentCompleted && depositPopup.paymentId.length > 0
-                            && typeof NetworkManager !== "undefined") {
-                        NetworkManager.syncTopUpPayment(depositPopup.paymentId)
+                color: Theme.bgPanel
+                visible: payWindow.loadError.length > 0
+                         || (payWindow.statusBanner.length > 0 && !payWindow.paymentCompleted)
+
+                Column {
+                    anchors.centerIn: parent
+                    spacing: 14
+                    width: parent.width - 80
+
+                    BusyIndicator {
+                        visible: payWindow.loadError.length === 0
+                        running: visible
+                        anchors.horizontalCenter: parent.horizontalCenter
                     }
-                    payWindow.closePayment()
-                    depositPopup.close()
+                    Text {
+                        text: payWindow.loadError.length > 0
+                              ? payWindow.loadError
+                              : "ЗАГРУЗКА ФОРМЫ"
+                        color: payWindow.loadError.length > 0 ? "#f87171" : accentColor
+                        font.pixelSize: payWindow.loadError.length > 0 ? 13 : 10
+                        font.bold: true
+                        font.italic: true
+                        font.letterSpacing: payWindow.loadError.length > 0 ? 0 : 2
+                        width: parent.width
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.WordWrap
+                    }
+                    Button {
+                        visible: payWindow.loadError.length > 0
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Закрыть"
+                        onClicked: payWindow.userClose()
+                    }
                 }
             }
         }
@@ -2665,7 +3055,7 @@ Item {
 
     Popup {
         id: steamLimitAlertPopup; width: 600; height: 380; anchors.centerIn: parent; modal: true
-        background: Rectangle { color: "#0a0505"; border.color: accentColor; radius: 8 }
+        background: Rectangle { color: "#0a0505"; border.color: accentColor; radius: Theme.radiusSm }
         property string targetExe: ""; property string targetArgs: ""
         ColumnLayout {
             anchors.fill: parent; anchors.margins: 30; spacing: 15
@@ -2710,9 +3100,12 @@ Item {
             pinError = ""
             open()
 
-            var baseUrl = "http://192.168.222.2:22222"
-            if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined')
-                baseUrl = NetworkManager.serverUrl
+            var baseUrl = dashboardRoot.apiBase()
+            if (baseUrl.length === 0) {
+                pinLoading = false
+                pinError = "Адрес сервера не задан в config.ini"
+                return
+            }
             var pcId = parseInt(dashboardRoot.termId)
             if (!pcId) {
                 pinLoading = false
@@ -2758,7 +3151,7 @@ Item {
         background: Rectangle {
             color: "#0a0505"
             border.color: accentColor
-            radius: 10
+            radius: Theme.radiusSm
         }
         ColumnLayout {
             anchors.fill: parent
@@ -2899,7 +3292,7 @@ Item {
         background: Rectangle {
             color: "#0a0505"
             border.color: Theme.dangerStrong
-            radius: 10
+            radius: Theme.radiusSm
         }
 
         function sendReason(code, label) {
@@ -3048,7 +3441,7 @@ Item {
         background: Rectangle {
             color: "#0a0505"
             border.color: accountChoicePopup.brandColor
-            radius: 10
+            radius: Theme.radiusSm
         }
         ColumnLayout {
             anchors.fill: parent
@@ -3189,7 +3582,7 @@ Item {
         background: Rectangle {
             color: "#0a0505"
             border.color: clubBusyHintPopup.brandColor
-            radius: 10
+            radius: Theme.radiusSm
         }
         ColumnLayout {
             anchors.fill: parent

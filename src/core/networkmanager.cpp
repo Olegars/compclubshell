@@ -53,7 +53,7 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
     QSettings settings(m_configFilePath, QSettings::IniFormat);
     QString apiIp = settings.value("Network/api_ip", "192.168.222.2").toString().trimmed();
     QString apiPort = settings.value("Network/api_port", "22222").toString().trimmed();
-    m_serverUrl = "http://" + apiIp + ":" + apiPort;
+    m_serverUrl = buildServerUrl(apiIp, apiPort);
 
     m_cachePath = "C:/ShellVideo/Cache/";
     QDir().mkpath(m_cachePath);
@@ -68,6 +68,59 @@ bool NetworkManager::isPcRegistered() const {
 
 QString NetworkManager::serverUrl() const {
     return m_serverUrl;
+}
+
+QString NetworkManager::buildServerUrl(const QString &rawHost, const QString &rawPort)
+{
+    QString host = rawHost.trimmed();
+    QString port = rawPort.trimmed();
+
+    if (host.isEmpty())
+        return QString();
+
+    // Схему разрешаем писать прямо в api_ip: "https://0451.space".
+    QString scheme;
+    const int schemeSep = host.indexOf(QStringLiteral("://"));
+    if (schemeSep > 0) {
+        scheme = host.left(schemeSep).toLower();
+        host = host.mid(schemeSep + 3);
+    }
+
+    // К serverUrl везде дописываются пути вида "/api/...", поэтому хвост
+    // ("0451.space/" или "0451.space/api") нужно отбросить.
+    const int slash = host.indexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        host = host.left(slash);
+
+    // Порт, записанный в адресе, приоритетнее api_port. IPv6 в конфиге не
+    // используется, поэтому достаточно последнего двоеточия.
+    const int colon = host.lastIndexOf(QLatin1Char(':'));
+    if (colon > 0) {
+        bool numeric = false;
+        const QString tail = host.mid(colon + 1);
+        tail.toInt(&numeric);
+        if (numeric) {
+            port = tail;
+            host = host.left(colon);
+        }
+    }
+
+    if (host.isEmpty())
+        return QString();
+
+    if (scheme.isEmpty())
+        scheme = (port == QLatin1String("443")) ? QStringLiteral("https") : QStringLiteral("http");
+
+    // Стандартный порт в адресе не нужен: он ломает сравнение origin
+    // (например, в CORS и в secure-origin флаге WebView2).
+    const bool defaultPort = port.isEmpty()
+            || (scheme == QLatin1String("https") && port == QLatin1String("443"))
+            || (scheme == QLatin1String("http") && port == QLatin1String("80"));
+
+    QString url = scheme + QStringLiteral("://") + host;
+    if (!defaultPort)
+        url += QLatin1Char(':') + port;
+    return url;
 }
 
 QString NetworkManager::getMachineHwid() const
