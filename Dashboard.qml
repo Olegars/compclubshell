@@ -3,7 +3,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Effects
+import QtQuick.Window
 import Qt5Compat.GraphicalEffects
+import QtWebView
+import sector0451
 
 Item {
     id: dashboardRoot
@@ -17,8 +20,16 @@ Item {
 
     // Данные текущей сессии пользователя
     property string userName: (typeof root !== 'undefined') ? root.sessionUser : "PLAYER_1"
-    property real userBalance: (typeof root !== 'undefined') ? root.sessionBalance : 0.0
+    property real userBalance: (typeof root !== 'undefined' && root !== null) ? root.sessionBalance : 0.0
     property string timeRemaining: (typeof root !== 'undefined') ? root.sessionTime : "00:00:00"
+
+    // Keep display balance bound to Main.sessionBalance (checkout must not break this).
+    Binding {
+        target: dashboardRoot
+        property: "userBalance"
+        value: (typeof root !== 'undefined' && root !== null) ? root.sessionBalance : 0.0
+        when: typeof root !== 'undefined' && root !== null
+    }
 
     property int termId: (typeof root !== 'undefined' && root !== null) ? root.terminalId : 0
     property string pcType: (typeof root !== 'undefined' && root !== null) ? root.pcTypeFromDatabase : "standard"
@@ -32,8 +43,9 @@ Item {
                                (pcType.toLowerCase() === "vip") ? "VIP ZONE" :
                                (isProBootcamp ? "PRO BOOTCAMP ZONE" : "STANDARD ZONE")
 
-    property string accentColor: isProBootcamp ? "#a855f7" : "#22c55e"
-    property string darkBg: "#030704"
+    // Палитра живёт в Theme (акцент зоны единый для логина, загрузки и дашборда)
+    readonly property color accentColor: Theme.accent
+    readonly property color darkBg: Theme.bgDeep
     property string currentLanguage: "RU"
 
     // Выбор личного / клубного аккаунта перед запуском любой игры
@@ -93,6 +105,19 @@ Item {
         }
         if (typeof gamesModel !== "undefined" && gamesModel)
             gamesModel.setSearchQuery("")
+    }
+
+    // "HH:MM:SS" -> секунды; -1 если строку разобрать не удалось
+    function sessionSecondsLeft(hhmmss) {
+        var parts = String(hhmmss || "").split(":")
+        if (parts.length < 2)
+            return -1
+        var h = parseInt(parts[0], 10)
+        var m = parseInt(parts[1], 10)
+        var s = (parts.length > 2) ? parseInt(parts[2], 10) : 0
+        if (isNaN(h) || isNaN(m) || isNaN(s))
+            return -1
+        return h * 3600 + m * 60 + s
     }
 
     function launchQuickClient(paths) {
@@ -532,7 +557,7 @@ Item {
                 Text {
                     text: "ИГРА НА ПАУЗЕ ОВЕРЛЕЯ"
                     color: accentColor
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     font.bold: true
                     font.letterSpacing: 1.5
                     opacity: 0.7
@@ -541,7 +566,7 @@ Item {
                     text: (typeof Launcher !== "undefined" && Launcher.gameTitle)
                           ? ("Сессия: " + Launcher.gameTitle)
                           : "Игровая сессия активна"
-                    color: "#e5e5e5"
+                    color: Theme.textBody
                     font.pixelSize: 13
                     elide: Text.ElideRight
                     Layout.fillWidth: true
@@ -598,7 +623,7 @@ Item {
         radius: 6
         color: "#0a0c05"
         border.color: (typeof root !== "undefined" && root.orderStatusCode === "cooking")
-                      ? "#facc15" : "#eab308"
+                      ? Theme.warning : Theme.shop
         border.width: 1
         opacity: dashboardRoot.showOrderContents ? 1.0 : 0.0
         visible: opacity > 0.01
@@ -629,7 +654,7 @@ Item {
                 Text {
                     text: "ВАШ ЗАКАЗ"
                     color: orderContentsPanel.border.color
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontCaption
                     font.bold: true
                     font.letterSpacing: 1.5
                     anchors.verticalCenter: parent.verticalCenter
@@ -638,8 +663,8 @@ Item {
                 Text {
                     text: (typeof root !== "undefined") ? root.orderStatusText : ""
                     color: (typeof root !== "undefined" && root.orderStatusCode === "cooking")
-                           ? "#facc15" : "#f59e0b"
-                    font.pixelSize: 9
+                           ? Theme.warning : "#f59e0b"
+                    font.pixelSize: Theme.fontCaption
                     font.bold: true
                     elide: Text.ElideRight
                     width: Math.max(40, orderContentsCol.width - 120)
@@ -655,7 +680,7 @@ Item {
                     spacing: 6
                     Text {
                         text: (modelData.name || "") + (modelData.qty > 1 ? (" ×" + modelData.qty) : "")
-                        color: "#e5e5e5"
+                        color: Theme.textBody
                         font.pixelSize: 12
                         elide: Text.ElideRight
                         width: parent.width - priceLbl.width - 8
@@ -665,7 +690,7 @@ Item {
                         text: (typeof modelData.price === "number"
                                ? modelData.price.toFixed(0)
                                : modelData.price) + " ₽"
-                        color: "#a3a3a3"
+                        color: Theme.textSecondary
                         font.pixelSize: 11
                         font.family: "Monospace"
                     }
@@ -683,7 +708,7 @@ Item {
                 visible: typeof root !== "undefined" && root.orderItemsTotal > 0
                 text: "ИТОГО: " + (typeof root !== "undefined"
                                    ? root.orderItemsTotal.toFixed(0) : "0") + " ₽"
-                color: "#facc15"
+                color: Theme.warning
                 font.pixelSize: 12
                 font.bold: true
                 anchors.right: parent.right
@@ -720,8 +745,8 @@ Item {
                     z: 100
                     color: sosMouse.pressed
                            ? "#991b1b"
-                           : (sosMouse.containsMouse ? "#dc2626" : "#450a0a")
-                    border.color: "#dc2626"
+                           : (sosMouse.containsMouse ? Theme.dangerStrong : "#450a0a")
+                    border.color: Theme.dangerStrong
                     border.width: 1
                     scale: sosMouse.pressed ? 0.94 : (sosMouse.containsMouse ? 1.04 : 1.0)
                     opacity: sosMouse.pressed ? 0.9 : 1.0
@@ -755,7 +780,7 @@ Item {
                         Layout.alignment: Qt.AlignLeft
                         spacing: 8
                         Rectangle { width: 6; height: 6; radius: 3; color: accentColor; anchors.verticalCenter: parent.verticalCenter }
-                        Text { text: "LATENCY (EU): " + (typeof NetworkManager !== 'undefined' ? NetworkManager.getLatency("162.249.72.1") : 24) + " MS"; color: accentColor; font.pixelSize: 9; font.bold: true; opacity: 0.5 }
+                        Text { text: "LATENCY (EU): " + (typeof NetworkManager !== 'undefined' ? NetworkManager.getLatency("162.249.72.1") : 24) + " MS"; color: accentColor; font.pixelSize: Theme.fontCaption; font.bold: true; opacity: 0.8 }
                     }
 
                     Rectangle {
@@ -768,16 +793,28 @@ Item {
                     Column {
                         Layout.fillWidth: true
                         spacing: 5
-                        Text { text: "ПОЛЬЗОВАТЕЛЬ"; color: accentColor; font.pixelSize: 10; opacity: 0.7 }
-                        Text { text: dashboardRoot.userName; color: "white"; font.pixelSize: 28; font.bold: true }
+                        Text { text: "ПОЛЬЗОВАТЕЛЬ"; color: accentColor; font.pixelSize: Theme.fontCaption; opacity: 0.7 }
+                        Text { text: dashboardRoot.userName; color: Theme.textPrimary; font.pixelSize: Theme.fontHeading; font.bold: true }
                         Item { height: 10; width: 1 }
-                        Text { text: "ОСТАЛОСЬ ВРЕМЕНИ"; color: accentColor; font.pixelSize: 10; opacity: 0.7 }
-                        Text { text: dashboardRoot.timeRemaining; color: "white"; font.pixelSize: 52; font.family: "Monospace"; font.bold: true }
-                        Text { text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"; color: "#a3a3a3"; font.pixelSize: 18 }
+                        Text { text: "ОСТАЛОСЬ ВРЕМЕНИ"; color: accentColor; font.pixelSize: Theme.fontCaption; opacity: 0.7 }
+                        Text {
+                            text: dashboardRoot.timeRemaining
+                            font.pixelSize: Theme.fontHero
+                            font.family: "Monospace"
+                            font.bold: true
+                            // < 5 мин — красный, < 15 мин — жёлтый
+                            readonly property int secondsLeft: dashboardRoot.sessionSecondsLeft(dashboardRoot.timeRemaining)
+                            // secondsLeft <= 0 — данных ещё нет / сессия закончилась
+                            color: (secondsLeft <= 0) ? Theme.textPrimary
+                                   : (secondsLeft < 300 ? Theme.danger
+                                      : (secondsLeft < 900 ? Theme.warning : Theme.textPrimary))
+                            Behavior on color { ColorAnimation { duration: 250 } }
+                        }
+                        Text { text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"; color: Theme.textSecondary; font.pixelSize: 18 }
                     }
 
                     Item { Layout.fillHeight: true }
-                    Text { text: "БЫСТРЫЙ ЗАПУСК ПЛАТФОРМ"; color: accentColor; font.pixelSize: 10; font.bold: true; font.letterSpacing: 2; opacity: 0.6; Layout.alignment: Qt.AlignHCenter }
+                    Text { text: "БЫСТРЫЙ ЗАПУСК ПЛАТФОРМ"; color: accentColor; font.pixelSize: Theme.fontCaption; font.bold: true; font.letterSpacing: 2; opacity: 0.6; Layout.alignment: Qt.AlignHCenter }
 
                     GridLayout {
                         columns: 3
@@ -921,7 +958,7 @@ Item {
                             id: storeActionBtn
                             text: "МАГАЗИН"
                             icon: "🛒"
-                            baseColor: "#eab308"
+                            baseColor: Theme.shop
                             isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
                             orderIsFinished: (typeof root !== 'undefined'
                                               && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
@@ -939,7 +976,7 @@ Item {
                                 storePopup.open()
                             }
                         }
-                        ActionBtn { text: "ПОПОЛНИТЬ БАЛАНС"; icon: "💳"; baseColor: "#eab308"; onClicked: depositPopup.open() }
+                        ActionBtn { text: "ПОПОЛНИТЬ БАЛАНС"; icon: "💳"; baseColor: Theme.shop; onClicked: depositPopup.open() }
                         ActionBtn {
                             text: "ОТОЙТИ (ПАУЗА)"
                             icon: "⏳"
@@ -1027,9 +1064,25 @@ Item {
                                         anchors.verticalCenter: parent.verticalCenter
                                         Rectangle { width: (customSlider.value / 100) * parent.width; height: parent.height; color: accentColor; radius: 2 }
                                     }
-                                    Rectangle { id: handleItem; x: (customSlider.value / 100) * (parent.width - width); anchors.verticalCenter: parent.verticalCenter; width: 10; height: 10; radius: 5; color: "white" }
+                                    Rectangle {
+                                        id: handleItem
+                                        x: (customSlider.value / 100) * (parent.width - width)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 16
+                                        height: 16
+                                        radius: 8
+                                        color: "white"
+                                        border.width: (volumeArea.containsMouse || volumeArea.isDragging) ? 2 : 0
+                                        border.color: accentColor
+                                        scale: volumeArea.isDragging ? 1.15 : (volumeArea.containsMouse ? 1.08 : 1.0)
+                                        Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                                        Behavior on border.width { NumberAnimation { duration: 100 } }
+                                    }
                                     MouseArea {
+                                        id: volumeArea
                                         anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
                                         property bool isDragging: false
                                         function updateVolume(mx) {
                                             var pct = Math.max(0, Math.min(1, mx / width))
@@ -1044,13 +1097,15 @@ Item {
                             }
                             Item { Layout.fillWidth: true }
                             Rectangle {
-                                width: 35
-                                height: 22
-                                color: "#111"
-                                border.color: "#333"
-                                radius: 3
-                                Text { anchors.centerIn: parent; text: dashboardRoot.currentLanguage; color: "white"; font.pixelSize: 11; font.bold: true }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { dashboardRoot.currentLanguage = (dashboardRoot.currentLanguage === "RU") ? "EN" : "RU"; if (typeof Launcher !== 'undefined') Launcher.toggleSystemLanguage(); } }
+                                width: 44
+                                height: 32
+                                color: langMouse.containsMouse ? "#1a1a1a" : "#111"
+                                border.color: langMouse.containsMouse ? accentColor : "#333"
+                                radius: 4
+                                Behavior on color { ColorAnimation { duration: 120 } }
+                                Behavior on border.color { ColorAnimation { duration: 120 } }
+                                Text { anchors.centerIn: parent; text: dashboardRoot.currentLanguage; color: "white"; font.pixelSize: 12; font.bold: true }
+                                MouseArea { id: langMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { dashboardRoot.currentLanguage = (dashboardRoot.currentLanguage === "RU") ? "EN" : "RU"; if (typeof Launcher !== 'undefined') Launcher.toggleSystemLanguage(); } }
                             }
                             Text {
                                 id: sysClock
@@ -1099,12 +1154,17 @@ Item {
                         model: ["ВСЕ ИГРЫ", "STEAM", "EPIC", "EA", "RIOT", "БРАУЗЕРЫ", "УТИЛИТЫ"]
                         delegate: Text {
                             text: modelData
-                            color: filterRow.activeTab === modelData ? accentColor : "#666666"
+                            color: filterRow.activeTab === modelData
+                                   ? accentColor
+                                   : (filterTabMouse.containsMouse ? "#cccccc" : Theme.textMuted)
                             font.pixelSize: 16
                             font.bold: true
                             font.letterSpacing: 1
+                            Behavior on color { ColorAnimation { duration: 120 } }
                             MouseArea {
+                                id: filterTabMouse
                                 anchors.fill: parent
+                                hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     filterRow.activeTab = modelData
@@ -1119,9 +1179,9 @@ Item {
                 Rectangle {
                     id: gameSearchBox
                     Layout.preferredWidth: 220
-                    Layout.preferredHeight: 30
+                    Layout.preferredHeight: 40
                     Layout.alignment: Qt.AlignVCenter
-                    color: gameSearchInput.activeFocus ? "#08120a" : "#0a0a0a"
+                    color: gameSearchInput.activeFocus ? Theme.accentSurface : Theme.bgPanel
                     border.color: gameSearchInput.activeFocus ? accentColor : "#1a1a1a"
                     border.width: gameSearchInput.activeFocus ? 2 : 1
                     radius: 4
@@ -1163,7 +1223,7 @@ Item {
                         anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
                         text: "✕"
-                        color: gameSearchClearArea.containsMouse ? accentColor : "#666666"
+                        color: gameSearchClearArea.containsMouse ? accentColor : Theme.textMuted
                         font.pixelSize: 12
                         visible: gameSearchInput.text.length > 0
                         MouseArea {
@@ -1189,9 +1249,17 @@ Item {
                 spacing: 8
 
                 readonly property int cardW: 230
-                readonly property int cardH: 320
+                // Высота подобрана так, чтобы область постера была 2:3 (вертикальные
+                // обложки влезают целиком без обрезки и без искажения пропорций)
+                readonly property int cardH: 380
+                readonly property int cardTitleH: 45
+                // Реальный размер области постера — для sourceSize (экономия памяти)
+                readonly property int posterW: cardW - 20
+                readonly property int posterH: cardH - 20 - cardTitleH
                 readonly property int featuredCaptionH: 22
-                readonly property int featuredBorderPad: 4
+                readonly property int featuredBorderPad: 6
+                // Extra px so white contour AA is not clipped by the row bounds
+                readonly property int featuredOutlineBleed: 2
                 readonly property bool featuredStripVisible:
                     (typeof gamesModel !== 'undefined' && gamesModel
                      && gamesModel.featuredCount > 0)
@@ -1272,54 +1340,82 @@ Item {
                         readonly property string cardExePath: model.exePath || ""
                         readonly property string cardArgs: model.args || ""
 
+                        // Frame holds poster + title; outline lives on the title button only
                         Rectangle {
+                            id: cardFrame
                             anchors.fill: parent
                             anchors.margins: 10
-                            color: "#0a0a0a"
+                            color: Theme.bgPanel
                             radius: 6
-                            border.width: cardArea.containsMouse ? 2 : 1
-                            border.color: cardArea.containsMouse ? accentColor : "#1a1a1a"
-                            clip: true
+                            border.width: 0
+                            // Заблокированный запуск (идёт вход / оверлей) — плитка гаснет
+                            opacity: cardArea.enabled ? 1.0 : 0.45
+                            Behavior on opacity { NumberAnimation { duration: 150 } }
 
-                            Column {
+                            Item {
+                                id: cardBody
                                 anchors.fill: parent
+                                clip: true
 
-                                Image {
-                                    id: posterImg
-                                    width: parent.width
-                                    height: parent.height - 45
-                                    // Unique URL per gameId keeps poster tied to title
-                                    source: cardRoot.cardPoster.length
-                                            ? (gamesGridHost.posterUrl(cardRoot.cardPoster)
-                                               + (cardRoot.cardPoster.indexOf("?") >= 0 ? "&" : "?")
-                                               + "gid=" + cardRoot.cardGameId)
-                                            : ""
-                                    fillMode: Image.PreserveAspectCrop
-                                    asynchronous: true
-                                    cache: false
-                                    opacity: (status === Image.Ready)
-                                             ? (cardArea.containsMouse ? 1.0 : 0.7) : 0.0
-                                }
+                                Column {
+                                    anchors.fill: parent
 
-                                Rectangle {
-                                    width: parent.width
-                                    height: 45
-                                    color: cardArea.containsMouse ? accentColor : "#050505"
-                                    Text {
-                                        anchors.centerIn: parent
-                                        width: parent.width - 12
-                                        elide: Text.ElideRight
-                                        horizontalAlignment: Text.AlignHCenter
-                                        text: cardRoot.cardTitle
-                                        color: cardArea.containsMouse ? "black" : "white"
-                                        font.bold: true
+                                    Image {
+                                        id: posterImg
+                                        width: parent.width
+                                        height: parent.height - gamesGridHost.cardTitleH
+                                        // Unique URL per gameId keeps poster tied to title
+                                        source: cardRoot.cardPoster.length
+                                                ? (gamesGridHost.posterUrl(cardRoot.cardPoster)
+                                                   + (cardRoot.cardPoster.indexOf("?") >= 0 ? "&" : "?")
+                                                   + "gid=" + cardRoot.cardGameId)
+                                                : ""
+                                        // Постер вписывается целиком: без обрезки и без искажения
+                                        fillMode: Image.PreserveAspectFit
+                                        asynchronous: true
+                                        cache: true
+                                        // Декодируем под физический размер плитки: не полное
+                                        // разрешение, но и не мыло на 1440p/4K
+                                        sourceSize.width: Theme.px(gamesGridHost.posterW)
+                                        sourceSize.height: Theme.px(gamesGridHost.posterH)
+                                        opacity: (status === Image.Ready)
+                                                 ? (cardArea.containsMouse ? 1.0 : 0.7) : 0.0
+                                    }
+
+                                    Rectangle {
+                                        id: titleBar
+                                        width: parent.width
+                                        height: gamesGridHost.cardTitleH
+                                        color: cardArea.containsMouse ? accentColor : "#050505"
+                                        border.width: cardArea.containsMouse ? 2 : 1
+                                        border.color: cardArea.containsMouse ? accentColor : "#1a1a1a"
+
+                                        Text {
+                                            id: cardTitleText
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.leftMargin: 10
+                                            anchors.rightMargin: 10
+                                            elide: Text.ElideRight
+                                            horizontalAlignment: Text.AlignHCenter
+                                            text: cardRoot.cardTitle
+                                            color: cardArea.containsMouse ? "black" : "white"
+                                            font.bold: true
+                                            // Полное название по ховеру, если оно не влезло
+                                            ToolTip.text: cardRoot.cardTitle
+                                            ToolTip.delay: 400
+                                            ToolTip.visible: truncated && cardArea.containsMouse
+                                        }
                                     }
                                 }
                             }
+
                             MouseArea {
                                 id: cardArea
                                 anchors.fill: parent
                                 hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
                                 enabled: !dashboardRoot.isLaunchBlocked()
                                 onClicked: {
                                     if (dashboardRoot.isLaunchBlocked())
@@ -1343,7 +1439,8 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: visible
                         ? (gamesGridHost.featuredCaptionH + 6
-                           + gamesGridHost.cardH + gamesGridHost.featuredBorderPad * 2)
+                           + gamesGridHost.cardH + gamesGridHost.featuredBorderPad * 2
+                           + gamesGridHost.featuredOutlineBleed * 2)
                         : 0
 
                     Text {
@@ -1366,8 +1463,9 @@ Item {
                     Rectangle {
                         id: featuredOutline
                         anchors.top: featuredCaption.bottom
-                        anchors.topMargin: 6
+                        anchors.topMargin: 6 + gamesGridHost.featuredOutlineBleed
                         anchors.left: parent.left
+                        anchors.leftMargin: gamesGridHost.featuredOutlineBleed
                         width: gamesGridHost.featuredCount * gamesGridHost.cardW
                                + gamesGridHost.featuredBorderPad * 2
                         height: gamesGridHost.cardH + gamesGridHost.featuredBorderPad * 2
@@ -1376,14 +1474,18 @@ Item {
                         border.width: 1
                         border.color: "white"
                         radius: 8
+                        // Don't clip — stroke must paint fully at rounded corners
+                        clip: false
                     }
 
                     Row {
                         id: firstRowCards
                         anchors.top: featuredCaption.bottom
-                        anchors.topMargin: 6 + gamesGridHost.featuredBorderPad
+                        anchors.topMargin: 6 + gamesGridHost.featuredOutlineBleed
+                                           + gamesGridHost.featuredBorderPad
                         anchors.left: parent.left
-                        anchors.leftMargin: gamesGridHost.featuredBorderPad
+                        anchors.leftMargin: gamesGridHost.featuredOutlineBleed
+                                            + gamesGridHost.featuredBorderPad
                         height: gamesGridHost.cardH
                         spacing: 0
                         z: 1
@@ -1404,8 +1506,51 @@ Item {
                     clip: true
                     model: gamesModel
                     boundsBehavior: Flickable.StopAtBounds
-                    reuseItems: false
+                    reuseItems: true
+                    visible: !gamesEmptyState.visible
                     delegate: gameCardDelegate
+                }
+
+                // Пустое состояние библиотеки: разделяем «поиск/фильтр без результата» и «ничего не загрузилось»
+                Item {
+                    id: gamesEmptyState
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: (typeof gamesModel !== 'undefined' && gamesModel)
+                             ? gamesModel.count === 0 : false
+
+                    readonly property bool isFiltered:
+                        gameSearchInput.text.length > 0 || filterRow.activeTab !== "ВСЕ ИГРЫ"
+
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 10
+
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: gamesEmptyState.isFiltered ? "🔍" : "🎮"
+                            font.pixelSize: 44
+                            opacity: 0.35
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: gamesEmptyState.isFiltered ? "Игры не найдены" : "Библиотека пуста"
+                            color: "#8a8a8a"
+                            font.pixelSize: 20
+                            font.bold: true
+                            font.letterSpacing: 1
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: gamesEmptyState.isFiltered
+                                  ? (gameSearchInput.text.length > 0
+                                     ? "Измените запрос"
+                                     : "Выберите другую категорию")
+                                  : "Проверьте соединение"
+                            color: "#555555"
+                            font.pixelSize: 14
+                        }
+                    }
                 }
             }
         }
@@ -1421,7 +1566,7 @@ Item {
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
             color: "#050505"
-            border.color: "#eab308"
+            border.color: Theme.shop
             border.width: 2
             radius: 12
         }
@@ -1437,16 +1582,16 @@ Item {
                 Column {
                     Text {
                         text: "REACTOR MARKET"
-                        color: "#eab308"
+                        color: Theme.shop
                         font.pixelSize: 36
                         font.bold: true
                         font.italic: true
                     }
                     Text {
                         text: "СНАРЯЖЕНИЕ И ПРОВИЗИЯ ДЛЯ РЕЙДА"
-                        color: "#eab308"
+                        color: Theme.shop
                         opacity: 0.5
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontCaption
                         font.letterSpacing: 4
                     }
                 }
@@ -1489,7 +1634,7 @@ Item {
                         width: 120
                         height: 38
                         radius: 6
-                        color: filterCatRow.activeCat === modelData.name ? "#eab308" : "#111"
+                        color: filterCatRow.activeCat === modelData.name ? Theme.shop : "#111"
 
                         Text {
                             anchors.centerIn: parent
@@ -1527,7 +1672,7 @@ Item {
                     delegate: Rectangle {
                         width: storeGrid.cellWidth - 15
                         height: storeGrid.cellHeight - 15
-                        color: "#0a0a0a"
+                        color: Theme.bgPanel
                         radius: 10
                         opacity: model.stock > 0 ? 1.0 : 0.35
 
@@ -1547,6 +1692,9 @@ Item {
                                     anchors.margins: 5
                                     fillMode: Image.PreserveAspectFit
                                     asynchronous: true
+                                    // Декодируем под видимую область картинки товара, а не в полном разрешении
+                                    sourceSize.width: Theme.px(storeGrid.cellWidth - 55)
+                                    sourceSize.height: Theme.px(130)
                                     source: {
                                         var imgUrl = model.image || ""
                                         if (imgUrl === "")
@@ -1583,7 +1731,7 @@ Item {
 
                                 Text {
                                     text: parseFloat(model.price || 0).toFixed(0) + " ₽"
-                                    color: "#eab308"
+                                    color: Theme.shop
                                     font.pixelSize: 22
                                     font.bold: true
                                 }
@@ -1595,7 +1743,7 @@ Item {
                                     width: 44
                                     height: 44
                                     radius: 8
-                                    color: itemMouse.containsMouse ? "#ffffff" : "#eab308"
+                                    color: itemMouse.containsMouse ? "#ffffff" : Theme.shop
 
                                     Text {
                                         anchors.centerIn: parent
@@ -1614,13 +1762,36 @@ Item {
                             }
                         }
                     }
+
+                    // Пустая витрина. Элемент лежит в contentItem, поэтому центрируем
+                    // вручную по видимой области (скроллить всё равно нечего).
+                    Column {
+                        visible: storeGrid.count === 0
+                        x: (storeGrid.width - width) / 2
+                        y: (storeGrid.height - height) / 2
+                        spacing: 8
+
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "📦"
+                            font.pixelSize: 40
+                            opacity: 0.35
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "Товары не найдены"
+                            color: "#8a8a8a"
+                            font.pixelSize: 18
+                            font.bold: true
+                        }
+                    }
                 }
 
                 Rectangle {
                     id: cartBoxContainer
                     Layout.preferredWidth: 400
                     Layout.fillHeight: true
-                    color: "#0a0a0a"
+                    color: Theme.bgPanel
                     border.color: "#1c1c1c"
                     radius: 8
 
@@ -1665,7 +1836,7 @@ Item {
                                         }
                                         Text {
                                             text: (model.price * model.quantity).toFixed(0) + " ₽"
-                                            color: "#eab308"
+                                            color: Theme.shop
                                         }
                                     }
 
@@ -1730,7 +1901,7 @@ Item {
                             Layout.fillWidth: true
                             Layout.preferredHeight: 55
                             radius: 8
-                            color: cartModel.count > 0 ? "#eab308" : "#222"
+                            color: cartModel.count > 0 ? Theme.shop : "#222"
 
                             Text {
                                 anchors.centerIn: parent
@@ -1817,9 +1988,11 @@ Item {
                                                                 parseInt(dashboardRoot.termId) || root.terminalId,
                                                                 root.trackedOrderId)
                                             }
-                                            dashboardRoot.userBalance = lastBalance
                                         } else {
                                             console.error("[SHOP] checkout failed:", lastError)
+                                            storeToast.show("Не удалось оформить заказ"
+                                                            + (String(lastError).length > 0
+                                                               ? ": " + lastError : ""))
                                         }
                                     }
 
@@ -1878,7 +2051,7 @@ Item {
                                     }
                                     xhr.onerror = function() {
                                         failed++
-                                        lastError = "network error"
+                                        lastError = "нет связи с сервером"
                                         console.error("[SHOP] network error")
                                         pending = 0
                                         finishCheckout()
@@ -1891,47 +2064,601 @@ Item {
                 }
             }
         }
+
+        // Тост ошибок магазина (внутри попапа — иначе его перекроет модальный слой)
+        Rectangle {
+            id: storeToast
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 12
+            width: Math.min(parent.width - 40, storeToastText.implicitWidth + 40)
+            height: 44
+            radius: 8
+            z: 1000
+            visible: opacity > 0
+            opacity: 0
+            color: "#0a0505"
+            border.color: Theme.dangerStrong
+            border.width: 1
+
+            property string message: ""
+
+            function show(msg) {
+                storeToast.message = msg
+                storeToast.opacity = 1
+                storeToastHide.restart()
+            }
+
+            Behavior on opacity { NumberAnimation { duration: 220 } }
+
+            Text {
+                id: storeToastText
+                anchors.centerIn: parent
+                width: Math.min(implicitWidth, storePopup.width - 80)
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignHCenter
+                text: storeToast.message
+                color: "#f5f5f5"
+                font.pixelSize: 14
+                font.bold: true
+            }
+
+            Timer {
+                id: storeToastHide
+                interval: 3000
+                onTriggered: storeToast.opacity = 0
+            }
+        }
     }
 
     Popup {
-        id: depositPopup; width: 500; height: 520; anchors.centerIn: parent; modal: true; focus: true
-        background: Rectangle { color: "#050505"; border.color: "#eab308"; radius: 8 }
-        property string qrSourceUrl: ""
-        property int selectedAmount: 100
-        property bool showQrScreen: false
+        id: depositPopup
+        width: Math.min(520, parent.width * 0.9)
+        height: Math.min(420, parent.height * 0.8)
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle { color: "#050505"; border.color: Theme.shop; radius: 8 }
+
+        property int selectedAmount: 500
+        property bool waitingPayment: false
+        property string statusText: ""
+        property string lastError: ""
+        property string widgetUrl: ""
+        property string paymentId: ""
+
+        onOpened: {
+            depositPopup.waitingPayment = false
+            depositPopup.statusText = ""
+            depositPopup.lastError = ""
+            depositPopup.widgetUrl = ""
+            depositPopup.paymentId = ""
+        }
+
+        onClosed: {
+            depositWaitTimer.stop()
+            if (!payWindow.visible) {
+                depositPopup.waitingPayment = false
+                depositPopup.widgetUrl = ""
+                if (typeof NetworkManager !== "undefined")
+                    NetworkManager.refreshBalance()
+            }
+        }
+
+        Connections {
+            target: typeof NetworkManager !== "undefined" ? NetworkManager : null
+            function onTopUpReady(widgetUrl, paymentId, amount) {
+                depositPopup.waitingPayment = true
+                depositPopup.widgetUrl = widgetUrl
+                depositPopup.paymentId = paymentId
+                depositPopup.statusText = "Открываем форму оплаты…"
+                depositPopup.lastError = ""
+                payWindow.openWithUrl(widgetUrl)
+                if (typeof NetworkManager !== "undefined")
+                    NetworkManager.refreshBalance()
+                // Дальше всё происходит в окне оплаты — попап только мешает,
+                // висит позади и дублирует статус.
+                depositPopup.close()
+            }
+            function onTopUpFailed(message) {
+                depositPopup.waitingPayment = false
+                depositPopup.widgetUrl = ""
+                depositPopup.statusText = ""
+                depositPopup.lastError = message || "Не удалось создать платёж"
+                depositWaitTimer.stop()
+                payWindow.closePayment()
+            }
+            function onBalanceUpdated(balance) {
+                if (!depositPopup.waitingPayment)
+                    return
+                depositPopup.statusText = "Баланс обновлён: " + Number(balance).toFixed(2) + " ₽"
+                payWindow.statusBanner = depositPopup.statusText
+                depositWaitTimer.stop()
+                depositWaitClose.start()
+            }
+        }
+
+        Timer {
+            id: depositWaitTimer
+            interval: 4000
+            repeat: true
+            onTriggered: {
+                if (typeof NetworkManager !== "undefined")
+                    NetworkManager.refreshBalance()
+            }
+        }
+
+        Timer {
+            id: depositWaitClose
+            interval: 1600
+            onTriggered: {
+                payWindow.closePayment()
+                depositPopup.close()
+            }
+        }
 
         ColumnLayout {
-            anchors.fill: parent; anchors.margins: 30; spacing: 20
-            Text { text: "ПОПОЛНЕНИЕ БАЛАНСА"; color: "#eab308"; font.bold: true }
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    text: "ПОПОЛНЕНИЕ БАЛАНСА"
+                    color: Theme.shop
+                    font.bold: true
+                    font.pixelSize: 18
+                    Layout.fillWidth: true
+                }
+                Button {
+                    text: "✕"
+                    flat: true
+                    onClicked: depositPopup.close()
+                }
+            }
+
+            Text {
+                text: depositPopup.waitingPayment
+                      ? (depositPopup.statusText || "Оплата открыта в отдельном окне")
+                      : "Виджет ЮKassa · тестовый режим · только карта"
+                color: Theme.textSecondary
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
             ColumnLayout {
-                visible: !depositPopup.showQrScreen; Layout.fillWidth: true; spacing: 15
+                visible: !depositPopup.waitingPayment
+                Layout.fillWidth: true
+                spacing: 12
+
                 RowLayout {
-                    spacing: 10; Layout.fillWidth: true
+                    spacing: 10
+                    Layout.fillWidth: true
                     Repeater {
                         model: [100, 300, 500, 1000]
                         delegate: Rectangle {
-                            Layout.fillWidth: true; Layout.preferredHeight: 45; radius: 4; color: depositPopup.selectedAmount === modelData ? "#eab308" : "#0d0d0d"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 44
+                            radius: 4
+                            color: depositPopup.selectedAmount === modelData ? Theme.shop : "#0d0d0d"
                             Text { anchors.centerIn: parent; text: modelData + " ₽"; color: "white" }
                             MouseArea { anchors.fill: parent; onClicked: depositPopup.selectedAmount = modelData }
                         }
                     }
                 }
+
+                Text {
+                    visible: depositPopup.lastError.length > 0
+                    text: depositPopup.lastError
+                    color: "#f87171"
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    font.pixelSize: 12
+                }
+
                 Button {
-                    Layout.fillWidth: true; text: "Получить QR-код СБП"
+                    Layout.fillWidth: true
+                    text: "Оплатить картой " + depositPopup.selectedAmount + " ₽"
                     onClicked: {
-                        var baseUrl = "http://192.168.222.2:22222"
-                        if (typeof NetworkManager !== 'undefined' && typeof NetworkManager.serverUrl !== 'undefined') {
-                            baseUrl = NetworkManager.serverUrl
-                        }
-                        depositPopup.qrSourceUrl = baseUrl + "/api/payments/sbp-mock-qr?amount=" + depositPopup.selectedAmount + "&computer_id=" + dashboardRoot.termId
-                        depositPopup.showQrScreen = true
+                        depositPopup.lastError = ""
+                        depositPopup.statusText = "Создаём платёж…"
+                        if (typeof NetworkManager !== "undefined")
+                            NetworkManager.createTopUp(depositPopup.selectedAmount)
+                        else
+                            depositPopup.lastError = "NetworkManager недоступен"
                     }
                 }
             }
+
             ColumnLayout {
-                visible: depositPopup.showQrScreen; Layout.fillWidth: true
-                Rectangle { Layout.alignment: Qt.AlignHCenter; width: 200; height: 220; Image { anchors.fill: parent; source: depositPopup.qrSourceUrl; fillMode: Image.PreserveAspectFit } }
-                Button { Layout.alignment: Qt.AlignHCenter; text: "Назад"; onClicked: depositPopup.showQrScreen = false }
+                visible: depositPopup.waitingPayment
+                Layout.fillWidth: true
+                spacing: 10
+
+                Text {
+                    text: "Форма карты открыта в окне оплаты. Не закрывайте его, пока не завершите платёж."
+                    color: "white"
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                    font.pixelSize: 13
+                }
+
+                Button {
+                    Layout.fillWidth: true
+                    text: "Показать окно оплаты"
+                    onClicked: {
+                        if (depositPopup.widgetUrl.length > 0)
+                            payWindow.openWithUrl(depositPopup.widgetUrl)
+                    }
+                }
+
+                Button {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "Закрыть"
+                    onClicked: {
+                        payWindow.closePayment()
+                        depositPopup.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // Отдельное нативное окно: WebView2 внутри QML Popup даёт «дыру»
+    // (сквозь неё видно рабочий стол / Cursor), потому что HWND не вписывается в оверлей.
+    Window {
+        id: payWindow
+        title: "Оплата · ЮKassa"
+        width: 520
+        height: 720
+        visible: false
+        color: "#050505"
+        flags: Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint
+
+        property string pendingUrl: ""
+        property string statusBanner: ""
+        property string loadError: ""
+        property bool paymentCompleted: false
+
+        property string widgetPageUrl: ""
+        property string widgetOrigin: ""
+
+        function originOf(u) {
+            var s = (u || "").toString()
+            var i = s.indexOf("://")
+            if (i < 0)
+                return ""
+            var j = s.indexOf("/", i + 3)
+            return j < 0 ? s : s.substring(0, j)
+        }
+
+        // Виджет ЮKassa после оплаты уводит окно на return_url, а тот редиректит
+        // дальше по сайту. WebView сообщает только конечный адрес (например
+        // /login), поэтому ловим любой уход со страницы виджета на наш сервер.
+        // Домены ЮKassa и банков (3-D Secure) под это не подпадают.
+        function isPostPaymentUrl(u) {
+            var s = (u || "").toString()
+            if (widgetOrigin.length === 0 || s.length === 0)
+                return false
+            if (s.indexOf(widgetOrigin) !== 0)
+                return false
+            return s.indexOf(widgetPageUrl) !== 0
+        }
+
+        function completePayment(reason) {
+            if (paymentCompleted)
+                return
+            paymentCompleted = true
+            console.log("[PAY] оплата завершена:", reason)
+            // Закрываемся не сразу: сюда попадаем из колбэка WebView, а скрытие
+            // окна уничтожает сам WebView вместе с его нативным HWND. Синхронно
+            // это оставляло пустое окно на экране.
+            payFinishDelay.restart()
+        }
+
+        function finishPaymentNow() {
+            const paymentId = depositPopup.paymentId
+            closePayment()
+
+            depositWaitTimer.stop()
+            depositPopup.waitingPayment = false
+            depositPopup.statusText = ""
+            depositPopup.lastError = ""
+            depositPopup.close()
+
+            // Как «Вернуться» на сайте: дергаем ЮKassa и зачисляем баланс,
+            // если вебхук ещё не успел. refreshBalance внутри sync.
+            if (typeof NetworkManager !== "undefined") {
+                if (paymentId && paymentId.length > 0)
+                    NetworkManager.syncTopUpPayment(paymentId)
+                else
+                    NetworkManager.refreshBalance()
+            }
+            payBalanceRecheck.restart()
+        }
+
+        function isBlankUrl(u) {
+            var s = (u || "").toString()
+            return s.length === 0 || s === "about:blank"
+        }
+
+        function webView() {
+            return payViewLoader.item
+        }
+
+        function openWithUrl(url) {
+            pendingUrl = (url || "").toString()
+            widgetPageUrl = pendingUrl
+            widgetOrigin = originOf(pendingUrl)
+            statusBanner = "Загрузка формы ЮKassa…"
+            loadError = ""
+            paymentCompleted = false
+            visible = true
+            raise()
+            requestActivate()
+            // WebView создаётся Loader'ом уже в видимом окне (см. payViewLoader),
+            // навигация уходит из onLoaded / по таймеру.
+            payNavigateDelay.restart()
+        }
+
+        function closePayment() {
+            payNavigateDelay.stop()
+            payNavigateRetry.stop()
+            payDiagLater.stop()
+            payDiagFinal.stop()
+            payDonePoll.stop()
+            payFinishDelay.stop()
+            pendingUrl = ""
+            statusBanner = ""
+            loadError = ""
+            visible = false
+        }
+
+        function applyPendingUrl() {
+            if (isBlankUrl(pendingUrl)) {
+                loadError = "Пустой URL виджета от сервера"
+                console.log("[PAY] applyPendingUrl: пустой URL")
+                return
+            }
+            var wv = webView()
+            if (!wv) {
+                console.log("[PAY] applyPendingUrl: WebView ещё не создан, ждём")
+                payNavigateDelay.restart()
+                return
+            }
+            statusBanner = "Открываем: " + pendingUrl
+            console.log("[PAY] navigate ->", pendingUrl)
+            wv.url = pendingUrl
+        }
+
+        function diagnose(tag) {
+            var wv = webView()
+            if (!wv)
+                return
+            wv.runJavaScript(
+                "(function(){try{" +
+                "var f=document.getElementById('payment-form');" +
+                "var fr=f?f.querySelector('iframe'):null;" +
+                "var r=fr?fr.getBoundingClientRect():null;" +
+                "var s=document.getElementById('status');" +
+                "return JSON.stringify({" +
+                "href:location.href," +
+                "secure:window.isSecureContext," +
+                "title:document.title," +
+                "bodyLen:(document.body?document.body.innerText.length:-1)," +
+                "hasForm:!!f," +
+                "iframes:document.querySelectorAll('iframe').length," +
+                "iframeSrc:(fr?fr.src.slice(0,90):'none')," +
+                "iframeW:(r?Math.round(r.width):-1)," +
+                "iframeH:(r?Math.round(r.height):-1)," +
+                "ymLoaded:!!window.YooMoneyCheckoutWidget," +
+                "status:(s?s.innerText:'')," +
+                "errors:(window.__payErrors||[])," +
+                "iframeStyle:(fr?(fr.getAttribute('style')||'').slice(0,160):'')," +
+                "formHTML:(f?f.innerHTML.slice(0,300):'')," +
+                "vis:document.visibilityState," +
+                "hasFocus:document.hasFocus()" +
+                "});}catch(e){return 'JSERR:'+e;}})()",
+                function(res) {
+                    console.log("[PAY] diag(" + tag + "):", res)
+                    if (res && res.indexOf('"secure":false') >= 0) {
+                        payWindow.loadError =
+                            "Форма не отрисуется: страница открыта по http (не secure context)."
+                    }
+                })
+        }
+
+        onClosing: function(close) {
+            close.accepted = true
+            // Ручное закрытие (крестик): тоже синхронизируем платёж.
+            if (!paymentCompleted && depositPopup.paymentId.length > 0
+                    && typeof NetworkManager !== "undefined") {
+                NetworkManager.syncTopUpPayment(depositPopup.paymentId)
+            }
+            payNavigateDelay.stop()
+            payDiagLater.stop()
+            payDiagFinal.stop()
+            payDonePoll.stop()
+            payFinishDelay.stop()
+            pendingUrl = ""
+            depositPopup.waitingPayment = false
+            depositWaitTimer.stop()
+            depositPopup.close()
+        }
+
+        Timer {
+            id: payNavigateDelay
+            interval: 250
+            repeat: false
+            onTriggered: payWindow.applyPendingUrl()
+        }
+
+        // Виджет ЮKassa монтируется асинхронно — снимаем состояние ещё раз позже.
+        Timer {
+            id: payDiagLater
+            interval: 4000
+            repeat: false
+            onTriggered: {
+                payWindow.diagnose("after4s")
+                payDiagFinal.restart()
+            }
+        }
+
+        Timer {
+            id: payDiagFinal
+            interval: 6000
+            repeat: false
+            onTriggered: payWindow.diagnose("after10s")
+        }
+
+        Timer {
+            id: payFinishDelay
+            interval: 60
+            repeat: false
+            onTriggered: payWindow.finishPaymentNow()
+        }
+
+        Timer {
+            id: payBalanceRecheck
+            interval: 5000
+            repeat: false
+            onTriggered: {
+                if (typeof NetworkManager !== "undefined")
+                    NetworkManager.refreshBalance()
+            }
+        }
+
+        // Страница-обёртка выставляет window.__payDone в колбэке виджета.
+        // Так окно закрывается сразу после оплаты, не дожидаясь редиректа.
+        Timer {
+            id: payDonePoll
+            interval: 700
+            repeat: true
+            running: payWindow.visible && !payWindow.paymentCompleted
+            onTriggered: {
+                var wv = payWindow.webView()
+                if (!wv)
+                    return
+                wv.runJavaScript(
+                    "(function(){try{return window.__payDone===true}catch(e){return false}})()",
+                    function(done) {
+                        if (done === true)
+                            payWindow.completePayment("колбэк виджета")
+                    })
+            }
+        }
+
+        // Повтор, если после Navigate всё ещё blank (контроллер WebView2 не успел).
+        Timer {
+            id: payNavigateRetry
+            interval: 700
+            repeat: false
+            onTriggered: {
+                if (!payWindow.visible || payWindow.isBlankUrl(payWindow.pendingUrl))
+                    return
+                var wv = payWindow.webView()
+                var cur = wv ? (wv.url || "").toString() : ""
+                if (payWindow.isBlankUrl(cur) || cur !== payWindow.pendingUrl)
+                    payWindow.applyPendingUrl()
+            }
+        }
+
+        Item {
+            anchors.fill: parent
+            anchors.margins: 12
+
+            Text {
+                id: payStatusText
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                text: payWindow.loadError.length > 0 ? payWindow.loadError : payWindow.statusBanner
+                color: payWindow.loadError.length > 0 ? "#f87171" : "#e5e5e5"
+                wrapMode: Text.WrapAnywhere
+                font.pixelSize: 11
+            }
+
+            // WebView2 фиксирует видимость в момент создания контроллера.
+            // Если создать его в скрытом окне, страница навсегда остаётся
+            // document.visibilityState = "hidden", и виджет ЮKassa прячет форму
+            // (height: 0). Поэтому создаём WebView только после показа окна.
+            Loader {
+                id: payViewLoader
+                anchors.top: payStatusText.bottom
+                anchors.topMargin: 8
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: payCloseBtn.top
+                anchors.bottomMargin: 8
+
+                active: payWindow.visible
+                sourceComponent: payViewComponent
+
+                onLoaded: {
+                    console.log("[PAY] WebView создан в видимом окне")
+                    payNavigateDelay.restart()
+                }
+            }
+
+            Component {
+                id: payViewComponent
+
+                WebView {
+                    // Не задаём url здесь — только через applyPendingUrl(), иначе
+                    // LoadSucceeded на about:blank помечает оплату как «готовую».
+
+                    onLoadingChanged: function(loadRequest) {
+                        var u = (loadRequest.url || url || "").toString()
+                        console.log("[PAY] loadingChanged status =", loadRequest.status,
+                                    "url =", u, "err =", loadRequest.errorString)
+                        if (payWindow.isBlankUrl(u))
+                            return
+
+                        // Страховка на случай, если колбэк не сработал: после оплаты
+                        // виджет уводит окно на сайт — там уже нечего показывать.
+                        if (payWindow.isPostPaymentUrl(u)) {
+                            payWindow.completePayment("уход со страницы виджета: " + u)
+                            return
+                        }
+
+                        if (loadRequest.status === WebView.LoadStartedStatus) {
+                            payWindow.statusBanner = "Загрузка: " + u
+                            payWindow.loadError = ""
+                        } else if (loadRequest.status === WebView.LoadSucceededStatus) {
+                            payWindow.statusBanner = "Введите данные карты в форме ниже"
+                            payWindow.loadError = ""
+                            depositPopup.statusText = "Введите данные карты в форме ниже"
+                            payWindow.diagnose("load")
+                            payDiagLater.restart()
+                        } else if (loadRequest.status === WebView.LoadFailedStatus) {
+                            payWindow.loadError = "Не удалось открыть виджет: "
+                                    + (loadRequest.errorString || "ошибка загрузки")
+                                    + "\n" + u
+                            depositPopup.lastError = payWindow.loadError
+                            payNavigateRetry.restart()
+                        }
+                    }
+                }
+            }
+
+            Button {
+                id: payCloseBtn
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                text: "Закрыть"
+                onClicked: {
+                    // Кнопка «Закрыть» не вызывает onClosing — синхронизируем явно.
+                    if (!payWindow.paymentCompleted && depositPopup.paymentId.length > 0
+                            && typeof NetworkManager !== "undefined") {
+                        NetworkManager.syncTopUpPayment(depositPopup.paymentId)
+                    }
+                    payWindow.closePayment()
+                    depositPopup.close()
+                }
             }
         }
     }
@@ -2049,7 +2776,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 horizontalAlignment: Text.AlignHCenter
-                color: "#e5e5e5"
+                color: Theme.textBody
                 font.pixelSize: 15
                 lineHeight: 1.35
                 text: "Сохраните пин код для входа после перезагрузки"
@@ -2057,8 +2784,8 @@ Item {
             Text {
                 Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
-                color: rebootConfirmPopup.pinError !== "" ? "#ef4444"
-                       : (rebootConfirmPopup.pinReady ? accentColor : "#a3a3a3")
+                color: rebootConfirmPopup.pinError !== "" ? Theme.danger
+                       : (rebootConfirmPopup.pinReady ? accentColor : Theme.textSecondary)
                 font.pixelSize: rebootConfirmPopup.pinReady ? 42 : 16
                 font.bold: true
                 font.letterSpacing: rebootConfirmPopup.pinReady ? 10 : 1
@@ -2070,7 +2797,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 horizontalAlignment: Text.AlignHCenter
-                color: "#a3a3a3"
+                color: Theme.textSecondary
                 font.pixelSize: 14
                 lineHeight: 1.3
                 text: "Перезагрузить компьютер?"
@@ -2171,7 +2898,7 @@ Item {
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
             color: "#0a0505"
-            border.color: "#dc2626"
+            border.color: Theme.dangerStrong
             radius: 10
         }
 
@@ -2192,7 +2919,7 @@ Item {
 
             Text {
                 text: "SOS"
-                color: "#dc2626"
+                color: Theme.dangerStrong
                 font.pixelSize: 22
                 font.bold: true
                 font.letterSpacing: 3
@@ -2200,7 +2927,7 @@ Item {
             }
             Text {
                 text: "Что случилось?"
-                color: "#e5e5e5"
+                color: Theme.textBody
                 font.pixelSize: 15
                 Layout.alignment: Qt.AlignHCenter
             }
@@ -2217,8 +2944,8 @@ Item {
                     radius: 6
                     color: reasonMouse.pressed
                            ? "#991b1b"
-                           : (reasonMouse.containsMouse ? "#dc2626" : "#1a0a0a")
-                    border.color: "#dc2626"
+                           : (reasonMouse.containsMouse ? Theme.dangerStrong : "#1a0a0a")
+                    border.color: Theme.dangerStrong
                     border.width: 1
                     scale: reasonMouse.pressed ? 0.96 : (reasonMouse.containsMouse ? 1.02 : 1.0)
                     opacity: reasonMouse.pressed ? 0.9 : 1.0
@@ -2252,7 +2979,7 @@ Item {
                 text: "Отмена"
                 color: cancelSosMouse.pressed
                        ? "#aaaaaa"
-                       : (cancelSosMouse.containsMouse ? "#999999" : "#666666")
+                       : (cancelSosMouse.containsMouse ? "#999999" : Theme.textMuted)
                 font.pixelSize: 13
                 scale: cancelSosMouse.pressed ? 0.96 : 1.0
                 opacity: cancelSosMouse.pressed ? 0.85 : 1.0
@@ -2282,7 +3009,7 @@ Item {
         visible: opacity > 0
         opacity: 0
         color: "#0a0505"
-        border.color: "#dc2626"
+        border.color: Theme.dangerStrong
         border.width: 1
 
         function show() {
@@ -2315,7 +3042,7 @@ Item {
         modal: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         readonly property string brandKey: dashboardRoot.pendingGamePlatform
-        readonly property string brandColor: dashboardRoot.platformBrandColor(brandKey)
+        readonly property color brandColor: dashboardRoot.platformBrandColor(brandKey)
         readonly property string brandTitle: dashboardRoot.platformBrandTitle(brandKey)
         readonly property string shortName: dashboardRoot.platformShortName(brandKey)
         background: Rectangle {
@@ -2348,7 +3075,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 horizontalAlignment: Text.AlignHCenter
-                color: "#e5e5e5"
+                color: Theme.textBody
                 font.pixelSize: 16
                 lineHeight: 1.35
                 text: "У вас есть личный аккаунт " + accountChoicePopup.shortName + "?\n\n"
@@ -2431,7 +3158,7 @@ Item {
                 text: "Отмена"
                 color: cancelAccMouse.pressed
                        ? "#aaaaaa"
-                       : (cancelAccMouse.containsMouse ? "#999999" : "#666666")
+                       : (cancelAccMouse.containsMouse ? "#999999" : Theme.textMuted)
                 font.pixelSize: 13
                 scale: cancelAccMouse.pressed ? 0.96 : 1.0
                 opacity: cancelAccMouse.pressed ? 0.85 : 1.0
@@ -2457,7 +3184,7 @@ Item {
         modal: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         readonly property string brandKey: dashboardRoot.pendingGamePlatform
-        readonly property string brandColor: dashboardRoot.platformBrandColor(brandKey)
+        readonly property color brandColor: dashboardRoot.platformBrandColor(brandKey)
         readonly property string shortName: dashboardRoot.platformShortName(brandKey)
         background: Rectangle {
             color: "#0a0505"
@@ -2522,7 +3249,7 @@ Item {
                 text: "Закрыть"
                 color: busyCloseMouse.pressed
                        ? "#aaaaaa"
-                       : (busyCloseMouse.containsMouse ? "#999999" : "#666666")
+                       : (busyCloseMouse.containsMouse ? "#999999" : Theme.textMuted)
                 scale: busyCloseMouse.pressed ? 0.96 : 1.0
                 opacity: busyCloseMouse.pressed ? 0.85 : 1.0
                 Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
@@ -2543,13 +3270,13 @@ Item {
         id: controlRoot
         property string text: "BUTTON"
         property string icon: ""
-        property string baseColor: accentColor
+        property color baseColor: accentColor
         property bool isActiveStatus: false
         property bool orderIsFinished: false
         property bool orderIsCooking: false
         property string statusText: ""
-        readonly property color statusAccent: orderIsFinished ? "#22c55e"
-                                              : (orderIsCooking ? "#facc15" : "#ef4444")
+        readonly property color statusAccent: orderIsFinished ? Theme.success
+                                              : (orderIsCooking ? Theme.warning : Theme.danger)
         signal clicked()
 
         Layout.fillWidth: true
@@ -2637,7 +3364,7 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: 14
             text: "✓"
-            color: "#22c55e"
+            color: Theme.success
             font.bold: true
             font.pixelSize: 16
             visible: controlRoot.isActiveStatus && controlRoot.orderIsFinished
@@ -2657,7 +3384,7 @@ Item {
         property string btnText: "LAUNCH"
         property string iconText: "🎮"
         property string iconSource: ""   // optional qrc:/… png/svg; falls back to iconText
-        property string brandColor: accentColor
+        property color brandColor: accentColor
         signal clicked()
 
         Layout.fillWidth: true
@@ -2697,6 +3424,7 @@ Item {
                     visible: platBtn.iconSource.length > 0
                     source: platBtn.iconSource
                     fillMode: Image.PreserveAspectFit
+                    asynchronous: true
                     smooth: true
                     mipmap: true
                 }
@@ -2711,7 +3439,7 @@ Item {
             Text {
                 text: btnText
                 color: platBtnMouse.containsMouse ? brandColor : "white"
-                font.pixelSize: 9
+                font.pixelSize: Theme.fontCaption
                 font.bold: platBtnMouse.containsMouse
                 anchors.horizontalCenter: parent.horizontalCenter
                 Behavior on color { ColorAnimation { duration: 120 } }

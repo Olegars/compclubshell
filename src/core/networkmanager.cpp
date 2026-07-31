@@ -574,6 +574,8 @@ void NetworkManager::clearSessionUser()
         m_lastBookingId = 0;
         emit lastBookingIdChanged();
     }
+    m_lastKnownBalance = -1.0;
+    m_balanceRefreshInFlight = false;
     m_featuredLabel = QStringLiteral("Популярно в клубе");
     m_featuredMode = QStringLiteral("club");
     if (m_featuredGamesModel)
@@ -859,6 +861,7 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
                 emit userIdChanged();
             }
             const double balance = userBalanceFromJson(user);
+            m_lastKnownBalance = balance;
             qDebug() << "[NET] Login OK user=" << user.value("id").toInt(0)
                      << "balance=" << balance
                      << "rawKeys=" << user.keys();
@@ -873,6 +876,212 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
         }
 
         emit loginRequestFinished();
+    });
+}
+
+void NetworkManager::refreshBalance()
+{
+    if (m_serverUrl.isEmpty() || m_balanceRefreshInFlight)
+        return;
+
+    // No session → do not spam the API.
+    if (m_userId <= 0 && m_lastBookingId <= 0) {
+        if (m_rootQml) {
+            const QString sessionUser = m_rootQml->property("sessionUser").toString();
+            if (sessionUser.isEmpty()
+                || sessionUser == QLatin1String("GUEST")
+                || sessionUser == QLatin1String("PAUSE")) {
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+
+    const int tid = resolveTerminalId(0);
+    if (tid <= 0 && m_userId <= 0 && m_lastBookingId <= 0)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/balance"));
+    QUrlQuery query;
+    if (tid > 0)
+        query.addQueryItem(QStringLiteral("terminal_id"), QString::number(tid));
+    if (m_lastBookingId > 0)
+        query.addQueryItem(QStringLiteral("booking_id"), QString::number(m_lastBookingId));
+    if (m_userId > 0)
+        query.addQueryItem(QStringLiteral("user_id"), QString::number(m_userId));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    m_balanceRefreshInFlight = true;
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_balanceRefreshInFlight = false;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[NET] balance refresh error:" << reply->errorString();
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (!doc.isObject())
+            return;
+
+        const QJsonObject response = doc.object();
+        if (response.value(QStringLiteral("status")).toString() != QLatin1String("success"))
+            return;
+
+        double balance = -1.0;
+        if (response.contains(QStringLiteral("balance")))
+            balance = jsonToDouble(response.value(QStringLiteral("balance")), -1.0);
+        else if (response.contains(QStringLiteral("deposit_balance")))
+            balance = jsonToDouble(response.value(QStringLiteral("deposit_balance")), -1.0);
+        else if (response.value(QStringLiteral("user")).isObject())
+            balance = userBalanceFromJson(response.value(QStringLiteral("user")).toObject());
+
+        if (balance < 0.0)
+            return;
+
+        // Avoid QML churn when unchanged (kopeck tolerance).
+        if (m_lastKnownBalance >= 0.0 && qAbs(balance - m_lastKnownBalance) < 0.005)
+            return;
+
+        m_lastKnownBalance = balance;
+        qDebug() << "[NET] balance updated =" << balance;
+        emit balanceUpdated(balance);
+
+        if (m_rootQml) {
+            const double current = m_rootQml->property("sessionBalance").toDouble();
+            if (qAbs(current - balance) >= 0.005)
+                m_rootQml->setProperty("sessionBalance", balance);
+        }
+    });
+}
+
+void NetworkManager::syncTopUpPayment(const QString &paymentId)
+{
+    if (m_serverUrl.isEmpty() || paymentId.isEmpty())
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/billing/yookassa/sync/") + paymentId);
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("X-Requested-With", "XMLHttpRequest");
+
+    qDebug() << "[NET] syncTopUpPayment" << paymentId;
+    QNetworkReply *reply = m_networkManager->post(request, QByteArrayLiteral("{}"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, paymentId]() {
+        reply->deleteLater();
+
+        const QByteArray body = reply->readAll();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[NET] syncTopUpPayment error:" << reply->errorString() << body;
+            refreshBalance();
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(body);
+        const QJsonObject response = doc.isObject() ? doc.object() : QJsonObject();
+        const bool paid = response.value(QStringLiteral("paid")).toBool();
+        const QString status = response.value(QStringLiteral("payment_status")).toString();
+        qDebug() << "[NET] syncTopUpPayment OK" << paymentId
+                 << "status=" << status << "paid=" << paid;
+
+        // Always refresh: webhook may have credited already, or sync just did.
+        refreshBalance();
+    });
+}
+
+void NetworkManager::createTopUp(double amount)
+{
+    if (m_serverUrl.isEmpty()) {
+        emit topUpFailed(tr("Сервер не настроен"));
+        return;
+    }
+
+    const int tid = resolveTerminalId(0);
+    if (tid <= 0) {
+        emit topUpFailed(tr("Терминал не привязан"));
+        return;
+    }
+
+    if (amount < 100.0) {
+        emit topUpFailed(tr("Минимальная сумма пополнения — 100 ₽"));
+        return;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/billing/topup"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), tid);
+    json.insert(QStringLiteral("amount"), amount);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    if (m_userId > 0)
+        json.insert(QStringLiteral("user_id"), m_userId);
+
+    qDebug() << "[NET] createTopUp amount=" << amount << "terminal=" << tid;
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+
+        const QByteArray body = reply->readAll();
+        const QJsonDocument doc = QJsonDocument::fromJson(body);
+        const QJsonObject response = doc.isObject() ? doc.object() : QJsonObject();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString msg = response.value(QStringLiteral("message")).toString(reply->errorString());
+            qWarning() << "[NET] createTopUp error:" << msg << body;
+            emit topUpFailed(msg.isEmpty() ? tr("Не удалось создать платёж") : msg);
+            return;
+        }
+
+        if (response.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            const QString msg = response.value(QStringLiteral("message")).toString(tr("Не удалось создать платёж"));
+            emit topUpFailed(msg);
+            return;
+        }
+
+        const QString confirmationToken =
+            response.value(QStringLiteral("confirmation_token")).toString();
+        const QString widgetUrl = response.value(QStringLiteral("widget_url")).toString();
+        const QString confirmationUrl = response.value(QStringLiteral("confirmation_url")).toString();
+        QString paymentUrl;
+
+        if (!widgetUrl.isEmpty()) {
+            paymentUrl = widgetUrl;
+        } else if (!confirmationUrl.isEmpty()) {
+            paymentUrl = confirmationUrl;
+        } else if (!confirmationToken.isEmpty()) {
+            // Запасной путь, если бэкенд отдал только токен: checkout-ui верхним
+            // уровнем. Страница-обёртка предпочтительнее — там результат оплаты
+            // приходит колбэком виджета и баланс синхронизируется.
+            QUrl checkoutUrl(QStringLiteral("https://yoomoney.ru/checkout/checkout-ui"));
+            QUrlQuery query;
+            query.addQueryItem(QStringLiteral("token"), confirmationToken);
+            checkoutUrl.setQuery(query);
+            paymentUrl = checkoutUrl.toString(QUrl::FullyEncoded);
+        }
+        const QString paymentId = response.value(QStringLiteral("payment_id")).toString();
+        const double paidAmount = jsonToDouble(response.value(QStringLiteral("amount")), 0.0);
+
+        if (paymentUrl.isEmpty()) {
+            emit topUpFailed(tr("ЮKassa не вернула ссылку на виджет оплаты"));
+            return;
+        }
+
+        qDebug() << "[NET] createTopUp OK payment=" << paymentId << "url=" << paymentUrl;
+        emit topUpReady(paymentUrl, paymentId, paidAmount);
     });
 }
 

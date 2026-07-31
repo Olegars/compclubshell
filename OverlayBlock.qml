@@ -1,6 +1,7 @@
 // Путь: C:/Qt/compclubshell/OverlayBlock.qml
 import QtQuick
 import QtMultimedia
+import sector0451
 
 Rectangle {
     id: overlayBlockRoot
@@ -13,8 +14,8 @@ Rectangle {
     property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
     property bool playbackAllowed: true
 
-    color: "#0a0a0a"
-    border.color: isActive ? "#1a4d29" : "#050505"
+    color: Theme.bgPanel
+    border.color: isActive ? Theme.accentBorder : "#050505"
     border.width: 1
     clip: true
     opacity: isActive ? 1.0 : 0.05
@@ -25,8 +26,8 @@ Rectangle {
 
     Text {
         text: title
-        color: "#22c55e"
-        font.pixelSize: 10
+        color: Theme.accent
+        font.pixelSize: Theme.fontCaption
         z: 10
         anchors.margins: 10
         anchors.left: parent.left

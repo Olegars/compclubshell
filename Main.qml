@@ -7,6 +7,7 @@ import QtQuick.Effects
 import QtWebSockets
 import QtMultimedia
 import QtQuick.Shapes
+import sector0451
 
 Window {
     id: root
@@ -47,6 +48,16 @@ Window {
     property var pendingOverlaysData: null
     property string loadingPlatform: ""
     property string loadingGameTitle: ""
+
+    // Видео оверлеев крутим только пока экран логина реально на экране:
+    // 6 MediaPlayer'ов вхолостую съедают GPU/CPU за игровой сессией и на загрузке.
+    readonly property bool overlayPlaybackAllowed: (root.sessionUser === "GUEST"
+                                                    || root.sessionUser === ""
+                                                    || root.sessionUser === "PAUSE")
+                                                   && screenSwitcher.item !== null
+                                                   && screenSwitcher.item.visible
+                                                   && !setupScreenLoader.item
+                                                   && !root.gameLoadingVisible
 
     function clearGameSearchField() {
         if (typeof Launcher !== "undefined" && typeof Launcher.requestClearGameSearch === "function")
@@ -161,6 +172,8 @@ Window {
             root.sessionUser = restoreName.length > 0 ? restoreName : "PLAYER"
             screenSwitcher.sourceComponent = null
             dashboardLoader.source = "Dashboard.qml"
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.refreshBalance()
         }
         xhr.send(JSON.stringify({
             "computer_id": parseInt(root.terminalId) || 0,
@@ -242,12 +255,18 @@ Window {
             dashboardLoader.source = "Dashboard.qml"
             NetworkManager.fetchGames()
             NetworkManager.fetchProducts()
+            NetworkManager.refreshBalance()
             if (typeof HidMonitor !== "undefined") {
                 var cid = NetworkManager.computerId > 0 ? NetworkManager.computerId : root.terminalId
                 var bid = NetworkManager.lastBookingId || 0
                 HidMonitor.captureAndBind(cid, bid)
                 HidMonitor.startWatch(cid, bid)
             }
+        }
+
+        function onBalanceUpdated(balance) {
+            if (typeof balance === "number" && Math.abs(root.sessionBalance - balance) >= 0.005)
+                root.sessionBalance = balance
         }
 
         function onLoginFailed(message) {
@@ -306,7 +325,6 @@ Window {
         repeat: false
         onTriggered: {
             root.isLoggingIn = false
-            gameLoadingOverlay.opacity = 0.0
         }
     }
 
@@ -325,6 +343,20 @@ Window {
                 NetworkManager.checkOrderStatus(root.terminalId, root.trackedOrderId)
             else
                 NetworkManager.fetchProducts()
+        }
+    }
+
+    // Keep wallet balance fresh during an active session (top-ups / admin credits / shop)
+    Timer {
+        id: balancePollTimer
+        interval: 20000
+        running: root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.sessionUser !== "PAUSE"
+                 && root.terminalId > 0
+        repeat: true
+        triggeredOnStart: false
+        onTriggered: {
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.refreshBalance()
         }
     }
 
@@ -355,6 +387,33 @@ Window {
     Component.onCompleted: {
         console.log("[START-TRACE] [STEP QML-A] ...Загрузка корневого окна...")
     }
+
+    Binding {
+        target: Theme
+        property: "viewportWidth"
+        value: root.width > 320 ? root.width : Theme.baseWidth
+    }
+    Binding {
+        target: Theme
+        property: "viewportHeight"
+        value: root.height > 240 ? root.height : Theme.baseHeight
+    }
+    Binding {
+        target: Theme
+        property: "zoneType"
+        value: root.pcTypeFromDatabase
+    }
+
+    // Весь интерфейс живёт в макете 1920x1080 и масштабируется целиком.
+    // 16:9 разрешения (1080p / 1440p / 4K) заполняются без полей, а вложенные
+    // фиксированные размеры (сайдбар, попапы, карточки) остаются корректными.
+    Item {
+        id: uiRoot
+        width: Theme.baseWidth
+        height: Theme.baseHeight
+        anchors.centerIn: parent
+        transformOrigin: Item.Center
+        scale: Theme.scale
 
     Loader {
         id: setupScreenLoader
@@ -402,7 +461,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
-                        playbackAllowed: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
+                        playbackAllowed: root.overlayPlaybackAllowed && blockTopLeft.isActive
                     }
                     OverlayBlock {
                         id: blockMidLeft
@@ -411,7 +470,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
-                        playbackAllowed: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
+                        playbackAllowed: root.overlayPlaybackAllowed && blockMidLeft.isActive
                     }
                     OverlayBlock {
                         id: blockBottomLeft
@@ -420,7 +479,7 @@ Window {
                         blockUniqueId: "b4"
                         title: "INF_03 / BOTTOM_LEFT"
                         fallbackVideo: root.fallbackVideo
-                        playbackAllowed: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
+                        playbackAllowed: root.overlayPlaybackAllowed && blockBottomLeft.isActive
                     }
                 }
 
@@ -438,7 +497,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
-                        playbackAllowed: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
+                        playbackAllowed: root.overlayPlaybackAllowed && blockTopRight.isActive
                     }
                     OverlayBlock {
                         id: blockMidRight
@@ -447,7 +506,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
-                        playbackAllowed: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
+                        playbackAllowed: root.overlayPlaybackAllowed && blockMidRight.isActive
                     }
                     OverlayBlock {
                         id: blockBottomRight
@@ -456,7 +515,7 @@ Window {
                         blockUniqueId: "b6"
                         title: "INF_06 / BOTTOM_RIGHT"
                         fallbackVideo: root.fallbackVideo
-                        playbackAllowed: root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE"
+                        playbackAllowed: root.overlayPlaybackAllowed && blockBottomRight.isActive
                     }
                 }
             }
@@ -510,8 +569,8 @@ Window {
                 Row {
                     anchors.centerIn: parent
                     spacing: 20
-                    Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: "#22c55e" }
-                    Text { text: "0 4 5 1"; color: "#22c55e"; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
+                    Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: Theme.accent }
+                    Text { text: "0 4 5 1"; color: Theme.accent; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
                 }
             }
 
@@ -520,8 +579,8 @@ Window {
                 width: 420
                 height: 520
                 anchors.centerIn: parent
-                color: "#050a06"
-                border.color: root.sessionUser === "PAUSE" ? "#1d4ed8" : "#1a4d29"
+                color: Theme.accentPanel
+                border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
                 border.width: 2
                 radius: 4
                 opacity: 0.95
@@ -534,7 +593,7 @@ Window {
 
                     Column {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        Text { text: "TERMINAL_ID"; color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"; font.pixelSize: 12; opacity: 0.6; anchors.horizontalCenter: parent.horizontalCenter }
+                        Text { text: "TERMINAL_ID"; color: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent; font.pixelSize: 12; opacity: 0.6; anchors.horizontalCenter: parent.horizontalCenter }
                         Text {
                             text: root.pcNameString
                             color: "white"
@@ -550,7 +609,7 @@ Window {
                         }
                     }
 
-                    Rectangle { width: parent.width; height: 1; color: root.sessionUser === "PAUSE" ? "#3b82f6" : "#22c55e"; opacity: 0.3 }
+                    Rectangle { width: parent.width; height: 1; color: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent; opacity: 0.3 }
 
                     Item {
                         width: parent.width
@@ -561,8 +620,8 @@ Window {
                             width: parent.width
                             spacing: 15
 
-                            Text { text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"; color: "#3b82f6"; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
-                            Text { text: "Введите PIN-код для разблокировки"; color: "#a3a3a3"; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
+                            Text { text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"; color: Theme.info; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
+                            Text { text: "Введите PIN-код для разблокировки"; color: Theme.textSecondary; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
 
                             TextField {
                                 id: pausePinInput
@@ -575,7 +634,7 @@ Window {
                                 inputMask: "0000;_"
                                 echoMode: TextInput.Normal
                                 color: "white"
-                                selectionColor: "#3b82f6"
+                                selectionColor: Theme.info
                                 selectedTextColor: "black"
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: TextInput.AlignVCenter
@@ -592,14 +651,42 @@ Window {
                                         pausePinInput.text = ""
                                     }
                                 }
-                                background: Rectangle { color: pausePinInput.activeFocus ? "#08162a" : "#0d1117"; border.color: pausePinInput.activeFocus ? "#3b82f6" : "#1d4ed8"; border.width: pausePinInput.activeFocus ? 2 : 1; radius: 4 }
+                                background: Rectangle { color: pausePinInput.activeFocus ? Theme.infoSurface : Theme.infoSurfaceIdle; border.color: pausePinInput.activeFocus ? Theme.info : Theme.infoDeep; border.width: pausePinInput.activeFocus ? 2 : 1; radius: 4 }
                             }
 
-                            Text { id: pauseErrorText; text: "Неверный PIN-код"; visible: false; color: "#ef4444"; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
+                            Text { id: pauseErrorText; text: "Неверный PIN-код"; visible: false; color: Theme.danger; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
                             Button {
+                                id: resumePauseBtn
                                 width: parent.width
                                 height: 50
                                 text: "Я ВЕРНУЛСЯ"
+                                scale: resumePauseBtn.down ? 0.96 : 1.0
+
+                                Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
+
+                                HoverHandler { cursorShape: Qt.PointingHandCursor }
+
+                                contentItem: Text {
+                                    text: resumePauseBtn.text
+                                    color: resumePauseBtn.hovered ? "#020202" : Theme.info
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+
+                                background: Rectangle {
+                                    radius: 4
+                                    color: resumePauseBtn.down ? Theme.infoDeep
+                                                               : (resumePauseBtn.hovered ? Theme.info : Theme.infoSurfaceIdle)
+                                    border.color: resumePauseBtn.hovered ? Theme.info : Theme.infoDeep
+                                    border.width: resumePauseBtn.hovered ? 2 : 1
+
+                                    Behavior on color { ColorAnimation { duration: 120 } }
+                                    Behavior on border.color { ColorAnimation { duration: 120 } }
+                                }
+
                                 onClicked: {
                                     if (!root.resumeFromPause(pausePinInput.text))
                                         pauseErrorText.visible = true
@@ -620,7 +707,7 @@ Window {
                                 visible: authCenter.authStep === 1
                                 width: parent.width
                                 spacing: 12
-                                Text { text: "НОМЕР ТЕЛЕФОНА"; color: "#22c55e"; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
+                                Text { text: "НОМЕР ТЕЛЕФОНА"; color: Theme.accent; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
                                 TextField {
                                     id: phoneInput
                                     width: parent.width
@@ -634,14 +721,14 @@ Window {
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: TextInput.AlignVCenter
                                     color: "white"
-                                    selectionColor: "#22c55e"
+                                    selectionColor: Theme.accent
                                     selectedTextColor: "black"
                                     Timer { id: focusTimer; interval: 50; running: false; repeat: false; onTriggered: { if (root.sessionUser !== "PAUSE" && authCenter.authStep === 1) { phoneInput.forceActiveFocus(); phoneInput.cursorPosition = 4 } } }
                                     Component.onCompleted: { if (root.sessionUser !== "PAUSE") focusTimer.start() }
                                     onVisibleChanged: { if (visible && authCenter.authStep === 1 && root.sessionUser !== "PAUSE") focusTimer.start() }
                                     onActiveFocusChanged: { if (activeFocus && (text === "+7 (   )   -  -  " || text === "")) { Qt.callLater(function() { phoneInput.cursorPosition = 4 }) } }
                                     onAccepted: { authCenter.authStep = 2 }
-                                    background: Rectangle { color: phoneInput.activeFocus ? "#08120a" : "#0d130e"; border.color: phoneInput.activeFocus ? "#22c55e" : "#1a4d29"; border.width: phoneInput.activeFocus ? 2 : 1; radius: 4 }
+                                    background: Rectangle { color: phoneInput.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle; border.color: phoneInput.activeFocus ? Theme.accent : Theme.accentBorder; border.width: phoneInput.activeFocus ? 2 : 1; radius: 4 }
                                 }
                             }
 
@@ -649,7 +736,7 @@ Window {
                                 visible: authCenter.authStep === 2
                                 width: parent.width
                                 spacing: 12
-                                Text { text: "PIN-КОД"; color: "#22c55e"; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
+                                Text { text: "PIN-КОД"; color: Theme.accent; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
                                 TextField {
                                     id: pinInput
                                     width: parent.width
@@ -664,7 +751,7 @@ Window {
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: TextInput.AlignVCenter
                                     color: "white"
-                                    selectionColor: "#22c55e"
+                                    selectionColor: Theme.accent
                                     selectedTextColor: "black"
                                     onActiveFocusChanged: { if (activeFocus) { Qt.callLater(function() { pinInput.cursorPosition = 0 }) } }
                                     onAccepted: {
@@ -674,7 +761,7 @@ Window {
                                         root.isLoggingIn = true
                                         NetworkManager.login(phoneInput.text, pinInput.text, parseInt(root.terminalId))
                                     }
-                                    background: Rectangle { color: pinInput.activeFocus ? "#08120a" : "#0d130e"; border.color: pinInput.activeFocus ? "#22c55e" : "#1a4d29"; border.width: pinInput.activeFocus ? 2 : 1; radius: 4 }
+                                    background: Rectangle { color: pinInput.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle; border.color: pinInput.activeFocus ? Theme.accent : Theme.accentBorder; border.width: pinInput.activeFocus ? 2 : 1; radius: 4 }
                                 }
                             }
 
@@ -682,7 +769,7 @@ Window {
                                 id: authErrorText
                                 text: root.authErrorMessage
                                 visible: root.authErrorVisible
-                                color: "#ef4444"
+                                color: Theme.danger
                                 font.bold: true
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 Connections { target: pinInput; function onTextChanged() { root.authErrorVisible = false } }
@@ -698,10 +785,10 @@ Window {
                                 radius: 4
                                 color: {
                                     if (authBtnMouse.pressed)
-                                        return "#15803d"
+                                        return Theme.accentPressed
                                     if (authBtnMouse.containsMouse)
-                                        return "#16a34a"
-                                    return "#22c55e"
+                                        return Theme.accentDeep
+                                    return Theme.accent
                                 }
                                 scale: authBtnMouse.pressed ? 0.95 : 1.0
                                 opacity: (root.isLoggingIn && authCenter.authStep === 2) ? 0.85 : 1.0
@@ -805,7 +892,7 @@ Window {
                                 font.pixelSize: 12
                                 font.bold: true
                                 font.letterSpacing: 2
-                                color: backMouse.containsMouse ? "#22c55e" : "#666666"
+                                color: backMouse.containsMouse ? Theme.accent : Theme.textMuted
                                 visible: authCenter.authStep === 2
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 Layout.topMargin: 5
@@ -826,8 +913,108 @@ Window {
                     }
                 }
             }
+
+            Rectangle {
+                id: authClock
+                width: authCenter.width
+                height: 116
+                anchors.top: authCenter.bottom
+                anchors.topMargin: 18
+                anchors.horizontalCenter: authCenter.horizontalCenter
+                color: Theme.accentPanel
+                border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
+                border.width: 2
+                radius: 4
+                opacity: 0.95
+
+                readonly property color tint: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent
+                property date now: new Date()
+
+                Timer {
+                    interval: 1000
+                    running: true
+                    repeat: true
+                    triggeredOnStart: true
+                    onTriggered: authClock.now = new Date()
+                }
+
+                Column {
+                    anchors.centerIn: parent
+                    spacing: 6
+
+                    Row {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 4
+
+                        Text {
+                            text: Qt.formatTime(authClock.now, "HH")
+                            color: "white"
+                            font.pixelSize: 52
+                            font.bold: true
+                            font.family: "Consolas"
+                            font.letterSpacing: 2
+                        }
+                        Text {
+                            text: ":"
+                            color: authClock.tint
+                            font.pixelSize: 52
+                            font.bold: true
+                            font.family: "Consolas"
+                            // Секундная пульсация — «живые» часы вместо статики.
+                            opacity: authClock.now.getSeconds() % 2 === 0 ? 1.0 : 0.25
+                            Behavior on opacity { NumberAnimation { duration: 320 } }
+                        }
+                        Text {
+                            text: Qt.formatTime(authClock.now, "mm")
+                            color: "white"
+                            font.pixelSize: 52
+                            font.bold: true
+                            font.family: "Consolas"
+                            font.letterSpacing: 2
+                        }
+                        Text {
+                            text: Qt.formatTime(authClock.now, "ss")
+                            color: authClock.tint
+                            font.pixelSize: 24
+                            font.bold: true
+                            font.family: "Consolas"
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 8
+                        }
+                    }
+
+                    Rectangle {
+                        width: authClock.width - 80
+                        height: 1
+                        color: authClock.tint
+                        opacity: 0.3
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
+
+                    Text {
+                        text: Qt.formatDate(authClock.now, "dddd, d MMMM yyyy").toUpperCase()
+                        color: Theme.textSecondary
+                        font.pixelSize: 12
+                        font.bold: true
+                        font.letterSpacing: 2
+                        anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                }
+            }
         }
     }
+
+    // Поверх Dashboard/Loader — тот же Window, не отдельный HWND
+    LoadingOverlay {
+        id: steamLoadingOverlay
+        anchors.fill: parent
+        z: 1000000
+        platformName: root.loadingPlatform
+        gameTitle: root.loadingGameTitle
+    }
+
+    }
+    // ^ конец uiRoot
 
     function updateOverlaysToScreen(response) {
         root.pendingOverlaysData = response
@@ -873,66 +1060,4 @@ Window {
         }
     }
 
-    Rectangle {
-        id: gameLoadingOverlay
-        anchors.fill: parent
-        color: "#020202"
-        z: 99999
-        opacity: 0.0
-        visible: opacity > 0.0
-        Behavior on opacity { NumberAnimation { duration: 250 } }
-
-        Image { anchors.fill: parent; source: Qt.resolvedUrl("images/hex_bg.png"); fillMode: Image.Tile; opacity: 0.25 }
-        Column {
-            anchors.centerIn: parent
-            spacing: 30
-            BusyIndicator {
-                id: loadingSpinner
-                anchors.horizontalCenter: parent.horizontalCenter
-                running: gameLoadingOverlay.visible
-                contentItem: Item {
-                    implicitWidth: 64
-                    implicitHeight: 64
-                    RotationAnimator { target: loadingSpinnerItem; running: loadingSpinner.running; from: 0; to: 360; loops: Animation.Infinite; duration: 1200 }
-                    Item {
-                        id: loadingSpinnerItem
-                        anchors.fill: parent
-                        Shape {
-                            anchors.fill: parent
-                            ShapePath {
-                                strokeColor: "#22c55e"
-                                strokeWidth: 4
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc { centerX: 32; centerY: 32; radiusX: 28; radiusY: 28; startAngle: 0; sweepAngle: 280 }
-                            }
-                        }
-                    }
-                }
-            }
-            Column {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 8
-                Text { text: "ЗАПУСК ИГРОВОЙ СЕССИИ"; color: "#22c55e"; font.pixelSize: 24; font.bold: true; font.letterSpacing: 3; anchors.horizontalCenter: parent.horizontalCenter }
-                Text {
-                    id: loadingSubText
-                    text: root.loadingGameTitle
-                          ? ("Подготовка: " + root.loadingGameTitle)
-                          : ("Платформа: " + (root.loadingPlatform || "…"))
-                    color: "#666666"
-                    font.pixelSize: 14
-                    font.letterSpacing: 1
-                    anchors.horizontalCenter: parent.horizontalCenter
-                }
-            }
-        }
-    }
-
-    // Поверх Dashboard/Loader — тот же Window, не отдельный HWND
-    LoadingOverlay {
-        id: steamLoadingOverlay
-        anchors.fill: parent
-        z: 1000000
-        platformName: root.loadingPlatform
-        gameTitle: root.loadingGameTitle
-    }
 }

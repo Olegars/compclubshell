@@ -1,4 +1,5 @@
 import QtQuick
+import sector0451
 
 // Заставка внутри главного окна (z поверх Dashboard).
 // RotationAnimator крутится на render thread — не замирает при занятости UI.
@@ -70,7 +71,7 @@ Item {
             anchors.fill: parent
             radius: width / 2
             color: "transparent"
-            border.color: "#143322"
+            border.color: Theme.accentBorder
             border.width: 2
         }
 
@@ -80,7 +81,7 @@ Item {
             height: 160
             radius: 80
             color: "transparent"
-            border.color: "#1a4d29"
+            border.color: Theme.accentBorder
             border.width: 1
             opacity: 0.7
         }
@@ -99,16 +100,18 @@ Item {
                     ctx.reset()
                     ctx.lineWidth = 4
                     ctx.lineCap = "round"
-                    ctx.strokeStyle = "#22c55e"
+                    ctx.strokeStyle = Theme.accent
                     ctx.beginPath()
                     ctx.arc(cx, cy, r, -Math.PI * 0.55, Math.PI * 0.85)
                     ctx.stroke()
-                    ctx.strokeStyle = "#4ade80"
+                    ctx.strokeStyle = Theme.accentBright
                     ctx.lineWidth = 2
                     ctx.beginPath()
                     ctx.arc(cx, cy, r, -Math.PI * 0.55, -Math.PI * 0.15)
                     ctx.stroke()
                 }
+                readonly property color arcColor: Theme.accent
+                onArcColorChanged: requestPaint()
                 Component.onCompleted: requestPaint()
                 onWidthChanged: requestPaint()
                 onHeightChanged: requestPaint()
@@ -140,12 +143,14 @@ Item {
                     ctx.reset()
                     ctx.lineWidth = 2.5
                     ctx.lineCap = "round"
-                    ctx.strokeStyle = "#86efac"
+                    ctx.strokeStyle = Theme.accentBright
                     ctx.globalAlpha = 0.55
                     ctx.beginPath()
                     ctx.arc(cx, cy, r, Math.PI * 0.2, Math.PI * 1.1)
                     ctx.stroke()
                 }
+                readonly property color arcColor: Theme.accentBright
+                onArcColorChanged: requestPaint()
                 Component.onCompleted: requestPaint()
                 onWidthChanged: requestPaint()
                 onHeightChanged: requestPaint()
@@ -166,14 +171,14 @@ Item {
             width: 18
             height: 18
             radius: 9
-            color: "#22c55e"
+            color: Theme.accent
             Rectangle {
                 anchors.centerIn: parent
                 width: 34
                 height: 34
                 radius: 17
                 color: "transparent"
-                border.color: "#22c55e"
+                border.color: Theme.accent
                 border.width: 1
                 opacity: 0.35
             }
@@ -190,7 +195,7 @@ Item {
                     width: 6
                     height: 6
                     radius: 3
-                    color: "#4ade80"
+                    color: Theme.accentBright
                     opacity: 0.35 + (index % 3) * 0.2
                     property real ang: index * 60
                     x: stage.width / 2 + Math.cos(ang * Math.PI / 180) * 98 - width / 2
@@ -220,18 +225,18 @@ Item {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: "REACTOR"
-            color: "#e7ffe9"
-            font.pixelSize: 28
+            color: Theme.textBody
+            font.pixelSize: Theme.fontHeading
             font.bold: true
             font.letterSpacing: 8
             style: Text.Outline
-            styleColor: "#14532d"
+            styleColor: Theme.accentBorder
         }
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: overlay.statusText
-            color: "#22c55e"
+            color: Theme.accent
             font.pixelSize: 14
             font.bold: true
             font.letterSpacing: 3
@@ -247,7 +252,7 @@ Item {
                     width: 8
                     height: 8
                     radius: 4
-                    color: index === overlay.statusIndex ? "#22c55e" : "#1a4d29"
+                    color: index === overlay.statusIndex ? Theme.accent : Theme.accentBorder
                     Behavior on color { ColorAnimation { duration: 200 } }
                 }
             }

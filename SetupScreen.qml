@@ -2,11 +2,12 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Effects
+import sector0451
 
 Rectangle {
     id: setupRoot
     anchors.fill: parent
-    color: "#020202"
+    color: Theme.bgRoot
 
     // Подтягиваем зоны из C++ модели
     readonly property var zonesList: (typeof NetworkManager !== "undefined") ? NetworkManager.getAvailableZones() : ["STANDARD", "BOOTCAMP", "DUO"]
@@ -29,7 +30,7 @@ Rectangle {
             spacing: 10
             Text {
                 text: "REACTOR CONTROL"
-                color: "#22c55e"
+                color: Theme.accent
                 font.pixelSize: 32
                 font.bold: true
                 font.letterSpacing: 2
@@ -37,7 +38,7 @@ Rectangle {
             }
             Text {
                 text: "ПЕРВИЧНАЯ РЕГИСТРАЦИЯ ТЕРМИНАЛА"
-                color: "#666666"
+                color: Theme.textMuted
                 font.pixelSize: 12
                 font.bold: true
                 font.letterSpacing: 1
@@ -52,7 +53,7 @@ Rectangle {
 
             Text {
                 text: "НАЗВАНИЕ КОМПЬЮТЕРА (ПРИВЯЗКА К БАЗЕ)"
-                color: "#22c55e"
+                color: Theme.accent
                 font.pixelSize: 11
                 font.bold: true
                 font.letterSpacing: 1
@@ -69,17 +70,17 @@ Rectangle {
                 color: "white"
                 placeholderText: "Например: PC-01, DUO-05..."
                 placeholderTextColor: "#334155"
-                selectionColor: "#22c55e"
+                selectionColor: Theme.accent
                 selectedTextColor: "black"
                 verticalAlignment: TextInput.AlignVCenter
                 leftPadding: 20
                 focus: true
 
                 background: Rectangle {
-                    color: pcNameInputField.activeFocus ? "#08120a" : "#0d130e"
-                    border.color: pcNameInputField.activeFocus ? "#22c55e" : "#1a4d29"
+                    color: pcNameInputField.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle
+                    border.color: pcNameInputField.activeFocus ? Theme.accent : Theme.accentBorder
                     border.width: pcNameInputField.activeFocus ? 2 : 1
-                    radius: 4
+                    radius: Theme.radiusSm
 
                     Behavior on color { ColorAnimation { duration: 150 } }
                     Behavior on border.color { ColorAnimation { duration: 150 } }
@@ -89,7 +90,7 @@ Rectangle {
             Text {
                 id: errorValidationText
                 text: "Пожалуйста, введите имя компьютера перед выбором зоны"
-                color: "#ef4444"
+                color: Theme.danger
                 font.pixelSize: 12
                 visible: false
             }
@@ -98,7 +99,7 @@ Rectangle {
         Rectangle {
             width: parent.width
             height: 1
-            color: "#22c55e"
+            color: Theme.accent
             opacity: 0.2
         }
 
@@ -109,7 +110,7 @@ Rectangle {
 
             Text {
                 text: "ВЫБЕРИТЕ ИГРОВУЮ ЗОНУ ДЛЯ ЭТОГО ХАРДА"
-                color: "#666666"
+                color: Theme.textMuted
                 font.pixelSize: 11
                 font.bold: true
                 font.letterSpacing: 1
@@ -118,44 +119,46 @@ Rectangle {
             Repeater {
                 model: setupRoot.zonesList
                 delegate: Button {
+                    id: zoneBtn
                     width: parent.width
                     height: 55
+                    scale: zoneBtn.down ? 0.98 : 1.0
+
+                    Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
+
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
 
                     contentItem: Text {
                         text: modelData
-                        color: btnMouse.containsMouse ? "black" : "#22c55e"
+                        color: zoneBtn.hovered ? "black" : Theme.accent
                         font.pixelSize: 16
                         font.bold: true
+                        font.letterSpacing: 1
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                     }
 
                     background: Rectangle {
-                        color: btnMouse.containsMouse ? "#22c55e" : "#050a06"
-                        border.color: "#1a4d29"
+                        color: zoneBtn.down ? Theme.accentDeep
+                                            : (zoneBtn.hovered ? Theme.accent : Theme.accentPanel)
+                        border.color: zoneBtn.hovered ? Theme.accent : Theme.accentBorder
                         border.width: 1
-                        radius: 4
+                        radius: Theme.radiusSm
                         Behavior on color { ColorAnimation { duration: 100 } }
+                        Behavior on border.color { ColorAnimation { duration: 100 } }
                     }
 
-                    MouseArea {
-                        id: btnMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var cleanName = pcNameInputField.text.trim();
+                        if (cleanName === "") {
+                            errorValidationText.visible = true;
+                            pcNameInputField.forceActiveFocus();
+                        } else {
+                            errorValidationText.visible = false;
+                            console.log("[SETUP] Регистрация станции. Имя:", cleanName, "| Зона:", modelData);
 
-                        onClicked: {
-                            var cleanName = pcNameInputField.text.trim();
-                            if (cleanName === "") {
-                                errorValidationText.visible = true;
-                                pcNameInputField.forceActiveFocus();
-                            } else {
-                                errorValidationText.visible = false;
-                                console.log("[SETUP] Регистрация станции. Имя:", cleanName, "| Зона:", modelData);
-
-                                // Вызов обновлённого C++ метода с двумя параметрами!
-                                NetworkManager.registerStation(modelData, cleanName);
-                            }
+                            // Вызов обновлённого C++ метода с двумя параметрами!
+                            NetworkManager.registerStation(modelData, cleanName);
                         }
                     }
                 }

@@ -5,7 +5,7 @@ project(sector0451 VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Gui Qml Network Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Gui Qml Network Multimedia WebView)
 
 qt_standard_project_setup(REQUIRES 6.10)
 
@@ -26,10 +26,13 @@ qt_add_executable(appsector0451
     config.ini
 )
 
+set_source_files_properties(Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
 qt_add_qml_module(appsector0451
     URI sector0451
     VERSION 1.0
     QML_FILES
+        Theme.qml
         Main.qml
         Dashboard.qml
         SetupScreen.qml
@@ -69,6 +72,7 @@ target_link_libraries(appsector0451
         Qt6::Qml
         Qt6::Network
         Qt6::Multimedia
+        Qt6::WebView
         crypt32
         iphlpapi
         ws2_32
@@ -85,3 +89,19 @@ install(TARGETS appsector0451
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# WebView2 runtime deps (MinGW build of qtwebview plugin)
+if(WIN32)
+    set(_webview2_loader "$ENV{MSYSTEM_PREFIX}/bin/WebView2Loader.dll")
+    if(NOT EXISTS "${_webview2_loader}")
+        set(_webview2_loader "C:/msys64/mingw64/bin/WebView2Loader.dll")
+    endif()
+    if(EXISTS "${_webview2_loader}")
+        add_custom_command(TARGET appsector0451 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_webview2_loader}"
+                $<TARGET_FILE_DIR:appsector0451>/WebView2Loader.dll
+            COMMENT "Copy WebView2Loader.dll next to shell"
+        )
+    endif()
+endif()

@@ -55,6 +55,12 @@ public:
     /** Poll shell order status for terminal (and optional order_id). Updates hasActiveOrder on Main.qml. */
     Q_INVOKABLE void checkOrderStatus(int terminalId = 0, int orderId = 0);
     Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
+    /** Poll spendable balance for the active shell session (no-op when logged out). */
+    Q_INVOKABLE void refreshBalance();
+    /** Create YooKassa embedded widget top-up; emits topUpReady(widgetUrl, ...). */
+    Q_INVOKABLE void createTopUp(double amount);
+    /** Pull payment status from YooKassa and credit wallet if paid (same as «Вернуться»). */
+    Q_INVOKABLE void syncTopUpPayment(const QString &paymentId);
     Q_INVOKABLE void fetchOverlays(int terminalId);
     Q_INVOKABLE void freeGameAccount(int terminalId, int gameId);
     Q_INVOKABLE void recordGameLaunch(int gameId);
@@ -71,6 +77,10 @@ signals:
     void loginSucceeded(const QString &userName, double balance, const QString &timeRemaining, const QString &phone);
     void loginFailed(const QString &message);
     void loginRequestFinished();
+    /** Emitted only when polled balance differs from the last known value. */
+    void balanceUpdated(double balance);
+    void topUpReady(const QString &widgetUrl, const QString &paymentId, double amount);
+    void topUpFailed(const QString &message);
     void overlaysReady(const QVariantMap &data);
     void freeAccountFinished(bool success);
     void computerIdChanged();
@@ -98,6 +108,8 @@ private:
     int m_computerId;
     int m_lastBookingId;
     int m_userId = 0;
+    double m_lastKnownBalance = -1.0;
+    bool m_balanceRefreshInFlight = false;
     QString m_featuredLabel;
     QString m_featuredMode;
     QStringList m_activeDownloads;

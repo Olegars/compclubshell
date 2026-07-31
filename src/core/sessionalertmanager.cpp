@@ -27,6 +27,21 @@ constexpr int kSlideMs = 420;
 constexpr int kHoldMs = 10000;
 constexpr int kAnimIntervalMs = 16;
 
+// Базовый макет оболочки — 1920x1080. На 1440p/4K тост тянем тем же
+// коэффициентом, что и QML (uiRoot.scale), иначе он выглядит крошечным.
+double uiScale()
+{
+    const QScreen *screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return 1.0;
+    const QRect geo = screen->geometry();
+    if (geo.width() <= 0 || geo.height() <= 0)
+        return 1.0;
+    const double byWidth = geo.width() / 1920.0;
+    const double byHeight = geo.height() / 1080.0;
+    return std::clamp(std::min(byWidth, byHeight), 1.0, 3.0);
+}
+
 } // namespace
 
 // Always-on-top right-edge slide panel (visible even when shell is hidden for game).
@@ -37,7 +52,8 @@ public:
         : QRasterWindow()
     {
         setFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
-        resize(kToastW, kToastH);
+        m_scale = uiScale();
+        resize(int(kToastW * m_scale), int(kToastH * m_scale));
         setTitle(QStringLiteral("REACTOR Session Warning"));
         setOpacity(0.98);
         m_anim.setInterval(kAnimIntervalMs);
@@ -90,31 +106,33 @@ protected:
         const QRect area(0, 0, width(), height());
         p.fillRect(area, Qt::transparent);
 
+        const double s = m_scale;
         const QRectF r = QRectF(area).adjusted(1.0, 1.0, -1.0, -1.0);
         QPainterPath path;
-        path.addRoundedRect(r, 10.0, 10.0);
+        path.addRoundedRect(r, 10.0 * s, 10.0 * s);
 
         p.setBrush(QColor(3, 7, 4, 240));
-        p.setPen(QPen(QColor(0x22, 0xc5, 0x5e, 220), 1.8));
+        p.setPen(QPen(QColor(0x22, 0xc5, 0x5e, 220), 1.8 * s));
         p.drawPath(path);
 
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0x22, 0xc5, 0x5e));
-        p.drawRoundedRect(QRectF(10, 18, 4, height() - 36), 2, 2);
+        p.drawRoundedRect(QRectF(10 * s, 18 * s, 4 * s, height() - 36 * s), 2 * s, 2 * s);
 
         p.setPen(QColor(0xe5, 0xe5, 0xe5));
         QFont f = p.font();
         f.setBold(true);
-        f.setPixelSize(15);
+        f.setPixelSize(int(15 * s));
         p.setFont(f);
-        p.drawText(QRect(28, 0, width() - 52, height()),
+        p.drawText(QRect(int(28 * s), 0, width() - int(52 * s), height()),
                    Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap,
                    m_text);
 
         p.setPen(QColor(0x22, 0xc5, 0x5e, 160));
-        f.setPixelSize(16);
+        f.setPixelSize(int(16 * s));
         p.setFont(f);
-        p.drawText(QRect(width() - 32, 8, 24, 24), Qt::AlignCenter, QStringLiteral("×"));
+        p.drawText(QRect(width() - int(32 * s), int(8 * s), int(24 * s), int(24 * s)),
+                   Qt::AlignCenter, QStringLiteral("×"));
     }
 
     void mousePressEvent(QMouseEvent *ev) override
@@ -133,8 +151,8 @@ private:
     void applyXFromProgress()
     {
         const QRect geo = screenGeom();
-        const int visibleX = geo.x() + geo.width() - width() - 16;
-        const int hiddenX = geo.x() + geo.width() + 8;
+        const int visibleX = geo.x() + geo.width() - width() - int(16 * m_scale);
+        const int hiddenX = geo.x() + geo.width() + int(8 * m_scale);
         const double eased = 1.0 - std::pow(1.0 - m_progress, 3.0);
         const int x = hiddenX + int((visibleX - hiddenX) * eased);
         const int y = geo.y() + geo.height() / 2 - height() / 2 - geo.height() / 10;
@@ -173,6 +191,7 @@ private:
     QTimer m_anim;
     QTimer m_hold;
     double m_progress = 0.0;
+    double m_scale = 1.0;
     bool m_closing = false;
 };
 
