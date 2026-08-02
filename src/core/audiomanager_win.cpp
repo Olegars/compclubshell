@@ -702,10 +702,16 @@ public:
         ensureHeadphones(true);
     }
 
+    void setPaused(bool paused)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_paused = paused;
+    }
+
     void ensureHeadphones(bool fromStart)
     {
         QMutexLocker lock(&m_mutex);
-        if (!m_running || !m_enumerator)
+        if (!m_running || !m_enumerator || m_paused)
             return;
 
         // Avoid re-entrancy while we ourselves change the default.
@@ -721,12 +727,10 @@ public:
 
         if (hp.id.isEmpty()) {
             m_lastHeadphonesId.clear();
-            const qint64 now = GetTickCount64();
-            if (now - m_lastWarnTick > 15000) {
-                m_lastWarnTick = now;
-                // Re-scan with logging so club PCs show why we stayed on monitor.
+            // На многих ПК только HDMI — не спамим poll каждые N секунд.
+            if (fromStart) {
                 if (!logDevices)
-                    hp = findHeadphonesDevice(m_enumerator, QString(), &kind, true);
+                    findHeadphonesDevice(m_enumerator, QString(), &kind, true);
                 qWarning() << "[AUDIO] WARN: only HDMI/monitor (or no) preferred output — not forcing default";
             }
             return;
@@ -785,9 +789,9 @@ private:
     QString m_lastHeadphonesId;
     bool m_running = false;
     bool m_forcing = false;
+    bool m_paused = false;
     bool m_comUninit = false;
     bool m_forceDeviceLog = true;
-    ULONGLONG m_lastWarnTick = 0;
 };
 
 HRESULT STDMETHODCALLTYPE AudioNotifyClient::OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState)
@@ -875,6 +879,306 @@ void win32_stop_headphones_guard()
     g_headphonesGuard->stop();
     delete g_headphonesGuard;
     g_headphonesGuard = nullptr;
+#endif
+}
+
+void win32_set_headphones_guard_paused(int paused)
+{
+#ifdef _WIN32
+    if (g_headphonesGuard)
+        g_headphonesGuard->setPaused(paused != 0);
+#else
+    (void)paused;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+
+HeadphonesCandidate findSpeakersDevice(IMMDeviceEnumerator *enumerator, bool logDevices)
+{
+    HeadphonesCandidate best;
+    if (!enumerator)
+        return best;
+
+    IMMDeviceCollection *collection = nullptr;
+    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection))
+        || !collection)
+        return best;
+
+    UINT count = 0;
+    collection->GetCount(&count);
+
+    HeadphonesCandidate speakersForm;
+    HeadphonesCandidate speakersName;
+    HeadphonesCandidate analogNonHp;
+    HeadphonesCandidate hdmiFallback;
+
+    for (UINT i = 0; i < count; ++i) {
+        IMMDevice *device = nullptr;
+        if (FAILED(collection->Item(i, &device)) || !device)
+            continue;
+
+        HeadphonesCandidate c;
+        c.id = deviceIdOf(device);
+        c.name = friendlyNameOf(device);
+        c.formFactor = formFactorOf(device);
+        classifyCandidate(&c);
+
+        if (logDevices) {
+            qWarning() << "[AUDIO] speakers-scan:"
+                       << "name=" << (c.name.isEmpty() ? QStringLiteral("(unnamed)") : c.name)
+                       << "formFactor=" << formFactorName(c.formFactor)
+                       << (c.byFormFactor || c.byName ? " [headphones]" : "")
+                       << (c.isMonitor ? " [hdmi/monitor]" : "");
+        }
+
+        const bool isHp = c.byFormFactor || c.byName;
+        if (!isHp && c.formFactor == Speakers && speakersForm.id.isEmpty())
+            speakersForm = c;
+        if (!isHp) {
+            const QString n = c.name.toLower();
+            if ((n.contains(QStringLiteral("speaker")) || n.contains(QStringLiteral("колонк")))
+                && speakersName.id.isEmpty())
+                speakersName = c;
+        }
+        if (!isHp && !c.isMonitor && c.byAnalog && analogNonHp.id.isEmpty())
+            analogNonHp = c;
+        if (!isHp && c.isMonitor && hdmiFallback.id.isEmpty())
+            hdmiFallback = c;
+
+        device->Release();
+    }
+    collection->Release();
+
+    if (!speakersForm.id.isEmpty())
+        best = speakersForm;
+    else if (!speakersName.id.isEmpty())
+        best = speakersName;
+    else if (!analogNonHp.id.isEmpty())
+        best = analogNonHp;
+    else if (!hdmiFallback.id.isEmpty())
+        best = hdmiFallback;
+
+    return best;
+}
+
+} // namespace
+#endif
+
+QString win32_find_speakers_device_id()
+{
+#ifdef _WIN32
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninit = (comHr == S_OK || comHr == S_FALSE);
+    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE)
+        return {};
+
+    IMMDeviceEnumerator *enumerator = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator_Local, nullptr, CLSCTX_ALL,
+                                  IID_IMMDeviceEnumerator_Local,
+                                  reinterpret_cast<void **>(&enumerator));
+    QString id;
+    if (SUCCEEDED(hr) && enumerator) {
+        const HeadphonesCandidate sp = findSpeakersDevice(enumerator, true);
+        id = sp.id;
+        if (!id.isEmpty())
+            qWarning() << "[AUDIO] speakers device:" << (sp.name.isEmpty() ? id : sp.name);
+        else
+            qWarning() << "[AUDIO] no speakers device found";
+        enumerator->Release();
+    }
+
+    if (shouldUninit)
+        CoUninitialize();
+    return id;
+#else
+    return {};
+#endif
+}
+
+bool win32_force_output_device(const QString &deviceId)
+{
+#ifdef _WIN32
+    if (deviceId.isEmpty())
+        return false;
+
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninit = (comHr == S_OK || comHr == S_FALSE);
+    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE)
+        return false;
+
+    const bool ok = setDefaultEndpointAllRoles(deviceId);
+    if (shouldUninit)
+        CoUninitialize();
+    qWarning() << "[AUDIO] force output device" << deviceId << "ok=" << ok;
+    return ok;
+#else
+    Q_UNUSED(deviceId);
+    return false;
+#endif
+}
+
+namespace {
+
+struct MasterDuckState {
+    bool active = false;
+    float savedScalar = 1.0f;
+    BOOL savedMute = FALSE;
+};
+
+MasterDuckState g_masterDuck;
+
+bool activateEndpointVolume(IMMDevice *device, IAudioEndpointVolume **out)
+{
+    if (!device || !out)
+        return false;
+    *out = nullptr;
+    IAudioEndpointVolume *endpointVolume = nullptr;
+    HRESULT hr = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL,
+                                  nullptr, reinterpret_cast<void **>(&endpointVolume));
+    if (FAILED(hr) || !endpointVolume) {
+        hr = device->Activate(IID_IAudioEndpointVolume_Local, CLSCTX_ALL,
+                              nullptr, reinterpret_cast<void **>(&endpointVolume));
+    }
+    if (FAILED(hr) || !endpointVolume)
+        return false;
+    *out = endpointVolume;
+    return true;
+}
+
+bool duckOnDevice(IMMDevice *device, float duckScalar)
+{
+    IAudioEndpointVolume *ev = nullptr;
+    if (!activateEndpointVolume(device, &ev))
+        return false;
+
+    float scalar = 1.0f;
+    BOOL muted = FALSE;
+    ev->GetMasterVolumeLevelScalar(&scalar);
+    ev->GetMute(&muted);
+
+    if (!g_masterDuck.active) {
+        g_masterDuck.savedScalar = scalar;
+        g_masterDuck.savedMute = muted;
+        g_masterDuck.active = true;
+    }
+
+    const HRESULT setHr = ev->SetMasterVolumeLevelScalar(duckScalar, nullptr);
+    if (SUCCEEDED(setHr))
+        ev->SetMute(FALSE, nullptr);
+    ev->Release();
+    return SUCCEEDED(setHr);
+}
+
+bool restoreOnDevice(IMMDevice *device)
+{
+    IAudioEndpointVolume *ev = nullptr;
+    if (!activateEndpointVolume(device, &ev))
+        return false;
+    const HRESULT setHr = ev->SetMasterVolumeLevelScalar(g_masterDuck.savedScalar, nullptr);
+    if (SUCCEEDED(setHr))
+        ev->SetMute(g_masterDuck.savedMute, nullptr);
+    ev->Release();
+    return SUCCEEDED(setHr);
+}
+
+} // namespace
+
+void win32_duck_master(int duckPercent)
+{
+#ifdef _WIN32
+    if (duckPercent < 0) duckPercent = 0;
+    if (duckPercent > 100) duckPercent = 100;
+    if (g_masterDuck.active)
+        return;
+
+    const float duckScalar = static_cast<float>(duckPercent) / 100.0f;
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninit = (comHr == S_OK || comHr == S_FALSE);
+    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+        qWarning() << "[AUDIO] duck — CoInitializeEx failed hr=" << hrHex(comHr);
+        return;
+    }
+
+    IMMDeviceEnumerator *enumerator = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator_Local, nullptr, CLSCTX_ALL,
+                                  IID_IMMDeviceEnumerator_Local,
+                                  reinterpret_cast<void **>(&enumerator));
+    bool ok = false;
+    if (SUCCEEDED(hr) && enumerator) {
+        IMMDevice *device = nullptr;
+        if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)) && device) {
+            ok = duckOnDevice(device, duckScalar);
+            device->Release();
+        }
+        if (!ok) {
+            device = nullptr;
+            if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &device)) && device) {
+                ok = duckOnDevice(device, duckScalar);
+                device->Release();
+            }
+        }
+        enumerator->Release();
+    }
+
+    if (shouldUninit)
+        CoUninitialize();
+
+    if (ok)
+        qWarning() << "[AUDIO] duck to" << duckPercent << "% (saved"
+                   << int(g_masterDuck.savedScalar * 100.0f) << "%)";
+    else
+        qWarning() << "[AUDIO] duck failed";
+#else
+    (void)duckPercent;
+#endif
+}
+
+void win32_restore_master()
+{
+#ifdef _WIN32
+    if (!g_masterDuck.active)
+        return;
+
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninit = (comHr == S_OK || comHr == S_FALSE);
+    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+        qWarning() << "[AUDIO] restore — CoInitializeEx failed hr=" << hrHex(comHr);
+        g_masterDuck.active = false;
+        return;
+    }
+
+    IMMDeviceEnumerator *enumerator = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator_Local, nullptr, CLSCTX_ALL,
+                                  IID_IMMDeviceEnumerator_Local,
+                                  reinterpret_cast<void **>(&enumerator));
+    bool ok = false;
+    if (SUCCEEDED(hr) && enumerator) {
+        IMMDevice *device = nullptr;
+        if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)) && device) {
+            ok = restoreOnDevice(device);
+            device->Release();
+        }
+        if (!ok) {
+            device = nullptr;
+            if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &device)) && device) {
+                ok = restoreOnDevice(device);
+                device->Release();
+            }
+        }
+        enumerator->Release();
+    }
+
+    g_masterDuck.active = false;
+
+    if (shouldUninit)
+        CoUninitialize();
+
+    if (ok)
+        qWarning() << "[AUDIO] volume restored after duck";
+    else
+        qWarning() << "[AUDIO] restore after duck failed";
 #endif
 }
 

@@ -21,8 +21,12 @@ qt_add_executable(appsector0451
     src/core/riotauth.h src/core/riotauth.cpp
     src/core/directlaunchauth.h src/core/directlaunchauth.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
+    src/core/thermalmonitor.h src/core/thermalmonitor.cpp
     src/core/sessionalertmanager.h src/core/sessionalertmanager.cpp
     src/core/hidinputmonitor.h src/core/hidinputmonitor.cpp
+    src/core/voicehotkeymonitor.h src/core/voicehotkeymonitor.cpp
+    src/core/voiceassistant.h src/core/voiceassistant.cpp
+    src/core/lobbyaudiomanager.h src/core/lobbyaudiomanager.cpp
     config.ini
 )
 
@@ -38,6 +42,8 @@ qt_add_qml_module(appsector0451
         SetupScreen.qml
         OverlayBlock.qml
         LoadingOverlay.qml
+        QuickMenu.qml
+        VoiceIndicator.qml
     RESOURCES
         images/hex_bg.png
         images/launchers/steam.png
@@ -78,6 +84,7 @@ target_link_libraries(appsector0451
         ws2_32
         ole32
         oleaut32
+        wbemuuid
         winmm
         uiautomationcore
         sapi

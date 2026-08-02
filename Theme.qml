@@ -26,14 +26,21 @@ QtObject {
     function px(value) { return Math.ceil(value * theme.scale) }
 
     // ---------- Зона ПК и акцент ----------
-    property string zoneType: "standard"
+    property string zoneType: "singl"
+    property string zoneColorHex: ""
 
     readonly property bool isPremiumZone: {
         var z = String(theme.zoneType).toLowerCase()
-        return z === "pro" || z === "bootcamp" || z === "trio" || z === "vip"
+        return z === "bootcamp" || z === "bootcamp-pro" || z === "trio" || z === "kvatro"
+               || z === "pro" || z === "vip"
     }
 
-    readonly property color accent:        isPremiumZone ? "#a855f7" : "#22c55e"
+    readonly property color accent: {
+        var hex = String(theme.zoneColorHex || "").trim()
+        if (hex.length >= 4)
+            return hex
+        return isPremiumZone ? "#a855f7" : "#22c55e"
+    }
     readonly property color accentBright:  isPremiumZone ? "#c084fc" : "#4ade80"
     readonly property color accentDeep:    isPremiumZone ? "#7e22ce" : "#16a34a"
     readonly property color accentPressed: isPremiumZone ? "#6b21a8" : "#15803d"

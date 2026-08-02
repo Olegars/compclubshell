@@ -10,7 +10,9 @@ Rectangle {
     color: Theme.bgRoot
 
     // Подтягиваем зоны из C++ модели
-    readonly property var zonesList: (typeof NetworkManager !== "undefined") ? NetworkManager.getAvailableZones() : ["STANDARD", "BOOTCAMP", "DUO"]
+    readonly property var zonesList: (typeof NetworkManager !== "undefined")
+                                     ? NetworkManager.getAvailableZones()
+                                     : ["singl", "duo", "trio", "kvatro", "bootcamp", "tv"]
 
     Image {
         anchors.fill: parent

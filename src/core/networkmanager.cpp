@@ -1,5 +1,6 @@
 #include "networkmanager.h"
 #include "hwidprovider.h"
+#include "thermalmonitor.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
 #include <QCoreApplication>
@@ -17,6 +18,11 @@
 #include <QPair>
 #include <QVariantMap>
 #include <QVariantList>
+#include <QTimer>
+#include <QHttpMultiPart>
+#include <QHttpPart>
+#include <QNetworkInterface>
+#include <QEventLoop>
 #include <QtGlobal>
 #include <algorithm>
 #include <vector>
@@ -230,15 +236,28 @@ void NetworkManager::checkTerminalStatus() {
             QString dbName = responseObj.value("name").toString().trimmed();
             m_pcNameString = dbName.isEmpty() ? ("PC-" + QString::number(m_computerId)) : dbName;
 
+            m_zoneName = responseObj.value(QStringLiteral("zone_name")).toString().trimmed();
+            m_zoneSlug = responseObj.value(QStringLiteral("zone_slug")).toString().trimmed();
+            if (m_zoneSlug.isEmpty())
+                m_zoneSlug = responseObj.value(QStringLiteral("type")).toString().trimmed();
+            if (m_zoneSlug.isEmpty())
+                m_zoneSlug = QStringLiteral("singl");
+            m_zoneColor = responseObj.value(QStringLiteral("zone_color")).toString().trimmed();
+            emit zoneInfoChanged();
+
             m_isPcRegistered = true;
 
-            qDebug() << "[REACTOR-SHELL] Терминал авторизован под именем:" << m_pcNameString << "| ID записи в БД:" << m_computerId;
+            qDebug() << "[REACTOR-SHELL] Терминал авторизован под именем:" << m_pcNameString
+                    << "| ID записи в БД:" << m_computerId
+                    << "| зона:" << (m_zoneName.isEmpty() ? m_zoneSlug : m_zoneName);
 
             emit pcRegistrationChanged();
             emit authRequired();
+            startPowerHeartbeat();
 
             const int overlayTerminalId = m_computerId > 0 ? m_computerId : 1;
             fetchOverlays(overlayTerminalId);
+            fetchQuickApps();
         } else {
             qDebug() << "[REACTOR-SHELL] Оборудование не зарегистрировано. Переключение на Setup.";
             m_pcNameString = "PC-UNKNOWN";
@@ -339,9 +358,18 @@ void NetworkManager::logoutTerminal(int terminalId) {
             QJsonDocument responseDoc = QJsonDocument::fromJson(responseData);
             QJsonObject responseJson = responseDoc.object();
 
-            if (responseJson["status"].toString() == "success") {
+                            if (responseJson["status"].toString() == "success") {
                 qDebug() << "[DEBUG-C++ LOGOUT] <--- СЕССИЯ УСПЕШНО ЗАКРЫТА НА БЭКЕНДЕ";
                 clearSessionUser();
+                const QString powerAction = responseJson.value(QStringLiteral("power_action")).toString();
+                if (powerAction == QLatin1String("reboot")
+                    || powerAction == QLatin1String("shutdown")) {
+                    if (powerAction == QLatin1String("shutdown"))
+                        m_idleShutdownRequested = true;
+                    m_sawActiveSession = false;
+                    qWarning() << "[POWER] logout →" << powerAction;
+                    emit powerActionRequested(powerAction);
+                }
                 // Сбрасываем кэш-имя и принудительно обновляем статус харда
                 this->checkTerminalStatus();
             } else {
@@ -356,7 +384,7 @@ void NetworkManager::logoutTerminal(int terminalId) {
 QString NetworkManager::getLocalPath(const QString &remotePath, const QString &target) {
     if (remotePath.isEmpty()) return "";
 
-    QString fileName = remotePath.split('/').last();
+    QString fileName = remotePath.split('/').last().split('?').first();
     if (fileName.isEmpty()) fileName = "overlay_video.mp4";
     QString localFilePath = m_cachePath + fileName;
 
@@ -370,14 +398,27 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
 
     m_activeDownloads.append(target);
 
+    // Overlay URLs in DB often keep an old absolute host (e.g. LAN IP).
+    // Always download /storage/... from the configured shell server.
     QString fullUrl = remotePath;
-    if (!remotePath.startsWith("http")) {
+    const QUrl remoteUrl(remotePath);
+    if (remoteUrl.isValid() && !remoteUrl.scheme().isEmpty()) {
+        const QString path = remoteUrl.path();
+        if (path.contains(QStringLiteral("/storage/"), Qt::CaseInsensitive)
+            && !m_serverUrl.isEmpty()) {
+            fullUrl = m_serverUrl + path;
+            if (remoteUrl.hasQuery())
+                fullUrl += QLatin1Char('?') + remoteUrl.query();
+        }
+    } else if (!remotePath.startsWith("http")) {
         QString cleanRemote = remotePath;
         if (cleanRemote.startsWith("/")) cleanRemote.remove(0, 1);
         fullUrl = m_serverUrl + "/" + cleanRemote;
     }
 
-    qDebug() << "[CACHE-OPTIMIZED] Запуск одиночного скачивания файла для зоны:" << target << "URL:" << fullUrl;
+    qDebug() << "[CACHE-OPTIMIZED] Запуск одиночного скачивания файла для зоны:" << target
+             << "URL:" << fullUrl
+             << "(raw:" << remotePath << ")";
 
     QNetworkRequest request((QUrl(fullUrl)));
     request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 ReactorShell/1.0");
@@ -413,7 +454,73 @@ int NetworkManager::getLatency(const QString &host) {
 }
 
 QStringList NetworkManager::getAvailableZones() {
-    return QStringList() << "Single" << "Duo" << "Trio" << "Quatro" << "Bootcamp";
+    return QStringList()
+            << QStringLiteral("singl")
+            << QStringLiteral("duo")
+            << QStringLiteral("trio")
+            << QStringLiteral("kvatro")
+            << QStringLiteral("bootcamp")
+            << QStringLiteral("tv");
+}
+
+void NetworkManager::fetchQuickApps()
+{
+    if (m_serverUrl.isEmpty())
+        return;
+
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/quick-apps")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[QUICK] API error:" << reply->errorString();
+            if (!m_quickApps.isEmpty()) {
+                m_quickApps.clear();
+                emit quickAppsChanged();
+            }
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(body);
+        const QJsonObject root = doc.object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success")
+                || !root.value(QStringLiteral("apps")).isArray()) {
+            qWarning() << "[QUICK] invalid API payload";
+            return;
+        }
+
+        QVariantList apps;
+        const QJsonArray rows = root.value(QStringLiteral("apps")).toArray();
+        apps.reserve(rows.size());
+        for (const QJsonValue &value : rows) {
+            if (!value.isObject())
+                continue;
+            const QJsonObject row = value.toObject();
+            const QString title = row.value(QStringLiteral("title")).toString().trimmed();
+            const QString path = row.value(QStringLiteral("exe_path")).toString().trimmed();
+            if (title.isEmpty() || path.isEmpty())
+                continue;
+
+            QVariantMap app;
+            app.insert(QStringLiteral("id"), row.value(QStringLiteral("id")).toInt());
+            app.insert(QStringLiteral("title"), title);
+            app.insert(QStringLiteral("path"), path);
+            app.insert(QStringLiteral("args"), row.value(QStringLiteral("args")).toString());
+            app.insert(QStringLiteral("available"), QFileInfo::exists(path));
+            apps.append(app);
+        }
+
+        if (m_quickApps == apps)
+            return;
+        m_quickApps = apps;
+        qDebug() << "[QUICK] loaded from admin:" << m_quickApps.size();
+        emit quickAppsChanged();
+    });
 }
 
 
@@ -629,6 +736,7 @@ void NetworkManager::clearSessionUser()
     }
     m_lastKnownBalance = -1.0;
     m_balanceRefreshInFlight = false;
+    stopClimateControl();
     m_featuredLabel = QStringLiteral("Популярно в клубе");
     m_featuredMode = QStringLiteral("club");
     if (m_featuredGamesModel)
@@ -1213,5 +1321,597 @@ void NetworkManager::freeGameAccount(int terminalId, int gameId)
         }
 
         emit freeAccountFinished(success);
+    });
+}
+
+void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
+{
+    const bool available = fanObj.value(QStringLiteral("available")).toBool(false);
+    const bool on = fanObj.value(QStringLiteral("is_on")).toBool(false);
+    const QString mode = fanObj.value(QStringLiteral("manual_mode")).toString();
+
+    const bool changed = (available != m_fanAvailable) || (on != m_fanOn) || (mode != m_fanMode);
+    m_fanAvailable = available;
+    m_fanOn = on;
+    m_fanMode = mode;
+    if (changed)
+        emit fanStateChanged();
+}
+
+void NetworkManager::startClimateControl()
+{
+    if (m_climateActive)
+        return;
+
+    m_climateActive = true;
+    if (!m_climateTimer) {
+        m_climateTimer = new QTimer(this);
+        m_climateTimer->setInterval(10000);
+        connect(m_climateTimer, &QTimer::timeout, this, [this]() {
+            reportThermalNow();
+            fetchFanState();
+        });
+    }
+
+    fetchFanState();
+    reportThermalNow();
+    m_climateTimer->start();
+}
+
+void NetworkManager::stopClimateControl()
+{
+    m_climateActive = false;
+    if (m_climateTimer)
+        m_climateTimer->stop();
+
+    if (m_fanAvailable || m_fanOn || !m_fanMode.isEmpty()) {
+        m_fanAvailable = false;
+        m_fanOn = false;
+        m_fanMode.clear();
+        emit fanStateChanged();
+    }
+}
+
+void NetworkManager::startPowerHeartbeat()
+{
+    if (!m_powerHeartbeatTimer) {
+        m_powerHeartbeatTimer = new QTimer(this);
+        m_powerHeartbeatTimer->setInterval(30000);
+        connect(m_powerHeartbeatTimer, &QTimer::timeout, this, &NetworkManager::sendPowerHeartbeat);
+    }
+    if (!m_powerHeartbeatTimer->isActive()) {
+        m_powerHeartbeatTimer->start();
+        qWarning() << "[POWER] heartbeat started, terminal" << m_computerId;
+    }
+    sendPowerHeartbeat();
+}
+
+void NetworkManager::stopPowerHeartbeat()
+{
+    if (m_powerHeartbeatTimer)
+        m_powerHeartbeatTimer->stop();
+}
+
+QString NetworkManager::primaryMacAddress() const
+{
+    if (!m_cachedMac.isEmpty())
+        return m_cachedMac;
+
+    const auto ifaces = QNetworkInterface::allInterfaces();
+    for (const QNetworkInterface &iface : ifaces) {
+        const auto flags = iface.flags();
+        if (flags & QNetworkInterface::IsLoopBack)
+            continue;
+        if (!(flags & QNetworkInterface::IsUp))
+            continue;
+        if (!(flags & QNetworkInterface::IsRunning))
+            continue;
+        const QString mac = iface.hardwareAddress().trimmed().toUpper();
+        if (mac.isEmpty() || mac == QLatin1String("00:00:00:00:00:00"))
+            continue;
+        return mac;
+    }
+    return {};
+}
+
+bool NetworkManager::isLocalSessionActive() const
+{
+    if (m_userId > 0)
+        return true;
+    if (!m_rootQml)
+        return false;
+    const QString sessionUser = m_rootQml->property("sessionUser").toString();
+    return !sessionUser.isEmpty()
+            && sessionUser != QLatin1String("GUEST")
+            && sessionUser != QLatin1String("");
+}
+
+void NetworkManager::handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive)
+{
+    if (sessionActive) {
+        m_sawActiveSession = true;
+        m_idleShutdownRequested = false;
+        return;
+    }
+
+    // Сервер закрыл бронь, а шелл ещё показывает игрока → сброс UI + reboot/shutdown.
+    if (isLocalSessionActive() && m_sawActiveSession) {
+        m_sawActiveSession = false;
+        clearSessionUser();
+        emit sessionForceEnded();
+        if (action == QLatin1String("reboot") || action == QLatin1String("shutdown")) {
+            qWarning() << "[POWER] session ended by server →" << action;
+            emit powerActionRequested(action);
+        }
+        return;
+    }
+
+    // Гостевой экран и ПК больше не нужен → выключение (заглушка).
+    if (!isLocalSessionActive() && desired == QLatin1String("off")) {
+        if (!m_idleShutdownRequested) {
+            m_idleShutdownRequested = true;
+            qWarning() << "[POWER] idle + desired=off → shutdown";
+            emit powerActionRequested(QStringLiteral("shutdown"));
+        }
+        return;
+    }
+
+    if (desired == QLatin1String("on"))
+        m_idleShutdownRequested = false;
+}
+
+void NetworkManager::sendPowerHeartbeat()
+{
+    if (m_serverUrl.isEmpty() || m_powerHeartbeatInFlight)
+        return;
+
+    const int termId = resolveTerminalId(0);
+    if (termId <= 0 && m_hwid.isEmpty())
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/power/heartbeat"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    if (termId > 0)
+        json.insert(QStringLiteral("terminal_id"), termId);
+    if (!m_hwid.isEmpty())
+        json.insert(QStringLiteral("hwid"), m_hwid);
+
+    const QString mac = primaryMacAddress();
+    if (!mac.isEmpty()) {
+        m_cachedMac = mac;
+        json.insert(QStringLiteral("mac_address"), mac);
+    }
+
+    m_powerHeartbeatInFlight = true;
+    QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_powerHeartbeatInFlight = false;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[POWER] heartbeat failed:" << reply->errorString();
+            return;
+        }
+
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success"))
+            return;
+
+        handlePowerPolicy(
+            root.value(QStringLiteral("power_desired")).toString(),
+            root.value(QStringLiteral("power_action")).toString(),
+            root.value(QStringLiteral("session_active")).toBool());
+    });
+}
+
+void NetworkManager::notifyPowerOffline()
+{
+    stopPowerHeartbeat();
+
+    if (m_serverUrl.isEmpty())
+        return;
+
+    const int termId = resolveTerminalId(0);
+    if (termId <= 0 && m_hwid.isEmpty())
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/power/offline"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    // Не зависать надолго при выходе
+    request.setTransferTimeout(2000);
+
+    QJsonObject json;
+    if (termId > 0)
+        json.insert(QStringLiteral("terminal_id"), termId);
+    if (!m_hwid.isEmpty())
+        json.insert(QStringLiteral("hwid"), m_hwid);
+
+    qWarning() << "[POWER] notifyPowerOffline terminal" << termId;
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+
+    QEventLoop loop;
+    QTimer killer;
+    killer.setSingleShot(true);
+    QObject::connect(&killer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    killer.start(2000);
+    loop.exec();
+
+    if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+        qWarning() << "[POWER] offline ack:" << reply->readAll();
+    } else {
+        qWarning() << "[POWER] offline notify failed:"
+                   << (reply->isFinished() ? reply->errorString() : QStringLiteral("timeout"));
+    }
+    reply->deleteLater();
+}
+
+void NetworkManager::fetchFanState()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("terminal_id"), QString::number(termId));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[CLIMATE] getFanState failed:" << reply->errorString();
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success"))
+            return;
+        applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+    });
+}
+
+void NetworkManager::setFan(const QString &action)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0) {
+        qWarning() << "[CLIMATE] setFan: no server/terminal";
+        return;
+    }
+
+    const QString normalized = action.trimmed().toLower();
+    if (normalized != QLatin1String("on")
+        && normalized != QLatin1String("off")
+        && normalized != QLatin1String("auto")) {
+        qWarning() << "[CLIMATE] setFan: bad action" << action;
+        return;
+    }
+
+    if (m_fanRequestInFlight)
+        return;
+    m_fanRequestInFlight = true;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("action"), normalized);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, normalized]() {
+        reply->deleteLater();
+        m_fanRequestInFlight = false;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[CLIMATE] setFan failed:" << normalized << reply->errorString();
+            fetchFanState();
+            return;
+        }
+
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success"))
+            applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+        else
+            fetchFanState();
+    });
+}
+
+void NetworkManager::postThermal(double cpuC)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || cpuC < 0.0)
+        return;
+    if (m_thermalRequestInFlight)
+        return;
+    m_thermalRequestInFlight = true;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/thermal"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("cpu_c"), cpuC);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cpuC]() {
+        reply->deleteLater();
+        m_thermalRequestInFlight = false;
+
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[CLIMATE] reportThermal failed:" << reply->errorString();
+            return;
+        }
+
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success"))
+            return;
+
+        if (m_cpuTempC != cpuC) {
+            m_cpuTempC = cpuC;
+            emit cpuTempChanged();
+        }
+        applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+    });
+}
+
+void NetworkManager::reportThermalNow()
+{
+    const double cpuC = ThermalMonitor::readCpuCelsius();
+    if (cpuC < 0.0)
+        return;
+
+    if (m_cpuTempC != cpuC) {
+        m_cpuTempC = cpuC;
+        emit cpuTempChanged();
+    }
+    postThermal(cpuC);
+}
+
+void NetworkManager::abortAiAssistant()
+{
+    if (!m_aiAssistantReply)
+        return;
+    QNetworkReply *reply = m_aiAssistantReply;
+    m_aiAssistantReply = nullptr;
+    reply->disconnect(this);
+    reply->abort();
+    reply->deleteLater();
+}
+
+void NetworkManager::askAiAssistant(int terminalId, const QString &audioPath,
+                                    int gameId, const QString &gameTitle)
+{
+    abortAiAssistant();
+
+    if (m_serverUrl.isEmpty() || terminalId <= 0) {
+        emit aiAssistantFailed(QStringLiteral("Терминал не готов"));
+        return;
+    }
+    if (!QFile::exists(audioPath)) {
+        emit aiAssistantFailed(QStringLiteral("Файл записи не найден"));
+        return;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/ai-assistant"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(90000);
+
+    auto *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
+    QHttpPart terminalPart;
+    terminalPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                           QVariant(QStringLiteral("form-data; name=\"terminal_id\"")));
+    terminalPart.setBody(QByteArray::number(terminalId));
+    multiPart->append(terminalPart);
+
+    if (gameId > 0) {
+        QHttpPart gameIdPart;
+        gameIdPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                             QVariant(QStringLiteral("form-data; name=\"game_id\"")));
+        gameIdPart.setBody(QByteArray::number(gameId));
+        multiPart->append(gameIdPart);
+    }
+    if (!gameTitle.trimmed().isEmpty()) {
+        QHttpPart titlePart;
+        titlePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                            QVariant(QStringLiteral("form-data; name=\"game_title\"")));
+        titlePart.setBody(gameTitle.trimmed().toUtf8());
+        multiPart->append(titlePart);
+    }
+
+    auto *file = new QFile(audioPath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        delete file;
+        delete multiPart;
+        emit aiAssistantFailed(QStringLiteral("Не удалось открыть запись"));
+        return;
+    }
+
+    QHttpPart audioPart;
+    audioPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                        QVariant(QStringLiteral("form-data; name=\"audio\"; filename=\"ask.wav\"")));
+    audioPart.setHeader(QNetworkRequest::ContentTypeHeader,
+                        QVariant(QStringLiteral("audio/wav")));
+    audioPart.setBodyDevice(file);
+    file->setParent(multiPart);
+    multiPart->append(audioPart);
+
+    qWarning() << "[VOICE-NET] POST" << url.toString()
+               << "terminal=" << terminalId
+               << "game_id=" << gameId
+               << "bytes=" << file->size();
+
+    QNetworkReply *reply = m_networkManager->post(request, multiPart);
+    multiPart->setParent(reply);
+    m_aiAssistantReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (m_aiAssistantReply != reply) {
+            // Aborted / superseded.
+            return;
+        }
+        m_aiAssistantReply = nullptr;
+
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
+
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            qWarning() << "[VOICE-NET] aborted";
+            return;
+        }
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString msg = QStringLiteral("Сеть: %1").arg(reply->errorString());
+            const QJsonDocument errDoc = QJsonDocument::fromJson(body);
+            if (errDoc.isObject()) {
+                const QString m = errDoc.object().value(QStringLiteral("message")).toString();
+                if (!m.isEmpty())
+                    msg = m;
+            }
+            qWarning() << "[VOICE-NET] HTTP error" << httpStatus << msg;
+            emit aiAssistantFailed(msg);
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(body);
+        if (!doc.isObject()) {
+            emit aiAssistantFailed(QStringLiteral("Некорректный ответ сервера"));
+            return;
+        }
+
+        const QJsonObject root = doc.object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            const QString msg = root.value(QStringLiteral("message")).toString(
+                QStringLiteral("Ошибка ассистента"));
+            emit aiAssistantFailed(msg);
+            return;
+        }
+
+        const QString b64 = root.value(QStringLiteral("audio_base64")).toString();
+        const QByteArray audioBytes = QByteArray::fromBase64(b64.toUtf8());
+        const QString mime = root.value(QStringLiteral("audio_mime")).toString(
+            QStringLiteral("audio/mpeg"));
+        const QString transcript = root.value(QStringLiteral("transcript")).toString();
+        const QString replyText = root.value(QStringLiteral("reply_text")).toString();
+
+        if (audioBytes.isEmpty()) {
+            emit aiAssistantFailed(QStringLiteral("Пустой audio в ответе"));
+            return;
+        }
+
+        emit aiAssistantSucceeded(audioBytes, mime, transcript, replyText);
+    });
+}
+
+void NetworkManager::abortVoiceGreeting()
+{
+    if (!m_voiceGreetingReply)
+        return;
+    QNetworkReply *reply = m_voiceGreetingReply;
+    m_voiceGreetingReply = nullptr;
+    reply->disconnect(this);
+    reply->abort();
+    reply->deleteLater();
+}
+
+void NetworkManager::requestVoiceGreeting(int terminalId, int bookingId)
+{
+    abortVoiceGreeting();
+
+    if (m_serverUrl.isEmpty() || terminalId <= 0) {
+        emit voiceGreetingFailed(QStringLiteral("Терминал не готов"));
+        return;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/voice-greeting"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(90000);
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), terminalId);
+    if (bookingId > 0)
+        json.insert(QStringLiteral("booking_id"), bookingId);
+
+    qWarning() << "[VOICE-NET] POST voice-greeting terminal=" << terminalId
+               << "booking=" << bookingId;
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    m_voiceGreetingReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (m_voiceGreetingReply != reply)
+            return;
+        m_voiceGreetingReply = nullptr;
+
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
+
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            qWarning() << "[VOICE-NET] voice-greeting aborted";
+            return;
+        }
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString msg = QStringLiteral("Сеть: %1").arg(reply->errorString());
+            const QJsonDocument errDoc = QJsonDocument::fromJson(body);
+            if (errDoc.isObject()) {
+                const QString m = errDoc.object().value(QStringLiteral("message")).toString();
+                if (!m.isEmpty())
+                    msg = m;
+            }
+            qWarning() << "[VOICE-NET] voice-greeting HTTP" << httpStatus << msg;
+            emit voiceGreetingFailed(msg);
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(body);
+        if (!doc.isObject()) {
+            emit voiceGreetingFailed(QStringLiteral("Некорректный ответ сервера"));
+            return;
+        }
+
+        const QJsonObject root = doc.object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            emit voiceGreetingFailed(root.value(QStringLiteral("message")).toString(
+                QStringLiteral("Ошибка приветствия")));
+            return;
+        }
+
+        const QByteArray audioBytes = QByteArray::fromBase64(
+            root.value(QStringLiteral("audio_base64")).toString().toUtf8());
+        if (audioBytes.isEmpty()) {
+            emit voiceGreetingFailed(QStringLiteral("Пустой audio в приветствии"));
+            return;
+        }
+
+        emit voiceGreetingSucceeded(
+            audioBytes,
+            root.value(QStringLiteral("audio_mime")).toString(QStringLiteral("audio/mpeg")),
+            root.value(QStringLiteral("reply_text")).toString(),
+            root.value(QStringLiteral("is_first_visit")).toBool(false));
     });
 }

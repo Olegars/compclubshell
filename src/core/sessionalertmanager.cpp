@@ -249,6 +249,7 @@ void SessionAlertManager::reset()
     m_warned15 = false;
     m_warned10 = false;
     m_warned5 = false;
+    m_speechBlocked = false;
     setTimeRemaining(QStringLiteral("00:00:00"));
     setSessionActive(false);
     if (m_toast)
@@ -470,9 +471,18 @@ bool SessionAlertManager::speakWithPowerShell(const QString &text)
 #endif
 }
 
+void SessionAlertManager::setSpeechBlocked(bool blocked)
+{
+    m_speechBlocked = blocked;
+}
+
 void SessionAlertManager::speakRussian(const QString &text)
 {
 #ifdef Q_OS_WIN
+    if (m_speechBlocked) {
+        qWarning() << "[SESSION-ALERT] TTS skipped (voice assistant busy):" << text;
+        return;
+    }
     if (speakWithSapi(text)) {
         qWarning() << "[SESSION-ALERT] TTS (SAPI):" << text;
         return;

@@ -12,7 +12,11 @@
 #include <QCoreApplication>
 #include <QWindow>
 #include <QQuickStyle>
+#include <QLibrary>
+#include <QStringList>
+#include <QTimer>
 #include <QtWebView/QtWebView>
+#include <cstdio>
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
@@ -25,6 +29,8 @@
 #include "src/core/securitymanager.h"
 #include "src/core/processmanager.h"
 #include "src/core/hidinputmonitor.h"
+#include "src/core/voiceassistant.h"
+#include "src/core/lobbyaudiomanager.h"
 
 // C++ Модели данных для QML слоя
 #include "src/models/gamemodel.h"
@@ -34,9 +40,75 @@ namespace {
 
 const char *kDebugLogPath = "C:/ShellVideo/shell-debug.log";
 
+bool isNoisyLogLine(QtMsgType type, const QString &msg)
+{
+    // FFmpeg / multimedia / NVIDIA ShadowPlay
+    if (msg.contains(QLatin1String("Input #0"))
+        || msg.contains(QLatin1String("Metadata:"))
+        || msg.contains(QLatin1String("Duration:"))
+        || msg.contains(QLatin1String("Stream #0"))
+        || msg.contains(QLatin1String("compatible_brands"))
+        || msg.contains(QLatin1String("handler_name"))
+        || msg.contains(QLatin1String("LvMetaInfo"))
+        || msg.contains(QLatin1String("Using Qt multimedia"))
+        || msg.contains(QLatin1String("Qt Multimedia requires"))
+        || msg.contains(QLatin1String("qt.multimedia"))
+        || msg.contains(QLatin1String("QMediaPlayer"))
+        || msg.contains(QLatin1String("QWaitCondition: Destroyed while threads"))
+        || msg.contains(QLatin1String("QObject::connect(QObject, Unknown): invalid nullptr"))
+        || msg.contains(QLatin1String("ShadowPlay"))
+        || msg.contains(QLatin1String("CLogger::Create"))
+        || msg.contains(QLatin1String("CaptureCore.log"))) {
+        return true;
+    }
+
+    // Периодический / ожидаемый шум оболочки
+    if (msg.contains(QLatin1String("[THERMAL]"))
+        || msg.contains(QLatin1String("[CLIMATE]"))
+        || msg.contains(QLatin1String("[AUDIO] devices:"))
+        || msg.contains(QLatin1String("[AUDIO] WARN: only HDMI"))
+        || msg.contains(QLatin1String("[AUDIO] speakers-scan"))
+        || msg.contains(QLatin1String("[AUDIO] speakers device:"))
+        || msg.contains(QLatin1String("[AUDIO] headphones guard"))
+        || msg.contains(QLatin1String("[LOBBY] music start"))
+        || msg.contains(QLatin1String("[LOBBY] routed"))
+        || msg.contains(QLatin1String("[LOBBY] music faded"))
+        || msg.contains(QLatin1String("[LOBBY] enabled="))
+        || msg.contains(QLatin1String("[LOBBY] greeting failed"))
+        || msg.contains(QLatin1String("[VOICE] config"))
+        || msg.contains(QLatin1String("[VOICE] hotkey"))
+        || msg.contains(QLatin1String("[VOICE] sessionActive"))
+        || msg.contains(QLatin1String("[VOICE-NET] voice-greeting HTTP 422"))
+        || msg.contains(QLatin1String("[SESSION-ALERT]"))
+        || msg.contains(QLatin1String("[POWER] idle + desired"))
+        || msg.contains(QLatin1String("[POWER] heartbeat started"))
+        || msg.contains(QLatin1String("[POWER] logout"))
+        || msg.contains(QLatin1String("SHUTDOWN stub"))
+        || msg.contains(QLatin1String("REBOOT stub"))
+        || msg.contains(QLatin1String("[OVERLAYS]"))
+        || msg.contains(QLatin1String("[PLAYER-OPTIMIZED]"))
+        || msg.contains(QLatin1String("[SHOP]"))
+        || msg.contains(QLatin1String("[HID]"))
+        || msg.contains(QLatin1String("[START-TRACE]"))
+        || msg.contains(QLatin1String("[DEBUG-MAIN]"))
+        || msg.contains(QLatin1String("[PAY] diag"))
+        || msg.contains(QLatin1String("[PAY] loadingChanged"))
+        || msg.contains(QLatin1String("QProcess: Destroyed while process"))) {
+        return true;
+    }
+
+    // DBG в консоли слишком шумный (оверлеи, NET, PAY…)
+    if (type == QtDebugMsg)
+        return true;
+
+    return false;
+}
+
 void reactorMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
     Q_UNUSED(context)
+    if (isNoisyLogLine(type, msg))
+        return;
 
     static const char *levels[] = { "DBG", "WRN", "CRT", "FTL", "INF" };
     const char *level = levels[type <= QtInfoMsg ? int(type) : 0];
@@ -45,7 +117,6 @@ void reactorMessageHandler(QtMsgType type, const QMessageLogContext &context, co
             .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz")),
                  QString::fromLatin1(level), msg);
 
-    // Консоль / "Вывод приложения" в Qt Creator.
     fprintf(stderr, "%s\n", qPrintable(line));
     fflush(stderr);
 
@@ -54,6 +125,29 @@ void reactorMessageHandler(QtMsgType type, const QMessageLogContext &context, co
     if (f.open(QIODevice::Append | QIODevice::Text)) {
         QTextStream ts(&f);
         ts << line << '\n';
+    }
+}
+
+/** FFmpeg пишет Input #0 / Stream #0 напрямую в stderr — глушим до ERROR. */
+void quietFfmpegNativeLog()
+{
+    using AvLogSetLevelFn = void (*)(int);
+    const QStringList names = {
+        QStringLiteral("avutil-61"),
+        QStringLiteral("avutil-60"),
+        QStringLiteral("avutil-59"),
+        QStringLiteral("avutil-58"),
+        QStringLiteral("avutil"),
+    };
+    for (const QString &name : names) {
+        QLibrary lib(name);
+        if (!lib.load())
+            continue;
+        auto fn = reinterpret_cast<AvLogSetLevelFn>(lib.resolve("av_log_set_level"));
+        if (!fn)
+            continue;
+        fn(16); // AV_LOG_ERROR
+        return;
     }
 }
 
@@ -141,6 +235,9 @@ int main(int argc, char *argv[])
 
     QGuiApplication app(argc, argv);
     QQuickStyle::setStyle("Basic");
+    // avutil подгружается вместе с Qt Multimedia — глушим после старта и ещё раз чуть позже.
+    quietFfmpegNativeLog();
+    QTimer::singleShot(1500, &app, []() { quietFfmpegNativeLog(); });
 
     // ГЛОБАЛЬНЫЙ ФЛАГ РЕЖИМА ПРОДАКШЕНА REACTOR (Для отладки окон поставьте false)
     bool isProduction = false;
@@ -166,9 +263,17 @@ int main(int argc, char *argv[])
     ProcessManager *processManager = new ProcessManager(networkManager, &app);
     SessionAlertManager *sessionAlertManager = new SessionAlertManager(&app);
     HidInputMonitor *hidMonitor = new HidInputMonitor(networkManager, &app);
+    VoiceAssistant *voiceAssistant = new VoiceAssistant(
+        networkManager, processManager, sessionAlertManager, &app);
+    LobbyAudioManager *lobbyAudio = new LobbyAudioManager(
+        networkManager, sessionAlertManager, &app);
 
     networkManager->fetchTerminalConfig(HwidProvider::machineHwid());
     networkManager->checkTerminalStatus();
+
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, networkManager, [networkManager]() {
+        networkManager->notifyPowerOffline();
+    });
 
     // Регистрация C++ контекстных свойств напрямую в QML движок
     QQmlContext *rootContext = engine.rootContext();
@@ -180,6 +285,8 @@ int main(int argc, char *argv[])
     rootContext->setContextProperty("launcher", processManager);
     rootContext->setContextProperty("SessionAlert", sessionAlertManager);
     rootContext->setContextProperty("HidMonitor", hidMonitor);
+    rootContext->setContextProperty("VoiceAssistant", voiceAssistant);
+    rootContext->setContextProperty("LobbyAudio", lobbyAudio);
 
     qDebug() << "[REACTOR-MAIN] Рабочая директория приложения:" << QDir::currentPath();
     qDebug() << "[REACTOR-MAIN] Поиск корневого интерфейса в QRC ресурсах...";

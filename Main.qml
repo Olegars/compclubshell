@@ -25,7 +25,12 @@ Window {
     property string sessionTime: "00:00:00"
     property alias authScreen: screenSwitcher
     property string temporaryPausePin: "----"
-    property string pcTypeFromDatabase: "standard"
+    property string pcTypeFromDatabase: (typeof NetworkManager !== "undefined" && NetworkManager.zoneSlug)
+                                        ? NetworkManager.zoneSlug : "singl"
+    property string zoneNameFromDatabase: (typeof NetworkManager !== "undefined")
+                                          ? NetworkManager.zoneName : ""
+    property string zoneColorFromDatabase: (typeof NetworkManager !== "undefined")
+                                           ? NetworkManager.zoneColor : ""
     property int currentGameId: 0
     property bool isHardwareAdmin: false
 
@@ -48,6 +53,7 @@ Window {
     property var pendingOverlaysData: null
     property string loadingPlatform: ""
     property string loadingGameTitle: ""
+    property bool quickMenuIntroduced: false
 
     // Видео оверлеев крутим только пока экран логина реально на экране:
     // 6 MediaPlayer'ов вхолостую съедают GPU/CPU за игровой сессией и на загрузке.
@@ -81,6 +87,14 @@ Window {
             Launcher.setShellTopmost(true)
         root.raise()
         root.requestActivate()
+        // Обучение показываем один раз за пользовательскую сессию. При следующих
+        // запусках остаётся только знакомый уголок.
+        if (!root.quickMenuIntroduced) {
+            root.quickMenuIntroduced = true
+            quickMenu.openExpanded(true)
+        } else {
+            quickMenu.collapseToCorner()
+        }
     }
 
     function updateGameLoading(platform, gameTitle) {
@@ -199,6 +213,8 @@ Window {
             } else if (root.sessionUser === "GUEST" || root.sessionUser === "") {
                 if (typeof SessionAlert !== "undefined")
                     SessionAlert.reset()
+                if (typeof LobbyAudio !== "undefined")
+                    LobbyAudio.setGuestMode(true)
                 root.sessionTime = "00:00:00"
                 root.hasActiveOrder = false
                 root.trackedOrderId = 0
@@ -245,21 +261,38 @@ Window {
                 ? NetworkManager.computerId
                 : (parseInt(root.pcNameString.replace(/[^0-9]/g, "")) || 0)
             console.log("[DEBUG-MAIN] Конец onAuthRequired. Итоговый terminalId =", root.terminalId)
+            if (typeof LobbyAudio !== "undefined")
+                LobbyAudio.setGuestMode(true)
+        }
+
+        function onSessionForceEnded() {
+            console.log("[POWER] Сессия закрыта на сервере — сброс UI")
+            if (typeof HidMonitor !== "undefined")
+                HidMonitor.stopWatch()
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.stopClimateControl()
+            root.sessionUser = ""
         }
 
         function onLoginSucceeded(userName, balance, timeRemaining, phone) {
             if (typeof Launcher !== "undefined") Launcher.applyQosPolicies(true)
+            root.quickMenuIntroduced = false
             root.sessionPhone = phone
             root.sessionUser = userName
             root.sessionBalance = balance
             root.sessionTime = timeRemaining
             if (typeof SessionAlert !== "undefined")
                 SessionAlert.startSession(timeRemaining)
+            // Fade lobby music on speakers, then play personalized AI greeting.
+            if (typeof LobbyAudio !== "undefined")
+                LobbyAudio.onLoginSucceeded()
             screenSwitcher.sourceComponent = null
             dashboardLoader.source = "Dashboard.qml"
             NetworkManager.fetchGames()
+            NetworkManager.fetchQuickApps()
             NetworkManager.fetchProducts()
             NetworkManager.refreshBalance()
+            NetworkManager.startClimateControl()
             if (typeof HidMonitor !== "undefined") {
                 var cid = NetworkManager.computerId > 0 ? NetworkManager.computerId : root.terminalId
                 var bid = NetworkManager.lastBookingId || 0
@@ -364,6 +397,24 @@ Window {
         }
     }
 
+    // Питание: пока шелл на экране логина/паузы — периодически помечаем ПК онлайн.
+    // Новый бинарник бьёт /power/heartbeat; иначе — overlays (бэкенд тоже делает touch).
+    Timer {
+        id: powerKeepaliveTimer
+        interval: 30000
+        running: root.terminalId > 0 && !setupScreenLoader.item
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: {
+            if (typeof NetworkManager === "undefined")
+                return
+            if (typeof NetworkManager.sendPowerHeartbeat === "function")
+                NetworkManager.sendPowerHeartbeat()
+            else
+                NetworkManager.fetchOverlays(root.terminalId)
+        }
+    }
+
     onHasActiveOrderChanged: {
         if (!root.hasActiveOrder
                 && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
@@ -390,6 +441,9 @@ Window {
 
     Component.onCompleted: {
         console.log("[START-TRACE] [STEP QML-A] ...Загрузка корневого окна...")
+        if ((root.sessionUser === "GUEST" || root.sessionUser === "")
+                && typeof LobbyAudio !== "undefined")
+            LobbyAudio.setGuestMode(true)
     }
 
     Binding {
@@ -406,6 +460,11 @@ Window {
         target: Theme
         property: "zoneType"
         value: root.pcTypeFromDatabase
+    }
+    Binding {
+        target: Theme
+        property: "zoneColorHex"
+        value: root.zoneColorFromDatabase
     }
 
     // Весь интерфейс живёт в макете 1920x1080 и масштабируется целиком.
@@ -1020,6 +1079,55 @@ Window {
     }
 
     }
+
+    // Быстрое меню доп.софта: отдельный HWND (живёт поверх игры).
+    QuickMenu {
+        id: quickMenu
+    }
+
+    // Hold-to-talk: красная точка (bottom-right), отдельный HWND.
+    VoiceIndicator {
+        id: voiceIndicator
+    }
+
+    // Уголок / панель только пока идёт загрузка или шелл спрятан под игру.
+    // На дашборде без игры не мешаем.
+    Connections {
+        target: typeof Launcher !== "undefined" ? Launcher : null
+        function onShellHiddenForGameChanged() {
+            root.syncQuickMenu()
+        }
+        function onHasActiveGameChanged() {
+            root.syncQuickMenu()
+        }
+    }
+
+    function syncQuickMenu() {
+        var loading = root.gameLoadingVisible
+        var overGame = typeof Launcher !== "undefined"
+                && Launcher.hasActiveGame
+                && Launcher.shellHiddenForGame
+
+        if (loading) {
+            // Уже открыли в showGameLoading; если гость закрыл — оставляем уголок.
+            if (!quickMenu.visible)
+                quickMenu.collapseToCorner()
+            return
+        }
+
+        if (overGame) {
+            // Не сворачиваем, если гость уже держит панель открытой.
+            if (!quickMenu.visible)
+                quickMenu.collapseToCorner()
+            else
+                quickMenu.reassertTopmost()
+            return
+        }
+
+        quickMenu.hideAll()
+    }
+
+    onGameLoadingVisibleChanged: root.syncQuickMenu()
     // ^ конец uiRoot
 
     function updateOverlaysToScreen(response) {

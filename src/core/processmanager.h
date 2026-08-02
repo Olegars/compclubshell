@@ -39,6 +39,7 @@ public:
     bool hasActiveGame() const;
     QString gameTitle() const;
     bool shellHiddenForGame() const;
+    int currentGameId() const { return m_currentGameId; }
 
 public slots:
     // Универсальный вход: authData.platform = steam|epic|direct|…
@@ -62,6 +63,13 @@ public slots:
     Q_INVOKABLE void launchFirstExisting(const QStringList &candidatePaths,
                                          const QString &args = QString());
 
+    /** Запуск Discord/Telegram/… без игровой сессии шелла. */
+    Q_INVOKABLE void launchDetached(const QString &exePath,
+                                    const QString &args = QString());
+
+    /** Поднять tool-окно поверх игры (HWND_TOPMOST), не активируя его. */
+    Q_INVOKABLE void raiseTopmostToolWindow(QObject *windowObject);
+
     void backupAndSendVdfPayload();
     void applyQosPolicies(bool enable);
     Q_INVOKABLE void setSystemVolume(int level);
@@ -69,6 +77,8 @@ public slots:
     void handleDownloadDecision(bool continueDownload);
     void applyEnterprisePolicies(bool enable);
     Q_INVOKABLE void rebootPC();
+    /** reboot | shutdown — сейчас только лог (реальная мощность отключена для отладки). */
+    Q_INVOKABLE void applyPowerAction(const QString &action);
     // Clear/blur game search before SendInput credentials and when shell returns
     Q_INVOKABLE void requestClearGameSearch();
 

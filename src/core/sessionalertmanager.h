@@ -27,6 +27,10 @@ public:
     /** Stub for «ПРОДЛИТЬ ВРЕМЯ» — toast + log, no API. */
     Q_INVOKABLE void requestExtendTime();
 
+    /** Block SAPI/PowerShell TTS while voice-assistant reply is playing. */
+    void setSpeechBlocked(bool blocked);
+    bool speechBlocked() const { return m_speechBlocked; }
+
 signals:
     void timeRemainingChanged();
     void sessionActiveChanged();
@@ -58,6 +62,7 @@ private:
     QString m_timeRemaining = QStringLiteral("00:00:00");
     int m_remainingSeconds = 0;
     bool m_sessionActive = false;
+    bool m_speechBlocked = false;
     bool m_warned15 = false;
     bool m_warned10 = false;
     bool m_warned5 = false;

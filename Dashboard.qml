@@ -23,6 +23,26 @@ Item {
     property real userBalance: (typeof root !== 'undefined' && root !== null) ? root.sessionBalance : 0.0
     property string timeRemaining: (typeof root !== 'undefined') ? root.sessionTime : "00:00:00"
 
+    // Подсветка баланса, когда деньги прилетели (пополнение, возврат).
+    // Первое присвоение после входа не считаем: там баланс приходит с нуля.
+    property real balancePrev: 0
+    property bool balanceTracked: false
+    property real balanceGain: 0
+    signal balanceIncreased(real gain)
+
+    onUserBalanceChanged: {
+        if (!balanceTracked) {
+            balanceTracked = true
+            balancePrev = userBalance
+            return
+        }
+        if (userBalance > balancePrev + 0.009) {
+            balanceGain = userBalance - balancePrev
+            balanceIncreased(balanceGain)
+        }
+        balancePrev = userBalance
+    }
+
     // Keep display balance bound to Main.sessionBalance (checkout must not break this).
     Binding {
         target: dashboardRoot
@@ -32,16 +52,29 @@ Item {
     }
 
     property int termId: (typeof root !== 'undefined' && root !== null) ? root.terminalId : 0
-    property string pcType: (typeof root !== 'undefined' && root !== null) ? root.pcTypeFromDatabase : "standard"
+    property string pcType: (typeof root !== 'undefined' && root !== null) ? root.pcTypeFromDatabase : "singl"
+    property string zoneNameFromDb: (typeof root !== 'undefined' && root !== null) ? root.zoneNameFromDatabase : ""
 
-    property bool isProBootcamp: (pcType.toLowerCase() === "pro" ||
-                                  pcType.toLowerCase() === "bootcamp" ||
-                                  pcType.toLowerCase() === "trio" ||
-                                  pcType.toLowerCase() === "vip")
+    property bool isProBootcamp: {
+        var z = pcType.toLowerCase()
+        return z === "bootcamp" || z === "bootcamp-pro" || z === "trio" || z === "kvatro" || z === "vip" || z === "pro"
+    }
 
-    property string zoneTitle: (pcType.toLowerCase() === "trio") ? "TRIO ZONE" :
-                               (pcType.toLowerCase() === "vip") ? "VIP ZONE" :
-                               (isProBootcamp ? "PRO BOOTCAMP ZONE" : "STANDARD ZONE")
+    property string zoneTitle: {
+        var name = String(zoneNameFromDb || "").trim()
+        if (name.length > 0)
+            return name.toUpperCase() + " ZONE"
+        var z = String(pcType || "").trim().toLowerCase()
+        if (z === "singl" || z === "single" || z === "solo" || z === "standard" || z === "standart")
+            return "СИНГЛ ZONE"
+        if (z === "duo") return "ДУО ZONE"
+        if (z === "trio") return "ТРИО ZONE"
+        if (z === "kvatro" || z === "quatro") return "КВАТРО ZONE"
+        if (z === "bootcamp" || z === "bootkamp") return "БУТКАМП ZONE"
+        if (z === "tv") return "ТВ ZONE"
+        if (z.length > 0) return z.toUpperCase() + " ZONE"
+        return "ЗОНА"
+    }
 
     // Палитра живёт в Theme (акцент зоны единый для логина, загрузки и дашборда)
     readonly property color accentColor: Theme.accent
@@ -473,6 +506,137 @@ Item {
     Component.onCompleted: {
         if (typeof NetworkManager !== 'undefined') {
             NetworkManager.fetchProducts()
+            NetworkManager.startClimateControl()
+        }
+        climateControl.playStartup()
+    }
+
+    // --- Климат-контроль: декор оборотов / кнопка ---
+    QtObject {
+        id: climateControl
+        property bool starting: false
+        property bool running: false
+        property bool stopping: false
+        property int rpm: 0
+        property bool busy: starting || stopping
+
+        function playStartup() {
+            if (starting)
+                return
+            stopping = false
+            starting = true
+            running = false
+            rpmRamp.stop()
+            rpmJitter.stop()
+            rpm = 0
+            rpmRamp.to = 3000
+            rpmRamp.duration = 5000
+            rpmRamp.easing.type = Easing.OutCubic
+            rpmRamp.start()
+            blinkAnim.restart()
+        }
+
+        function playShutdown() {
+            starting = false
+            stopping = true
+            running = false
+            rpmRamp.stop()
+            rpmJitter.stop()
+            blinkAnim.stop()
+            rpmRamp.to = 0
+            // Выбег крыльчатки: дольше разгона и с затухающим хвостом.
+            rpmRamp.duration = 6000
+            rpmRamp.easing.type = Easing.InQuad
+            rpmRamp.start()
+        }
+
+        function setRunningSteady() {
+            starting = false
+            stopping = false
+            running = true
+            blinkAnim.stop()
+            if (rpm < 2900)
+                rpm = 3000
+            rpmJitter.restart()
+        }
+
+        function toggle() {
+            if (typeof NetworkManager === "undefined")
+                return
+            if (busy)
+                return
+            if (running || NetworkManager.fanOn) {
+                NetworkManager.setFan("off")
+                playShutdown()
+            } else {
+                NetworkManager.setFan("on")
+                playStartup()
+            }
+        }
+    }
+
+    NumberAnimation {
+        id: rpmRamp
+        target: climateControl
+        property: "rpm"
+        onFinished: {
+            if (climateControl.starting && climateControl.rpm >= 2950) {
+                climateControl.setRunningSteady()
+            } else if (climateControl.stopping && climateControl.rpm <= 5) {
+                climateControl.rpm = 0
+                climateControl.stopping = false
+                climateControl.running = false
+            }
+        }
+    }
+
+    Timer {
+        id: rpmJitter
+        interval: 180
+        repeat: true
+        running: false
+        onTriggered: {
+            if (!climateControl.running)
+                return
+            climateControl.rpm = 2900 + Math.floor(Math.random() * 101)
+        }
+    }
+
+    SequentialAnimation {
+        id: blinkAnim
+        loops: Animation.Infinite
+        running: false
+        NumberAnimation {
+            target: climatePowerPulse
+            property: "opacity"
+            to: 1.0
+            duration: 90
+        }
+        NumberAnimation {
+            target: climatePowerPulse
+            property: "opacity"
+            to: 0.15
+            duration: 90
+        }
+        onStopped: {
+            if (climatePowerPulse)
+                climatePowerPulse.opacity = 0
+        }
+    }
+
+    Connections {
+        target: (typeof NetworkManager !== "undefined") ? NetworkManager : null
+        function onFanStateChanged() {
+            if (typeof NetworkManager === "undefined")
+                return
+            // Подхватываем внешнее включение (сессия / другой ПК / термо).
+            // Старт при входе в сессию не рвём: бекенд может ответить чуть позже.
+            if (NetworkManager.fanOn) {
+                if (!climateControl.running && !climateControl.starting && !climateControl.stopping)
+                    climateControl.playStartup()
+            } else if (!climateControl.stopping && climateControl.running) {
+                climateControl.playShutdown()
+            }
         }
     }
 
@@ -744,67 +908,383 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 30
 
-                Rectangle {
-                    id: sosBtn
-                    width: 60
-                    height: 60
-                    radius: 4
-                    anchors.top: parent.top
-                    anchors.right: parent.right
-                    z: 100
-                    color: sosMouse.pressed
-                           ? "#991b1b"
-                           : (sosMouse.containsMouse ? Theme.dangerStrong : "#450a0a")
-                    border.color: Theme.dangerStrong
-                    border.width: 1
-                    scale: sosMouse.pressed ? 0.94 : (sosMouse.containsMouse ? 1.04 : 1.0)
-                    opacity: sosMouse.pressed ? 0.9 : 1.0
-                    layer.enabled: sosMouse.containsMouse || sosMouse.pressed
-                    layer.effect: MultiEffect { blurEnabled: true; blur: 0.15 }
-                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
-                    Behavior on opacity { NumberAnimation { duration: 100 } }
-                    Behavior on color { ColorAnimation { duration: 100 } }
-
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 2
-                        Text { text: "⚠️"; font.pixelSize: 14; anchors.horizontalCenter: parent.horizontalCenter }
-                        Text { text: "SOS"; color: sosMouse.containsMouse || sosMouse.pressed ? "black" : "white"; font.pixelSize: 12; font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
-                    }
-
-                    MouseArea {
-                        id: sosMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: sosReasonPopup.open()
-                    }
-                }
-
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 12
 
-                    Row {
-                        Layout.alignment: Qt.AlignLeft
-                        spacing: 8
-                        Rectangle { width: 6; height: 6; radius: 3; color: accentColor; anchors.verticalCenter: parent.verticalCenter }
-                        Text { text: "LATENCY (EU): " + (typeof NetworkManager !== 'undefined' ? NetworkManager.getLatency("162.249.72.1") : 24) + " MS"; color: accentColor; font.pixelSize: Theme.fontCaption; font.bold: true; opacity: 0.8 }
+                    RowLayout {
+                        id: topTilesRow
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        // Общая высота плиток: без неё SOS брал размер у соседа
+                        // внутри того же ряда и получался чуть другим.
+                        readonly property int tileSize: 72
+
+                        Rectangle {
+                            id: climateBox
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: topTilesRow.tileSize
+                            Layout.minimumHeight: topTilesRow.tileSize
+                            Layout.maximumHeight: topTilesRow.tileSize
+                            Layout.alignment: Qt.AlignVCenter
+                            color: "#0a0f0b"
+                            border.color: (climateControl.running || climateControl.starting)
+                                          ? Qt.rgba(0.13, 0.77, 0.36, 0.55)
+                                          : Qt.rgba(0.13, 0.77, 0.36, 0.3)
+                            border.width: 1
+                            radius: 4
+                            Behavior on border.color { ColorAnimation { duration: 200 } }
+
+                            ColumnLayout {
+                                id: climateCol
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                anchors.topMargin: 6
+                                anchors.bottomMargin: 6
+                                spacing: 2
+
+                                Text {
+                                    text: "КЛИМАТ КОНТРОЛЬ"
+                                    color: accentColor
+                                    font.pixelSize: Theme.fontCaption
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    opacity: 0.7
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    spacing: 10
+
+                                    Rectangle {
+                                        id: climatePowerBtn
+                                        Layout.preferredWidth: 40
+                                        Layout.preferredHeight: 40
+                                        Layout.alignment: Qt.AlignVCenter
+                                        radius: 4
+                                        color: {
+                                            if (climateControl.starting)
+                                                return "#14532d"
+                                            if (climateControl.running)
+                                                return Theme.success
+                                            return Theme.danger
+                                        }
+                                        border.color: climatePowerBtnMouse.containsMouse
+                                                      ? "white"
+                                                      : (climateControl.running || climateControl.starting
+                                                         ? Qt.lighter(Theme.success, 1.2)
+                                                         : Qt.lighter(Theme.danger, 1.15))
+                                        border.width: climatePowerBtnMouse.containsMouse ? 2 : 1
+                                        scale: climatePowerBtnMouse.pressed ? 0.94 : (climatePowerBtnMouse.containsMouse ? 1.04 : 1.0)
+                                        Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
+                                        Behavior on color { ColorAnimation { duration: 180 } }
+
+                                        Rectangle {
+                                            id: climatePowerPulse
+                                            anchors.fill: parent
+                                            radius: parent.radius
+                                            color: "#4ade80"
+                                            opacity: 0
+                                            z: 0
+                                        }
+
+                                        Canvas {
+                                            id: powerGlyph
+                                            anchors.centerIn: parent
+                                            z: 1
+                                            width: 20
+                                            height: 20
+                                            antialiasing: true
+
+                                            property color strokeColor: climatePowerBtnMouse.pressed ? "#111111" : "white"
+                                            onStrokeColorChanged: requestPaint()
+
+                                            onPaint: {
+                                                var ctx = getContext("2d")
+                                                ctx.reset()
+                                                var cx = width / 2
+                                                var cy = height / 2
+                                                var r = width / 2 - 3.5
+                                                ctx.lineWidth = 2.0
+                                                ctx.lineCap = "round"
+                                                ctx.strokeStyle = strokeColor
+                                                ctx.beginPath()
+                                                ctx.arc(cx, cy + 1, r, -Math.PI / 3, Math.PI + Math.PI / 3)
+                                                ctx.stroke()
+                                                ctx.beginPath()
+                                                ctx.moveTo(cx, cy - r - 1.5)
+                                                ctx.lineTo(cx, cy)
+                                                ctx.stroke()
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: climatePowerBtnMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: climateControl.toggle()
+                                        }
+                                    }
+
+                                    Text {
+                                        text: climateControl.rpm.toString()
+                                        color: climateControl.running || climateControl.starting || climateControl.stopping
+                                               ? Theme.textPrimary
+                                               : Theme.textMuted
+                                        font.pixelSize: 20
+                                        font.bold: true
+                                        font.family: "Monospace"
+                                        Layout.minimumWidth: 52
+                                        horizontalAlignment: Text.AlignRight
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+                                    Text {
+                                        text: "RPM"
+                                        color: accentColor
+                                        font.pixelSize: Theme.fontCaption
+                                        font.bold: true
+                                        opacity: 0.65
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+
+                                    Item {
+                                        id: fanGlyph
+                                        width: 24
+                                        height: 24
+                                        Layout.alignment: Qt.AlignVCenter
+                                        opacity: (climateControl.running || climateControl.starting)
+                                                 ? 1 : (climateControl.stopping ? 0.7 : 0.35)
+
+                                        Canvas {
+                                            id: fanCanvas
+                                            anchors.fill: parent
+                                            antialiasing: true
+                                            onPaint: {
+                                                var ctx = getContext("2d")
+                                                ctx.reset()
+                                                ctx.translate(width / 2, height / 2)
+                                                ctx.fillStyle = accentColor
+                                                for (var i = 0; i < 3; i++) {
+                                                    ctx.rotate(Math.PI * 2 / 3)
+                                                    ctx.beginPath()
+                                                    ctx.moveTo(0, 0)
+                                                    ctx.quadraticCurveTo(7, -2.5, 9.5, -1)
+                                                    ctx.quadraticCurveTo(5, 3.5, 0, 0)
+                                                    ctx.fill()
+                                                }
+                                                ctx.beginPath()
+                                                ctx.arc(0, 0, 2.1, 0, Math.PI * 2)
+                                                ctx.fillStyle = Theme.textPrimary
+                                                ctx.fill()
+                                            }
+                                            Component.onCompleted: requestPaint()
+
+                                            RotationAnimator on rotation {
+                                                from: 0
+                                                to: 360
+                                                duration: climateControl.starting ? 300
+                                                          : (climateControl.stopping ? 1600 : 520)
+                                                loops: Animation.Infinite
+                                                running: climateControl.running
+                                                         || climateControl.starting
+                                                         || climateControl.stopping
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        visible: typeof NetworkManager !== "undefined" && NetworkManager.cpuTempC > 0
+                                        text: NetworkManager.cpuTempC.toFixed(0) + "°"
+                                        color: Theme.textMuted
+                                        font.pixelSize: 12
+                                        font.family: "Monospace"
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            id: sosBtn
+                            Layout.preferredWidth: topTilesRow.tileSize
+                            Layout.preferredHeight: topTilesRow.tileSize
+                            Layout.minimumHeight: topTilesRow.tileSize
+                            Layout.maximumHeight: topTilesRow.tileSize
+                            Layout.alignment: Qt.AlignVCenter
+                            radius: 4
+                            // Та же «воздушная» подача, что у климат-блока:
+                            // тёмная подложка и приглушённый контур, цвет — на ховере.
+                            color: sosMouse.pressed
+                                   ? "#2a0b0b"
+                                   : (sosMouse.containsMouse ? "#1a0c0c" : "#0f0a0a")
+                            border.color: sosMouse.pressed || sosMouse.containsMouse
+                                          ? Qt.rgba(0.94, 0.27, 0.27, 0.85)
+                                          : Qt.rgba(0.94, 0.27, 0.27, 0.3)
+                            border.width: 1
+                            scale: sosMouse.pressed ? 0.94 : (sosMouse.containsMouse ? 1.04 : 1.0)
+                            opacity: sosMouse.pressed ? 0.9 : 1.0
+                            Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                            Behavior on opacity { NumberAnimation { duration: 100 } }
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            Behavior on border.color { ColorAnimation { duration: 200 } }
+
+                            Column {
+                                anchors.centerIn: parent
+                                spacing: 2
+                                Text { text: "⚠️"; font.pixelSize: 16; anchors.horizontalCenter: parent.horizontalCenter }
+                                Text {
+                                    text: "SOS"
+                                    color: Theme.danger
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                }
+                            }
+
+                            MouseArea {
+                                id: sosMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: sosReasonPopup.open()
+                            }
+                        }
                     }
 
+                    Row {
+                        Layout.alignment: Qt.AlignLeft
+                        spacing: 10
+
+                        Row {
+                            spacing: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            Rectangle {
+                                width: 6; height: 6; radius: 3
+                                color: accentColor
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: "LATENCY (EU): "
+                                      + (typeof NetworkManager !== 'undefined'
+                                         ? NetworkManager.getLatency("162.249.72.1") : 24)
+                                      + " MS"
+                                color: accentColor
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                opacity: 0.85
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        Rectangle {
+                            width: 1
+                            height: 12
+                            color: accentColor
+                            opacity: 0.35
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Row {
+                            spacing: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                                text: "CPU"
+                                color: accentColor
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                opacity: 0.55
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                readonly property real t: (typeof NetworkManager !== "undefined")
+                                                          ? NetworkManager.cpuTempC : -1
+                                readonly property bool ok: t > 0
+                                text: ok ? (t.toFixed(0) + "°C") : "—"
+                                color: !ok ? Theme.textMuted
+                                     : (t >= 85 ? Theme.danger
+                                        : (t >= 70 ? Theme.warning : accentColor))
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                font.family: "Monospace"
+                                opacity: ok ? 0.9 : 0.5
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+                    }
+
+                    // Зона + пользователь — компактная identity-карточка сайдбара
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 35
-                        color: "transparent"
-                        Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left; text: dashboardRoot.zoneTitle; color: accentColor; font.pixelSize: 14; font.bold: true; font.letterSpacing: 2 }
+                        Layout.topMargin: 2
+                        implicitHeight: zoneUserCol.implicitHeight + 22
+                        radius: 8
+                        color: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.06)
+                        border.width: 1
+                        border.color: Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.22)
+
+                        Column {
+                            id: zoneUserCol
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 10
+
+                            Row {
+                                spacing: 8
+                                Rectangle {
+                                    width: 3
+                                    height: zoneBadge.implicitHeight
+                                    radius: 1
+                                    color: accentColor
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    id: zoneBadge
+                                    text: dashboardRoot.zoneTitle
+                                    color: accentColor
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                    font.letterSpacing: 1.6
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            Column {
+                                width: parent.width
+                                spacing: 3
+                                Text {
+                                    text: "ПОЛЬЗОВАТЕЛЬ"
+                                    color: accentColor
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    font.letterSpacing: 1.8
+                                    opacity: 0.55
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: dashboardRoot.userName
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontHeading
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
                     }
 
                     Column {
                         Layout.fillWidth: true
                         spacing: 5
-                        Text { text: "ПОЛЬЗОВАТЕЛЬ"; color: accentColor; font.pixelSize: Theme.fontCaption; opacity: 0.7 }
-                        Text { text: dashboardRoot.userName; color: Theme.textPrimary; font.pixelSize: Theme.fontHeading; font.bold: true }
-                        Item { height: 10; width: 1 }
+                        Item { height: 4; width: 1 }
                         Text { text: "ОСТАЛОСЬ ВРЕМЕНИ"; color: accentColor; font.pixelSize: Theme.fontCaption; opacity: 0.7 }
                         Text {
                             text: dashboardRoot.timeRemaining
@@ -819,7 +1299,113 @@ Item {
                                       : (secondsLeft < 900 ? Theme.warning : Theme.textPrimary))
                             Behavior on color { ColorAnimation { duration: 250 } }
                         }
-                        Text { text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"; color: Theme.textSecondary; font.pixelSize: 18 }
+                        Item {
+                            width: parent.width
+                            height: sidebarBalance.implicitHeight
+
+                            Text {
+                                id: sidebarBalance
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"
+                                color: Theme.textSecondary
+                                font.pixelSize: 18
+                                transformOrigin: Item.Left
+                            }
+
+                            // Прибавка всплывает над строкой баланса и тает.
+                            Text {
+                                id: sidebarBalanceGain
+                                anchors.left: sidebarBalance.right
+                                anchors.leftMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "+" + dashboardRoot.balanceGain.toFixed(0) + " ₽"
+                                color: Theme.success
+                                font.pixelSize: 18
+                                font.bold: true
+                                opacity: 0
+                            }
+
+                            Connections {
+                                target: dashboardRoot
+                                function onBalanceIncreased(gain) {
+                                    sidebarBalanceFlash.restart()
+                                    sidebarGainFloat.restart()
+                                }
+                            }
+
+                            SequentialAnimation {
+                                id: sidebarBalanceFlash
+
+                                ParallelAnimation {
+                                    NumberAnimation {
+                                        target: sidebarBalance; property: "scale"
+                                        to: 1.16; duration: 320; easing.type: Easing.OutBack
+                                    }
+                                    ColorAnimation {
+                                        target: sidebarBalance; property: "color"
+                                        to: Theme.success; duration: 320
+                                    }
+                                }
+
+                                SequentialAnimation {
+                                    loops: 2
+                                    ColorAnimation {
+                                        target: sidebarBalance; property: "color"
+                                        to: Theme.textPrimary; duration: 260
+                                    }
+                                    ColorAnimation {
+                                        target: sidebarBalance; property: "color"
+                                        to: Theme.success; duration: 260
+                                    }
+                                }
+
+                                ParallelAnimation {
+                                    NumberAnimation {
+                                        target: sidebarBalance; property: "scale"
+                                        to: 1.0; duration: 520; easing.type: Easing.OutCubic
+                                    }
+                                    ColorAnimation {
+                                        target: sidebarBalance; property: "color"
+                                        to: Theme.textSecondary; duration: 640
+                                    }
+                                }
+                            }
+
+                            SequentialAnimation {
+                                id: sidebarGainFloat
+
+                                // Сдвигаем через verticalCenterOffset: анимация y
+                                // конфликтовала бы с якорем по центру.
+                                PropertyAction {
+                                    target: sidebarBalanceGain
+                                    property: "anchors.verticalCenterOffset"; value: 0
+                                }
+                                ParallelAnimation {
+                                    NumberAnimation {
+                                        target: sidebarBalanceGain; property: "opacity"
+                                        to: 1; duration: 300
+                                    }
+                                    NumberAnimation {
+                                        target: sidebarBalanceGain
+                                        property: "anchors.verticalCenterOffset"
+                                        to: -10; duration: 300; easing.type: Easing.OutCubic
+                                    }
+                                }
+                                PauseAnimation { duration: 1800 }
+                                ParallelAnimation {
+                                    NumberAnimation {
+                                        target: sidebarBalanceGain; property: "opacity"
+                                        to: 0; duration: 800
+                                    }
+                                    NumberAnimation {
+                                        target: sidebarBalanceGain
+                                        property: "anchors.verticalCenterOffset"
+                                        to: -26; duration: 800; easing.type: Easing.OutCubic
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Item { Layout.fillHeight: true }
@@ -950,10 +1536,13 @@ Item {
 
                     Item { height: 5; width: 1 }
 
-                    ColumnLayout {
+                    GridLayout {
                         Layout.fillWidth: true
-                        spacing: 10
+                        columns: 2
+                        columnSpacing: 8
+                        rowSpacing: 8
                         ActionBtn {
+                            Layout.columnSpan: 2
                             text: "ПРОДЛИТЬ ВРЕМЯ"
                             icon: "⏱"
                             baseColor: accentColor
@@ -965,6 +1554,7 @@ Item {
                         }
                         ActionBtn {
                             id: storeActionBtn
+                            compact: true
                             text: "МАГАЗИН"
                             icon: "🛒"
                             baseColor: Theme.shop
@@ -985,9 +1575,10 @@ Item {
                                 storePopup.open()
                             }
                         }
-                        ActionBtn { text: "ПОПОЛНИТЬ БАЛАНС"; icon: "💳"; baseColor: Theme.shop; onClicked: depositPopup.open() }
+                        ActionBtn { compact: true; text: "ПОПОЛНИТЬ"; icon: "💳"; baseColor: Theme.shop; onClicked: depositPopup.open() }
                         ActionBtn {
-                            text: "ОТОЙТИ (ПАУЗА)"
+                            compact: true
+                            text: "ПАУЗА"
                             icon: "⏳"
                             baseColor: "#3b82f6"
                             onClicked: {
@@ -1030,7 +1621,8 @@ Item {
                             }
                         }
                         ActionBtn {
-                            text: "ЗАКРЫТЬ СЕССИЮ"
+                            compact: true
+                            text: "ВЫЙТИ"
                             icon: "🚪"
                             baseColor: "#525252"
                             onClicked: {
@@ -2304,11 +2896,58 @@ Item {
                         Layout.fillWidth: true
                     }
                     Text {
+                        id: depositBalanceValue
                         text: Number(dashboardRoot.userBalance).toFixed(0) + " ₽"
                         color: Theme.textPrimary
                         font.pixelSize: 22
                         font.bold: true
                         font.italic: true
+                        transformOrigin: Item.Right
+                    }
+                }
+
+                Connections {
+                    target: dashboardRoot
+                    function onBalanceIncreased(gain) {
+                        depositBalanceFlash.restart()
+                    }
+                }
+
+                SequentialAnimation {
+                    id: depositBalanceFlash
+
+                    ParallelAnimation {
+                        NumberAnimation {
+                            target: depositBalanceValue; property: "scale"
+                            to: 1.18; duration: 320; easing.type: Easing.OutBack
+                        }
+                        ColorAnimation {
+                            target: depositBalanceValue; property: "color"
+                            to: Theme.success; duration: 320
+                        }
+                    }
+
+                    SequentialAnimation {
+                        loops: 2
+                        ColorAnimation {
+                            target: depositBalanceValue; property: "color"
+                            to: Theme.textPrimary; duration: 260
+                        }
+                        ColorAnimation {
+                            target: depositBalanceValue; property: "color"
+                            to: Theme.success; duration: 260
+                        }
+                    }
+
+                    ParallelAnimation {
+                        NumberAnimation {
+                            target: depositBalanceValue; property: "scale"
+                            to: 1.0; duration: 520; easing.type: Easing.OutCubic
+                        }
+                        ColorAnimation {
+                            target: depositBalanceValue; property: "color"
+                            to: Theme.textPrimary; duration: 640
+                        }
                     }
                 }
             }
@@ -3668,12 +4307,14 @@ Item {
         property bool orderIsFinished: false
         property bool orderIsCooking: false
         property string statusText: ""
+        // Половинная кнопка: контент по центру, статус второй строкой.
+        property bool compact: false
         readonly property color statusAccent: orderIsFinished ? Theme.success
                                               : (orderIsCooking ? Theme.warning : Theme.danger)
         signal clicked()
 
         Layout.fillWidth: true
-        Layout.preferredHeight: 50
+        Layout.preferredHeight: compact ? 44 : 50
         radius: 4
         color: actionMouse.pressed
                ? (isActiveStatus ? Qt.rgba(0.12, 0.1, 0.02, 1) : Qt.rgba(0.06, 0.12, 0.1, 1))
@@ -3692,6 +4333,7 @@ Item {
         Behavior on border.color { ColorAnimation { duration: 120 } }
 
         Row {
+            visible: !controlRoot.compact
             anchors.verticalCenter: parent.verticalCenter
             anchors.left: parent.left
             anchors.leftMargin: 14
@@ -3717,6 +4359,41 @@ Item {
             }
         }
 
+        Column {
+            visible: controlRoot.compact
+            anchors.centerIn: parent
+            width: parent.width - 12
+            spacing: 1
+
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 5
+                Text {
+                    text: icon
+                    font.pixelSize: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                    text: controlRoot.text
+                    color: actionMouse.pressed ? "black" : (actionMouse.containsMouse || isActiveStatus ? "white" : baseColor)
+                    font.bold: true
+                    font.pixelSize: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                visible: controlRoot.isActiveStatus && controlRoot.statusText !== ""
+                text: controlRoot.statusText
+                color: controlRoot.statusAccent
+                font.bold: true
+                font.pixelSize: 9
+            }
+        }
+
         // Spinner while order is in progress
         Item {
             anchors.verticalCenter: parent.verticalCenter
@@ -3724,7 +4401,7 @@ Item {
             anchors.rightMargin: 14
             width: 16
             height: 16
-            visible: controlRoot.isActiveStatus && !controlRoot.orderIsFinished
+            visible: controlRoot.isActiveStatus && !controlRoot.orderIsFinished && !controlRoot.compact
 
             Rectangle {
                 anchors.fill: parent
@@ -3760,7 +4437,7 @@ Item {
             color: Theme.success
             font.bold: true
             font.pixelSize: 16
-            visible: controlRoot.isActiveStatus && controlRoot.orderIsFinished
+            visible: controlRoot.isActiveStatus && controlRoot.orderIsFinished && !controlRoot.compact
         }
 
         MouseArea {

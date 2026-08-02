@@ -7,8 +7,11 @@
 #include "riotauth.h"
 #include "directlaunchauth.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
+#include <QDesktopServices>
+#include <QDir>
 #include <QEvent>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -22,7 +25,9 @@
 #include <QScreen>
 #include <QSettings>
 #include <QTimer>
+#include <QUrl>
 #include <QVector>
+#include <QWindow>
 #include <functional>
 
 #ifdef Q_OS_WIN
@@ -512,6 +517,10 @@ ProcessManager::ProcessManager(NetworkManager *netManager, QObject *parent)
     connect(m_gameExitTimer, &QTimer::timeout, this, &ProcessManager::checkGameExit);
     connect(m_gameFindTimer, &QTimer::timeout, this, &ProcessManager::pollForGameWindow);
     connect(m_shellToggleTopmostTimer, &QTimer::timeout, this, &ProcessManager::reassertShellToggleTopmost);
+    if (m_netManager) {
+        connect(m_netManager, &NetworkManager::powerActionRequested,
+                this, &ProcessManager::applyPowerAction);
+    }
     m_gameFindTimer->setInterval(500);
     m_shellToggleTopmostTimer->setInterval(1500);
     m_netWatchTimer->start(5000);
@@ -851,6 +860,61 @@ void ProcessManager::launchFirstExisting(const QStringList &candidatePaths, cons
     }
     qCritical().noquote() << "[LAUNCH] лаунчер не установлен / путь не найден. Проверено:"
                           << tried.join(QStringLiteral(" | "));
+}
+
+void ProcessManager::launchDetached(const QString &exePath, const QString &args)
+{
+    const QString path = QDir::fromNativeSeparators(exePath.trimmed());
+    if (path.isEmpty()) {
+        qWarning() << "[QUICK] пустой путь";
+        return;
+    }
+    if (!QFileInfo::exists(path)) {
+        qWarning() << "[QUICK] файл не найден:" << path;
+        return;
+    }
+
+#ifdef Q_OS_WIN
+    // ShellExecute умеет .lnk / .exe и поднимает уже запущенный Discord/Telegram.
+    const QString native = QDir::toNativeSeparators(path);
+    const QString argsTrim = args.trimmed();
+    const HINSTANCE rc = ShellExecuteW(
+                nullptr,
+                L"open",
+                reinterpret_cast<LPCWSTR>(native.utf16()),
+                argsTrim.isEmpty() ? nullptr : reinterpret_cast<LPCWSTR>(argsTrim.utf16()),
+                nullptr,
+                SW_SHOWNORMAL);
+    if (reinterpret_cast<quintptr>(rc) <= 32) {
+        qWarning() << "[QUICK] ShellExecute failed:" << path << "code" << reinterpret_cast<quintptr>(rc);
+    } else {
+        qWarning() << "[QUICK] launched:" << path;
+    }
+#else
+    Q_UNUSED(args);
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+        qWarning() << "[QUICK] openUrl failed:" << path;
+#endif
+}
+
+void ProcessManager::raiseTopmostToolWindow(QObject *windowObject)
+{
+    auto *window = qobject_cast<QWindow *>(windowObject);
+    if (!window)
+        return;
+
+    // Не активируем: иначе перехватываем фокус у игры / автологина.
+    if (!window->isVisible())
+        window->setVisible(true);
+    window->raise();
+
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(window->winId());
+    if (!hwnd)
+        return;
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+#endif
 }
 
 void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QString &appIdHint)
@@ -1601,6 +1665,7 @@ void ProcessManager::finishGameSession(const QString &reason)
     // (showShellAfterGame ends the *visual* session return — not the mid-session toggle path)
     showShellAfterGame();
     setGameTitle(QString());
+    m_currentGameId = 0;
     emit gameFinished();
 
     // Riot: soft close → ждать flush CEF (persist yaml) → backup → force kill.
@@ -1856,6 +1921,22 @@ void ProcessManager::rebootPC()
 #else
     qWarning() << "[SYSTEM] rebootPC: не поддерживается на этой платформе";
 #endif
+}
+
+void ProcessManager::applyPowerAction(const QString &action)
+{
+    // Заглушка: реальное выключение/перезагрузка пока отключены (иначе долгий цикл отладки).
+    if (action == QLatin1String("reboot")) {
+        qWarning() << "[SYSTEM] applyPowerAction: REBOOT stub — реальный reboot отключён";
+        // rebootPC();
+        return;
+    }
+    if (action == QLatin1String("shutdown")) {
+        qWarning() << "[SYSTEM] applyPowerAction: SHUTDOWN stub — реальный shutdown отключён";
+        // QProcess::startDetached("shutdown", {"/s", "/t", "0"});
+        return;
+    }
+    qWarning() << "[SYSTEM] applyPowerAction: неизвестное действие" << action;
 }
 
 void ProcessManager::handleDownloadDecision(bool continueDownload)
