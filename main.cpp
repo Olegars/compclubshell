@@ -83,6 +83,8 @@ bool isNoisyLogLine(QtMsgType type, const QString &msg)
         || msg.contains(QLatin1String("[POWER] idle + desired"))
         || msg.contains(QLatin1String("[POWER] heartbeat started"))
         || msg.contains(QLatin1String("[POWER] logout"))
+        || msg.contains(QLatin1String("[POWER] notifyPowerOffline"))
+        || msg.contains(QLatin1String("[POWER] offline ack:"))
         || msg.contains(QLatin1String("SHUTDOWN stub"))
         || msg.contains(QLatin1String("REBOOT stub"))
         || msg.contains(QLatin1String("[OVERLAYS]"))
@@ -93,8 +95,32 @@ bool isNoisyLogLine(QtMsgType type, const QString &msg)
         || msg.contains(QLatin1String("[DEBUG-MAIN]"))
         || msg.contains(QLatin1String("[PAY] diag"))
         || msg.contains(QLatin1String("[PAY] loadingChanged"))
+        || msg.contains(QLatin1String("[QUICK] launched:"))
         || msg.contains(QLatin1String("QProcess: Destroyed while process"))) {
         return true;
+    }
+
+    // Happy-path SESSION / STEAM: оставляем только WARN / ошибки / старт-стоп сессии.
+    if (msg.contains(QLatin1String("[SESSION]"))
+        || msg.contains(QLatin1String("[STEAM]"))) {
+        const bool keep = msg.contains(QLatin1String("WARN:"))
+            || msg.contains(QLatin1String("FAIL"))
+            || msg.contains(QLatin1String("fail"))
+            || msg.contains(QLatin1String("error"), Qt::CaseInsensitive)
+            || msg.contains(QLatin1String("timeout"), Qt::CaseInsensitive)
+            || msg.contains(QLatin1String("ignored"))
+            || msg.contains(QLatin1String("ending session"))
+            || msg.contains(QLatin1String("game gone on"))
+            || msg.contains(QLatin1String("Сессия завершена"))
+            || msg.contains(QLatin1String("Игра запущена"))
+            || msg.contains(QLatin1String("launch:"))
+            || msg.contains(QLatin1String("Нет machine-cache"))
+            || msg.contains(QLatin1String("не найден"))
+            || msg.contains(QLatin1String("cache miss"))
+            || msg.contains(QLatin1String("Интерактивный логин"))
+            || msg.contains(QLatin1String("без cache"));
+        if (!keep)
+            return true;
     }
 
     // DBG в консоли слишком шумный (оверлеи, NET, PAY…)
@@ -158,6 +184,12 @@ int main(int argc, char *argv[])
     qInstallMessageHandler(reactorMessageHandler);
     // ИСПРАВЛЕНО: Снимаем блокировку Qt 6 на чтение локальных ресурсов через XMLHttpRequest
     qputenv("QML_XHR_ALLOW_FILE_READ", "1");
+#ifdef Q_OS_WIN
+    // FFmpeg backend часто синхронно блокирует UI на MediaPlayer.setSource.
+    // Windows Media Foundation обычно открывает локальные mp4 без такого хитча.
+    if (qgetenv("QT_MEDIA_BACKEND").isEmpty())
+        qputenv("QT_MEDIA_BACKEND", "windows");
+#endif
 
     // Настройка базовых атрибутов приложения перед инициализацией QGuiApplication
     QCoreApplication::setOrganizationName("REACTOR");

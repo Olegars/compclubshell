@@ -257,7 +257,8 @@ void NetworkManager::checkTerminalStatus() {
 
             const int overlayTerminalId = m_computerId > 0 ? m_computerId : 1;
             fetchOverlays(overlayTerminalId);
-            fetchQuickApps();
+            // fetchQuickApps — после логина (Main.onLoginSucceeded). exists() по exe
+            // на UI-потоке рядом с экраном телефона давал заметные подвисания.
         } else {
             qDebug() << "[REACTOR-SHELL] Оборудование не зарегистрировано. Переключение на Setup.";
             m_pcNameString = "PC-UNKNOWN";
@@ -423,29 +424,74 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
     QNetworkRequest request((QUrl(fullUrl)));
     request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 ReactorShell/1.0");
 
+    const QString tmpPath = localFilePath + QStringLiteral(".part");
+    QFile::remove(tmpPath);
+    auto *outFile = new QFile(tmpPath);
+    if (!outFile->open(QIODevice::WriteOnly)) {
+        qWarning() << "[CACHE] cannot open temp file:" << tmpPath;
+        delete outFile;
+        m_activeDownloads.removeAll(target);
+        return "";
+    }
+
     QNetworkReply *reply = m_networkManager->get(request);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, localFilePath, remotePath, target]() {
-        reply->deleteLater();
+    // Пишем по мере прихода — не копим 100–160 МБ в RAM и не блочим UI на finished.
+    connect(reply, &QNetworkReply::readyRead, this, [reply, outFile]() {
+        if (outFile && outFile->isOpen())
+            outFile->write(reply->readAll());
+    });
 
+    connect(reply, &QNetworkReply::finished, this, [this, reply, outFile, localFilePath, tmpPath, remotePath, target]() {
+        reply->deleteLater();
         this->m_activeDownloads.removeAll(target);
 
-        if (reply->error() == QNetworkReply::NoError) {
-            QFile file(localFilePath);
-            if (file.open(QIODevice::WriteOnly)) {
-                file.write(reply->readAll());
-                file.close();
-                qDebug() << "[CACHE] Фоновое скачивание успешно завершено для зоны:" << target;
+        if (outFile->isOpen()) {
+            // Дочищаем хвост буфера
+            if (reply->bytesAvailable() > 0)
+                outFile->write(reply->readAll());
+            outFile->close();
+        }
+        outFile->deleteLater();
 
-                QString qmlSafePath = QUrl::fromLocalFile(localFilePath).toString();
-                emit fileDownloaded(remotePath, qmlSafePath, target);
+        if (reply->error() == QNetworkReply::NoError) {
+            QFile::remove(localFilePath);
+            if (!QFile::rename(tmpPath, localFilePath)) {
+                QFile::remove(localFilePath);
+                QFile::copy(tmpPath, localFilePath);
+                QFile::remove(tmpPath);
             }
+            qDebug() << "[CACHE] Фоновое скачивание успешно завершено для зоны:" << target;
+            emit fileDownloaded(remotePath, QUrl::fromLocalFile(localFilePath).toString(), target);
         } else {
+            QFile::remove(tmpPath);
             qWarning() << "[CACHE] Ошибка скачивания оверлея для" << target << ":" << reply->errorString();
         }
     });
 
     return "";
+}
+
+bool NetworkManager::isLocalMediaLight(const QString &qmlOrLocalPath, qint64 maxBytes) const
+{
+    if (qmlOrLocalPath.isEmpty() || maxBytes <= 0)
+        return false;
+
+    QString path = qmlOrLocalPath;
+    const QUrl url(qmlOrLocalPath);
+    if (url.isValid() && url.isLocalFile())
+        path = url.toLocalFile();
+    else if (path.startsWith(QLatin1String("file:"), Qt::CaseInsensitive))
+        path = QUrl(path).toLocalFile();
+
+    if (path.isEmpty())
+        return false;
+
+    const QFileInfo fi(path);
+    if (!fi.exists() || !fi.isFile())
+        return false;
+    const qint64 sz = fi.size();
+    return sz > 0 && sz <= maxBytes;
 }
 
 int NetworkManager::getLatency(const QString &host) {
@@ -1253,6 +1299,16 @@ void NetworkManager::fetchOverlays(int terminalId)
     }
 
     const int targetId = terminalId > 0 ? terminalId : (m_computerId > 0 ? m_computerId : 1);
+
+    // Single-flight: authRequired + terminalId + Loader.Ready иначе бьют 3–4 раза подряд
+    // и каждый overlaysReady пересобирает 6 OverlayBlock на UI-потоке.
+    if (m_overlaysFetchInFlight) {
+        m_overlaysQueuedTerminalId = targetId;
+        return;
+    }
+    m_overlaysFetchInFlight = true;
+    m_overlaysQueuedTerminalId = -1;
+
     QUrl url(m_serverUrl + "/api/shell/overlays?terminal_id=" + QString::number(targetId)
              + "&t=" + QString::number(QDateTime::currentMSecsSinceEpoch()));
 
@@ -1265,15 +1321,23 @@ void NetworkManager::fetchOverlays(int terminalId)
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, targetId]() {
         reply->deleteLater();
+        m_overlaysFetchInFlight = false;
+
+        const int queued = m_overlaysQueuedTerminalId;
+        m_overlaysQueuedTerminalId = -1;
 
         if (reply->error() != QNetworkReply::NoError) {
             qWarning() << "[NET] Ошибка загрузки оверлеев:" << reply->errorString();
+            if (queued > 0 && queued != targetId)
+                fetchOverlays(queued);
             return;
         }
 
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (httpStatus != 200) {
             qWarning() << "[NET] Бэкенд вернул HTTP" << httpStatus << "для оверлеев";
+            if (queued > 0 && queued != targetId)
+                fetchOverlays(queued);
             return;
         }
 
@@ -1289,6 +1353,10 @@ void NetworkManager::fetchOverlays(int terminalId)
                  << "| байт:" << raw.size();
 
         emit overlaysReady(payload.toVariantMap());
+
+        // Если за время запроса пришёл другой terminal_id — один догон.
+        if (queued > 0 && queued != targetId)
+            fetchOverlays(queued);
     });
 }
 

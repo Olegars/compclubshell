@@ -72,6 +72,9 @@ public:
     Q_INVOKABLE void registerStation(const QString &zoneType, const QString &pcName);
     Q_INVOKABLE void logoutTerminal(int terminalId);
     Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target);
+    /** true если локальный mp4 достаточно лёгкий для UI-потока (~логин/телефон). */
+    Q_INVOKABLE bool isLocalMediaLight(const QString &qmlOrLocalPath,
+                                       qint64 maxBytes = 8 * 1024 * 1024) const;
     Q_INVOKABLE int getLatency(const QString &host);
     Q_INVOKABLE QStringList getAvailableZones();
     Q_INVOKABLE void fetchGames();
@@ -187,6 +190,8 @@ private:
     QString m_featuredMode;
     QStringList m_activeDownloads;
     QVariantList m_quickApps;
+    bool m_overlaysFetchInFlight = false;
+    int m_overlaysQueuedTerminalId = -1;
     bool m_fanAvailable = false;
     bool m_fanOn = false;
     QString m_fanMode;

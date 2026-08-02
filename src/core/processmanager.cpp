@@ -39,15 +39,13 @@
 /*
  * Windowed / fullscreen note (club shell ↔ game toggle):
  * Games often run exclusive or borderless fullscreen — we do NOT force windowed mode.
- * The floating SHELL side-tab is a separate Qt::Tool + WindowStaysOnTopHint HWND,
- * flush to the right screen edge (vertically near center), and we reassert
- * SetWindowPos(HWND_TOPMOST) on a timer. Exclusive fullscreen (D3D flip /
- * exclusive mode) can still cover TOPMOST overlays on some GPUs/drivers; borderless
- * fullscreen usually leaves the button visible. Prefer TOPMOST over forcing windowed.
+ * QuickMenu (left-edge strip) is a separate Qt::Tool + WindowStaysOnTopHint HWND
+ * with WS_EX_NOACTIVATE so clicks do not steal focus / minimize the game.
+ * Exclusive fullscreen can still cover TOPMOST overlays on some GPUs; borderless
+ * usually leaves the strip visible.
  */
 
-// Thin right-edge side tab: switch back to club shell without ending the game session.
-// Flush to the screen edge (HUD-safe), left corners rounded, right side square.
+// Legacy right-edge tab (unused: SHELL lives in QuickMenu). Kept so rebuilds stay simple.
 class ShellToggleWindow : public QRasterWindow
 {
 public:
@@ -724,9 +722,7 @@ void ProcessManager::hideShellForGame()
 #else
     m_mainWindow->hide();
 #endif
-    // Floating toggle only after a real game window was accepted (switchable session).
-    if (m_hasActiveGame)
-        showShellToggle(true);
+    // SHELL перенесён в QuickMenu (левая полоска) — отдельную вкладку справа не показываем.
 }
 
 void ProcessManager::showShellAfterGame()
@@ -779,7 +775,6 @@ void ProcessManager::switchToGame()
     focusGameWindow();
     hideShellForGame();
     focusGameWindow();
-    showShellToggle(true);
 }
 
 IPlatformAuth *ProcessManager::createPlatformAuth(const QString &platform)
@@ -912,6 +907,10 @@ void ProcessManager::raiseTopmostToolWindow(QObject *windowObject)
     const HWND hwnd = reinterpret_cast<HWND>(window->winId());
     if (!hwnd)
         return;
+    // WS_EX_NOACTIVATE: клик по tool-окну не уводит фокус и не сворачивает fullscreen-игру.
+    const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if ((ex & WS_EX_NOACTIVATE) == 0)
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
 #endif
@@ -1019,22 +1018,12 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
 
     setGameTitle(gameTitle);
 
-    qWarning().noquote() << "[SESSION] ========== LAUNCH DEBUG ==========";
-    qWarning().noquote() << "[SESSION] game_id:" << m_currentGameId
-                         << "| title:" << (gameTitle.isEmpty() ? QStringLiteral("(n/a)") : gameTitle);
-    qWarning().noquote() << "[SESSION] platform_raw:" << (platformRaw.isEmpty() ? QStringLiteral("(empty)") : platformRaw)
-                         << "| api_source:" << (platformSource.isEmpty() ? QStringLiteral("(n/a)") : platformSource);
-    qWarning().noquote() << "[SESSION] platform_final:" << platform
+    qWarning().noquote() << "[SESSION] launch:"
+                         << (gameTitle.isEmpty() ? QStringLiteral("(n/a)") : gameTitle)
+                         << "| id:" << m_currentGameId
+                         << "| platform:" << platform
+                         << "| login:" << (m_currentLogin.isEmpty() ? QStringLiteral("(personal)") : m_currentLogin)
                          << "| resolve:" << resolveNote;
-    qWarning().noquote() << "[SESSION] login:" << m_currentLogin
-                         << "| pc:" << m_currentTerminalId
-                         << "| account_id:" << authData.value(QStringLiteral("account_id")).toInt();
-    qWarning().noquote() << "[SESSION] exe_path:" << (exePath.isEmpty() ? QStringLiteral("(empty)") : exePath);
-    qWarning().noquote() << "[SESSION] args:" << (argsStr.isEmpty() ? QStringLiteral("(empty)") : argsStr);
-    qWarning().noquote() << "[SESSION] appIdHint:" << (appIdHint.isEmpty() ? QStringLiteral("(empty)") : appIdHint);
-    qWarning().noquote() << "[SESSION] auth.mode:" << (authMode.isEmpty() ? QStringLiteral("(n/a)") : authMode)
-                         << "| looksEpic:" << looksEpic << "| looksSteam:" << looksSteam
-                         << "| looksEa:" << looksEa << "| looksRiot:" << looksRiot;
     {
         const QString resolvedApp = SteamAuth::resolveAppId(authData, appIdHint);
         const QString titleLower = gameTitle.toLower();
@@ -1046,7 +1035,6 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
                                  << "— возможные битые данные игры в БД";
         }
     }
-    qWarning().noquote() << "[SESSION] ==================================";
 
     if (m_platformAuth) {
         m_platformAuth->stopScout();
@@ -1054,8 +1042,7 @@ void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QS
         m_platformAuth = nullptr;
     }
     m_platformAuth = createPlatformAuth(platform);
-    qWarning() << "[SESSION] auth handler:" << m_platformAuth->platformId();
-
+    qDebug() << "[SESSION] auth handler:" << m_platformAuth->platformId();
 #ifdef Q_OS_WIN
     m_gameSessionActive = true;
     setHasActiveGame(false); // becomes true only after acceptGameWindow
@@ -1867,19 +1854,23 @@ void ProcessManager::monitorNetworkTraffic()
 void ProcessManager::applyQosPolicies(bool enable)
 {
 #ifdef Q_OS_WIN
-    QProcess qosProc;
+    // Не блокируем UI (powershell New-NetQosPolicy раньше ждал до 3 с на логине).
+    auto *qosProc = new QProcess(this);
+    QObject::connect(qosProc, &QProcess::finished, qosProc, &QObject::deleteLater);
+    QObject::connect(qosProc, &QProcess::errorOccurred, qosProc, &QObject::deleteLater);
     if (enable) {
-        qosProc.start(QStringLiteral("powershell"), {
+        qosProc->start(QStringLiteral("powershell"), {
+            QStringLiteral("-NoProfile"),
             QStringLiteral("-Command"),
-            QStringLiteral("New-NetQosPolicy -Name 'ReactorGameTraffic' -AppPathNameMatchCondition 'steam.exe' -DSCPAction 46 -Confirm:$false")
+            QStringLiteral("New-NetQosPolicy -Name 'ReactorGameTraffic' -AppPathNameMatchCondition 'steam.exe' -DSCPAction 46 -Confirm:$false -ErrorAction SilentlyContinue")
         });
     } else {
-        qosProc.start(QStringLiteral("powershell"), {
+        qosProc->start(QStringLiteral("powershell"), {
+            QStringLiteral("-NoProfile"),
             QStringLiteral("-Command"),
-            QStringLiteral("Remove-NetQosPolicy -Name 'ReactorGameTraffic' -Confirm:$false")
+            QStringLiteral("Remove-NetQosPolicy -Name 'ReactorGameTraffic' -Confirm:$false -ErrorAction SilentlyContinue")
         });
     }
-    qosProc.waitForFinished(3000);
 #else
     Q_UNUSED(enable);
 #endif

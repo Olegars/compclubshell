@@ -17,7 +17,7 @@ class ProcessManager : public QObject
     // Session still alive (game process/window watched). Independent of shell visibility.
     Q_PROPERTY(bool hasActiveGame READ hasActiveGame NOTIFY hasActiveGameChanged)
     Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY gameTitleChanged)
-    // true while shell is Hidden and floating toggle is shown over the game
+    // true while shell is Hidden (QuickMenu strip over the game)
     Q_PROPERTY(bool shellHiddenForGame READ shellHiddenForGame NOTIFY shellHiddenForGameChanged)
 public:
     explicit ProcessManager(NetworkManager *netManager, QObject *parent = nullptr);
@@ -32,7 +32,9 @@ public:
     // Mid-session: restore shell fullscreen WITHOUT ending game / backup / forceKill.
     Q_INVOKABLE void showShellKeepGame();
     Q_INVOKABLE void switchToShell(); // alias → showShellKeepGame
-    Q_INVOKABLE void switchToGame();  // hide shell again, focus game, show float btn
+    Q_INVOKABLE void switchToGame();  // hide shell again, focus game
+    /** Вернуть фокус окну игры (после оверлея быстрого меню). */
+    Q_INVOKABLE void focusGameWindow();
     // true while club/personal session launch is in progress (blocks Dashboard tile re-clicks)
     Q_INVOKABLE bool isSessionBusy() const;
 
@@ -114,7 +116,6 @@ private:
     void setHasActiveGame(bool active);
     void setGameTitle(const QString &title);
     void showShellToggle(bool show);
-    void focusGameWindow();
     void restoreShellUi(bool endSessionPath);
 
     QProcess *m_process;

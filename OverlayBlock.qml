@@ -13,6 +13,12 @@ Rectangle {
     property string videoSourceUrl: ""
     property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
     property bool playbackAllowed: true
+    // Сдвиг активации плеера между слотами (мс) — не открывать 6 файлов в один тик.
+    property int openDelayMs: 0
+
+    readonly property bool wantPlayer: playbackAllowed
+                                       && isActive
+                                       && videoSourceUrl !== ""
 
     color: Theme.bgPanel
     border.color: isActive ? Theme.accentBorder : "#050505"
@@ -60,104 +66,109 @@ Rectangle {
         }
     }
 
+    // Создаём MediaPlayer только когда слот реально должен играть (один из шести).
+    // Активацию Loader откладываем — не в том же тике, что overlaysReady.
+    Timer {
+        id: activatePlayerTimer
+        interval: 750 + Math.max(0, overlayBlockRoot.openDelayMs)
+        repeat: false
+        onTriggered: {
+            if (overlayBlockRoot.wantPlayer)
+                playerLoader.active = true
+        }
+    }
+
+    onWantPlayerChanged: {
+        if (wantPlayer) {
+            activatePlayerTimer.restart()
+        } else {
+            activatePlayerTimer.stop()
+            playerLoader.active = false
+        }
+    }
+
+    Component.onCompleted: {
+        if (wantPlayer)
+            activatePlayerTimer.restart()
+    }
+
     Loader {
-        id: overlayVideoLoader
-        active: overlayBlockRoot.videoSourceUrl !== ""
+        id: playerLoader
         anchors.fill: parent
         z: 1
+        active: false
 
         sourceComponent: Component {
             Item {
-                id: videoInnerItem
+                id: videoInner
                 anchors.fill: parent
-                property string currentPlayingPath: ""
+                property string resolvedPath: ""
 
-                function updateSource() {
-                    var rawUrl = overlayBlockRoot.videoSourceUrl
-                    var blockId = overlayBlockRoot.blockUniqueId
-                    if (rawUrl === "" || typeof NetworkManager === "undefined")
-                        return
-
-                    var path = NetworkManager.getLocalPath(rawUrl, blockId)
-                    if (overlayBgPlayer.source.toString() === path && path !== "")
-                        return
-
-                    console.log("[PLAYER-OPTIMIZED]", blockId, "-> Переключение источника на:", path)
-                    if (path !== "") {
-                        overlayBgPlayer.stop()
-                        overlayBgPlayer.source = path
-                        if (overlayBlockRoot.playbackAllowed)
-                            overlayBgPlayer.play()
-                    } else if (overlayBgPlayer.source.toString() !== overlayBlockRoot.fallbackVideo) {
-                        overlayBgPlayer.stop()
-                        overlayBgPlayer.source = overlayBlockRoot.fallbackVideo
-                        if (overlayBlockRoot.playbackAllowed)
-                            overlayBgPlayer.play()
-                    }
+                function resolvePath() {
+                    if (typeof NetworkManager === "undefined")
+                        return ""
+                    return NetworkManager.getLocalPath(
+                                overlayBlockRoot.videoSourceUrl,
+                                overlayBlockRoot.blockUniqueId)
                 }
 
-                Connections {
-                    target: overlayBlockRoot
-                    function onVideoSourceUrlChanged() {
-                        console.log("[PLAYER-SIGNAL]", overlayBlockRoot.blockUniqueId, "-> Смена URL бэкенда:", overlayBlockRoot.videoSourceUrl)
-                        videoInnerItem.updateSource()
+                function openWhenReady() {
+                    var path = resolvedPath !== "" ? resolvedPath : resolvePath()
+                    resolvedPath = path
+                    if (path === "") {
+                        console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "wait download")
+                        return
                     }
-                    function onPlaybackAllowedChanged() {
-                        if (overlayBlockRoot.playbackAllowed)
-                            overlayBgPlayer.play()
-                        else
-                            overlayBgPlayer.stop()
+                    if (player.source.toString() === path) {
+                        if (player.playbackState !== MediaPlayer.PlayingState)
+                            player.play()
+                        return
                     }
+                    console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "open:", path)
+                    player.stop()
+                    player.source = path
+                    // play после LoadedMedia
+                }
+
+                Component.onCompleted: {
+                    resolvedPath = resolvePath()
+                    // Ещё один yield после создания плеера.
+                    Qt.callLater(openWhenReady)
                 }
 
                 Connections {
                     target: NetworkManager
                     function onFileDownloaded(remoteUrl, localPath, target) {
-                        var blockId = overlayBlockRoot.blockUniqueId
-                        var currentUrl = overlayBlockRoot.videoSourceUrl
-                        if (target === blockId && currentUrl === remoteUrl) {
-                            if (overlayBgPlayer.source.toString() !== localPath) {
-                                console.log("[OVERLAY-CACHE] Слот", blockId, "считал скачанный файл:", localPath)
-                                overlayBgPlayer.stop()
-                                overlayBgPlayer.source = localPath
-                                if (overlayBlockRoot.playbackAllowed)
-                                    overlayBgPlayer.play()
-                            }
-                        }
+                        if (target !== overlayBlockRoot.blockUniqueId)
+                            return
+                        if (overlayBlockRoot.videoSourceUrl !== remoteUrl)
+                            return
+                        resolvedPath = localPath
+                        Qt.callLater(openWhenReady)
                     }
                 }
 
                 MediaPlayer {
-                    id: overlayBgPlayer
-                    videoOutput: vOutOverlayBg
+                    id: player
+                    videoOutput: vout
                     audioOutput: AudioOutput { muted: true }
                     loops: MediaPlayer.Infinite
 
-                    Component.onCompleted: {
-                        videoInnerItem.updateSource()
-                    }
-
                     onMediaStatusChanged: {
-                        var blockId = overlayBlockRoot.blockUniqueId
-                        if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia) {
-                            if (overlayBlockRoot.playbackAllowed)
-                                overlayBgPlayer.play()
-                            else
-                                overlayBgPlayer.stop()
+                        if (mediaStatus === MediaPlayer.LoadedMedia
+                                || mediaStatus === MediaPlayer.BufferedMedia) {
+                            if (overlayBlockRoot.wantPlayer)
+                                play()
                         } else if (mediaStatus === MediaPlayer.InvalidMedia) {
-                            console.log("[PLAYER-ERROR]", blockId, "-> Ошибка кодека. Уход на fallback.")
-                            overlayBgPlayer.stop()
-                            if (overlayBgPlayer.source.toString() !== overlayBlockRoot.fallbackVideo) {
-                                overlayBgPlayer.source = overlayBlockRoot.fallbackVideo
-                                if (overlayBlockRoot.playbackAllowed)
-                                    overlayBgPlayer.play()
-                            }
+                            console.log("[PLAYER-ERROR]", overlayBlockRoot.blockUniqueId,
+                                        "invalid", source)
+                            stop()
                         }
                     }
                 }
 
                 VideoOutput {
-                    id: vOutOverlayBg
+                    id: vout
                     anchors.fill: parent
                     fillMode: VideoOutput.PreserveAspectCrop
                     layer.enabled: false

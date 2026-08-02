@@ -272,6 +272,12 @@ void LobbyAudioManager::setGuestMode(bool guest)
         m_playingGreeting = false;
         if (m_net)
             m_net->abortVoiceGreeting();
+        // Не дёргать startMusic повторно (Main.onCompleted + onAuthRequired).
+        if (m_state == QLatin1String("music")
+            && m_player
+            && m_player->playbackState() == QMediaPlayer::PlayingState) {
+            return;
+        }
         startMusic();
     } else if (m_state == QLatin1String("music")) {
         // Login path uses onLoginSucceeded (fade). Plain stop if leaving guest otherwise.
@@ -284,6 +290,13 @@ void LobbyAudioManager::startMusic()
 {
     if (!m_featureEnabled)
         return;
+
+    // Уже играет — не делать повторный COM-scan speakers + reopen MediaPlayer.
+    if (m_state == QLatin1String("music")
+        && m_player
+        && m_player->playbackState() == QMediaPlayer::PlayingState) {
+        return;
+    }
 
     QString path = resolveMusicPath();
     if (!QFile::exists(path)) {

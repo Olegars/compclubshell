@@ -29,8 +29,6 @@ Window {
                                         ? NetworkManager.zoneSlug : "singl"
     property string zoneNameFromDatabase: (typeof NetworkManager !== "undefined")
                                           ? NetworkManager.zoneName : ""
-    property string zoneColorFromDatabase: (typeof NetworkManager !== "undefined")
-                                           ? NetworkManager.zoneColor : ""
     property int currentGameId: 0
     property bool isHardwareAdmin: false
 
@@ -54,9 +52,7 @@ Window {
     property string loadingPlatform: ""
     property string loadingGameTitle: ""
     property bool quickMenuIntroduced: false
-
-    // Видео оверлеев крутим только пока экран логина реально на экране:
-    // 6 MediaPlayer'ов вхолостую съедают GPU/CPU за игровой сессией и на загрузке.
+    // Видео оверлеев крутим, пока экран логина/паузы на экране.
     readonly property bool overlayPlaybackAllowed: (root.sessionUser === "GUEST"
                                                     || root.sessionUser === ""
                                                     || root.sessionUser === "PAUSE")
@@ -64,6 +60,23 @@ Window {
                                                    && screenSwitcher.item.visible
                                                    && !setupScreenLoader.item
                                                    && !root.gameLoadingVisible
+
+    // Схлопываем шторм fetchOverlays (auth + terminalId + Ready + sessionUser).
+    Timer {
+        id: overlaysFetchDebounce
+        interval: 350
+        repeat: false
+        property int pendingTerminalId: 0
+        onTriggered: {
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.fetchOverlays(pendingTerminalId > 0 ? pendingTerminalId : 1)
+        }
+    }
+
+    function requestOverlays(terminalId) {
+        overlaysFetchDebounce.pendingTerminalId = terminalId > 0 ? terminalId : 1
+        overlaysFetchDebounce.restart()
+    }
 
     function clearGameSearchField() {
         if (typeof Launcher !== "undefined" && typeof Launcher.requestClearGameSearch === "function")
@@ -88,7 +101,7 @@ Window {
         root.raise()
         root.requestActivate()
         // Обучение показываем один раз за пользовательскую сессию. При следующих
-        // запусках остаётся только знакомый уголок.
+        // запусках остаётся только тонкая полоска у левого края.
         if (!root.quickMenuIntroduced) {
             root.quickMenuIntroduced = true
             quickMenu.openExpanded(true)
@@ -135,7 +148,7 @@ Window {
 
     onTerminalIdChanged: {
         if (terminalId > 0)
-            NetworkManager.fetchOverlays(terminalId)
+            root.requestOverlays(terminalId)
     }
 
     function resetAuthForm() {
@@ -203,7 +216,7 @@ Window {
 
     onSessionUserChanged: {
         if (root.sessionUser === "PAUSE" || root.sessionUser === "GUEST" || root.sessionUser === "") {
-            NetworkManager.fetchOverlays(root.terminalId > 0 ? root.terminalId : 1)
+            root.requestOverlays(root.terminalId > 0 ? root.terminalId : 1)
 
             if (root.sessionUser === "PAUSE") {
                 dashboardLoader.source = ""
@@ -213,8 +226,6 @@ Window {
             } else if (root.sessionUser === "GUEST" || root.sessionUser === "") {
                 if (typeof SessionAlert !== "undefined")
                     SessionAlert.reset()
-                if (typeof LobbyAudio !== "undefined")
-                    LobbyAudio.setGuestMode(true)
                 root.sessionTime = "00:00:00"
                 root.hasActiveOrder = false
                 root.trackedOrderId = 0
@@ -222,7 +233,6 @@ Window {
                 root.orderStatusCode = ""
                 root.orderItems = []
                 root.orderItemsTotal = 0.0
-                // ИСПРАВЛЕНО: Если лаунчер прямо сейчас находится в процессе отправки запроса, НЕ сбрасываем форму!
                 if (!root.isLoggingIn) {
                     root.resetAuthForm()
                 }
@@ -230,6 +240,7 @@ Window {
                 if (screenSwitcher.sourceComponent !== loginScreenComponent) {
                     screenSwitcher.sourceComponent = loginScreenComponent
                 }
+                // Музыку лобби не стартуем здесь повторно — см. lobbyStartTimer.
             }
         }
     }
@@ -256,13 +267,12 @@ Window {
             root.pcNameString = NetworkManager.getCurrentPcName()
             setupScreenLoader.source = ""
             screenSwitcher.sourceComponent = loginScreenComponent
-            // Используем ID из БД (computer_id), а не цифру из имени PC-1
             root.terminalId = NetworkManager.computerId > 0
                 ? NetworkManager.computerId
                 : (parseInt(root.pcNameString.replace(/[^0-9]/g, "")) || 0)
             console.log("[DEBUG-MAIN] Конец onAuthRequired. Итоговый terminalId =", root.terminalId)
-            if (typeof LobbyAudio !== "undefined")
-                LobbyAudio.setGuestMode(true)
+            // LobbyAudio после фокуса телефона — COM/MediaPlayer не бьёт в тот же кадр, что оверлеи.
+            lobbyStartTimer.restart()
         }
 
         function onSessionForceEnded() {
@@ -275,6 +285,7 @@ Window {
         }
 
         function onLoginSucceeded(userName, balance, timeRemaining, phone) {
+            lobbyStartTimer.stop()
             if (typeof Launcher !== "undefined") Launcher.applyQosPolicies(true)
             root.quickMenuIntroduced = false
             root.sessionPhone = phone
@@ -410,8 +421,8 @@ Window {
                 return
             if (typeof NetworkManager.sendPowerHeartbeat === "function")
                 NetworkManager.sendPowerHeartbeat()
-            else
-                NetworkManager.fetchOverlays(root.terminalId)
+            else if (typeof NetworkManager.sendPowerHeartbeat !== "function")
+                root.requestOverlays(root.terminalId)
         }
     }
 
@@ -441,9 +452,63 @@ Window {
 
     Component.onCompleted: {
         console.log("[START-TRACE] [STEP QML-A] ...Загрузка корневого окна...")
-        if ((root.sessionUser === "GUEST" || root.sessionUser === "")
-                && typeof LobbyAudio !== "undefined")
-            LobbyAudio.setGuestMode(true)
+        // Прогрев multimedia backend до экрана телефона / overlaysReady.
+        mediaWarmupTimer.start()
+    }
+
+    Timer {
+        id: mediaWarmupTimer
+        interval: 300
+        repeat: false
+        onTriggered: {
+            // Берём любой мелкий mp4 из кэша, иначе пропускаем.
+            var candidates = [
+                "file:///C:/ShellVideo/Cache/fallback_bg.mp4",
+                "file:///C:/ShellVideo/lobby-ambient.wav"
+            ]
+            for (var i = 0; i < candidates.length; i++) {
+                mediaWarmup.source = candidates[i]
+                mediaWarmup.play()
+                break
+            }
+            mediaWarmupStop.restart()
+        }
+    }
+
+    Timer {
+        id: mediaWarmupStop
+        interval: 800
+        repeat: false
+        onTriggered: {
+            mediaWarmup.stop()
+            mediaWarmup.source = ""
+        }
+    }
+
+    // Скрытый прогрев Qt Multimedia (не на экране).
+    MediaPlayer {
+        id: mediaWarmup
+        audioOutput: AudioOutput { muted: true }
+        videoOutput: mediaWarmupOut
+    }
+    VideoOutput {
+        id: mediaWarmupOut
+        width: 1
+        height: 1
+        visible: false
+        anchors.left: parent.left
+        anchors.top: parent.top
+    }
+
+    Timer {
+        id: lobbyStartTimer
+        interval: 1200
+        repeat: false
+        onTriggered: {
+            if ((root.sessionUser === "GUEST" || root.sessionUser === "" || root.sessionUser === "PAUSE")
+                    && typeof LobbyAudio !== "undefined")
+                LobbyAudio.setGuestMode(true)
+        }
     }
 
     Binding {
@@ -460,11 +525,6 @@ Window {
         target: Theme
         property: "zoneType"
         value: root.pcTypeFromDatabase
-    }
-    Binding {
-        target: Theme
-        property: "zoneColorHex"
-        value: root.zoneColorFromDatabase
     }
 
     // Весь интерфейс живёт в макете 1920x1080 и масштабируется целиком.
@@ -495,7 +555,7 @@ Window {
                 if (root.pendingOverlaysData)
                     updateOverlaysToScreen(root.pendingOverlaysData)
                 else
-                    NetworkManager.fetchOverlays(root.terminalId > 0 ? root.terminalId : 1)
+                    root.requestOverlays(root.terminalId > 0 ? root.terminalId : 1)
             }
         }
 
@@ -524,6 +584,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
+                        openDelayMs: 0
                         playbackAllowed: root.overlayPlaybackAllowed && blockTopLeft.isActive
                     }
                     OverlayBlock {
@@ -533,6 +594,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
+                        openDelayMs: 500
                         playbackAllowed: root.overlayPlaybackAllowed && blockMidLeft.isActive
                     }
                     OverlayBlock {
@@ -542,6 +604,7 @@ Window {
                         blockUniqueId: "b4"
                         title: "INF_03 / BOTTOM_LEFT"
                         fallbackVideo: root.fallbackVideo
+                        openDelayMs: 1000
                         playbackAllowed: root.overlayPlaybackAllowed && blockBottomLeft.isActive
                     }
                 }
@@ -560,6 +623,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
+                        openDelayMs: 250
                         playbackAllowed: root.overlayPlaybackAllowed && blockTopRight.isActive
                     }
                     OverlayBlock {
@@ -569,6 +633,7 @@ Window {
                         width: root.blockWidth
                         height: root.blockHeight
                         fallbackVideo: root.fallbackVideo
+                        openDelayMs: 750
                         playbackAllowed: root.overlayPlaybackAllowed && blockMidRight.isActive
                     }
                     OverlayBlock {
@@ -578,6 +643,7 @@ Window {
                         blockUniqueId: "b6"
                         title: "INF_06 / BOTTOM_RIGHT"
                         fallbackVideo: root.fallbackVideo
+                        openDelayMs: 1250
                         playbackAllowed: root.overlayPlaybackAllowed && blockBottomRight.isActive
                     }
                 }
@@ -602,22 +668,17 @@ Window {
                     source: Qt.resolvedUrl("images/hex_bg.png")
                     fillMode: Image.Tile
                     opacity: 0.35
+                    asynchronous: true
                     onStatusChanged: if (status === Image.Error)
                         console.warn("[BG] hex_bg load failed:", source)
                 }
-                Shape {
+                // Без MultiEffect/layer: полноэкранный blur на первом кадре логина
+                // стабильно подвешивал ввод телефона на несколько секунд.
+                Rectangle {
                     anchors.fill: parent
-                    layer.enabled: true
-                    layer.effect: MultiEffect { blurEnabled: true; blur: 0.3 }
-                    ShapePath {
-                        fillGradient: RadialGradient {
-                            centerX: 1920 / 2
-                            centerY: 1080 / 2
-                            centerRadius: 1920 / 1.2
-                            GradientStop { position: 0.0; color: "transparent" }
-                            GradientStop { position: 1.0; color: "black" }
-                        }
-                        PathRectangle { x: 0; y: 0; width: 1920; height: 1080 }
+                    gradient: Gradient {
+                        GradientStop { position: 0.0; color: "transparent" }
+                        GradientStop { position: 1.0; color: "#cc000000" }
                     }
                 }
             }
@@ -1090,7 +1151,7 @@ Window {
         id: voiceIndicator
     }
 
-    // Уголок / панель только пока идёт загрузка или шелл спрятан под игру.
+    // Полоска / панель только пока идёт загрузка или шелл спрятан под игру.
     // На дашборде без игры не мешаем.
     Connections {
         target: typeof Launcher !== "undefined" ? Launcher : null
@@ -1109,7 +1170,7 @@ Window {
                 && Launcher.shellHiddenForGame
 
         if (loading) {
-            // Уже открыли в showGameLoading; если гость закрыл — оставляем уголок.
+            // Уже открыли в showGameLoading; если гость закрыл — оставляем полоску.
             if (!quickMenu.visible)
                 quickMenu.collapseToCorner()
             return
@@ -1153,7 +1214,6 @@ Window {
                 if (blockData.content && blockData.content.layers)
                     layers = blockData.content.layers
 
-                // QVariantList из C++ не всегда проходит Array.isArray — проверяем length
                 if (layers && layers.length !== undefined) {
                     for (var i = 0; i < layers.length; i++) {
                         var layer = layers[i]
@@ -1166,10 +1226,14 @@ Window {
                 if (vUrl === "" && blockData.video_url)
                     vUrl = blockData.video_url
 
-                console.log("[OVERLAYS] Слот", key, "-> video:", vUrl, "| active:", blockData.is_active)
+                var nextActive = (blockData.is_active === undefined) ? true : !!blockData.is_active
+                if (map[key].videoSourceUrl === vUrl && map[key].isActive === nextActive)
+                    continue
+
+                console.log("[OVERLAYS] Слот", key, "-> video:", vUrl, "| active:", nextActive)
                 map[key].videoSourceUrl = vUrl
                 map[key].content = blockData.content
-                map[key].isActive = (blockData.is_active === undefined) ? true : !!blockData.is_active
+                map[key].isActive = nextActive
             }
         }
     }
