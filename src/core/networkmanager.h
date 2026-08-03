@@ -29,6 +29,9 @@ class NetworkManager : public QObject
     Q_PROPERTY(bool fanAvailable READ fanAvailable NOTIFY fanStateChanged)
     Q_PROPERTY(bool fanOn READ fanOn NOTIFY fanStateChanged)
     Q_PROPERTY(QString fanMode READ fanMode NOTIFY fanStateChanged)
+    Q_PROPERTY(int fanSpeed READ fanSpeed NOTIFY fanStateChanged)
+    Q_PROPERTY(int fanManualLockSec READ fanManualLockSec NOTIFY fanStateChanged)
+    Q_PROPERTY(QString fanDebug READ fanDebug NOTIFY fanDebugChanged)
     Q_PROPERTY(double cpuTempC READ cpuTempC NOTIFY cpuTempChanged)
     Q_PROPERTY(QString zoneName READ zoneName NOTIFY zoneInfoChanged)
     Q_PROPERTY(QString zoneSlug READ zoneSlug NOTIFY zoneInfoChanged)
@@ -54,6 +57,9 @@ public:
     bool fanAvailable() const { return m_fanAvailable; }
     bool fanOn() const { return m_fanOn; }
     QString fanMode() const { return m_fanMode; }
+    int fanSpeed() const { return m_fanAppliedPower; }
+    int fanManualLockSec() const { return m_fanManualLockSec; }
+    QString fanDebug() const { return m_fanDebug; }
     double cpuTempC() const { return m_cpuTempC; }
     QString zoneName() const { return m_zoneName; }
     QString zoneSlug() const { return m_zoneSlug; }
@@ -106,8 +112,10 @@ public:
     Q_INVOKABLE void startPowerHeartbeat();
     Q_INVOKABLE void stopPowerHeartbeat();
     Q_INVOKABLE void sendPowerHeartbeat();
-    /** aboutToQuit: сразу сказать бэкенду power_state=off. */
+    /** aboutToQuit: fan OFF+/99 ack, затем power_state=off. */
     Q_INVOKABLE void notifyPowerOffline();
+    /** Синхронно погасить вентилятор и заактить состояние (logout / shutdown). */
+    Q_INVOKABLE void ensureFanOffBeforeExit();
     /** Clear games catalog search filter (TextField cleared via Launcher signal). */
     void clearGamesSearch();
 
@@ -142,6 +150,7 @@ signals:
     void quickAppsChanged();
     void sosSent(bool success);
     void fanStateChanged();
+    void fanDebugChanged();
     void cpuTempChanged();
     void zoneInfoChanged();
     /** Backend asks shell to reboot or shutdown after session / idle policy. */
@@ -164,6 +173,11 @@ private:
     int resolveTerminalId(int terminalId) const;
     void applyFanStateFromJson(const QJsonObject &fanObj);
     void postThermal(double cpuC);
+    void acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source);
+    int computeLocalDesiredPower(const QJsonObject &fanObj) const;
+    void applyDesiredToRelay(int desiredPower, const QString &source);
+    bool hasRelayConfig() const;
+    void setFanDebug(const QString &line);
     QString primaryMacAddress() const;
     bool isLocalSessionActive() const;
     void handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive);
@@ -195,6 +209,8 @@ private:
     bool m_fanAvailable = false;
     bool m_fanOn = false;
     QString m_fanMode;
+    int m_fanManualLockSec = 0;
+    QString m_fanDebug;
     double m_cpuTempC = -1.0;
     QString m_zoneName;
     QString m_zoneSlug;
@@ -202,6 +218,18 @@ private:
     bool m_climateActive = false;
     bool m_fanRequestInFlight = false;
     bool m_thermalRequestInFlight = false;
+    bool m_fanAckInFlight = false;
+    bool m_postBootCooldown = false;
+    bool m_fanApplyInFlight = false;
+    bool m_skipRelayApply = false;
+    bool m_forceRelayApply = false;
+    qint64 m_fanRelayUnreachableUntilMs = 0;
+    QString m_fanRelayHost;
+    int m_fanRelayPort = 30000;
+    int m_fanRelayChannel = 0;
+    int m_fanRelayChannel2 = 0;
+    int m_fanAppliedPower = 1;
+    int m_fanDefaultOnPower = 3;
     QNetworkReply *m_aiAssistantReply = nullptr;
     QNetworkReply *m_voiceGreetingReply = nullptr;
 

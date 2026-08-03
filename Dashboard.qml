@@ -565,13 +565,35 @@ Item {
                 return
             if (busy)
                 return
-            if (running || NetworkManager.fanOn) {
-                NetworkManager.setFan("off")
+            // Legacy power button: cycle auto→100→75→50→auto
+            if (NetworkManager.fanMode === "auto") {
+                NetworkManager.setFan("100")
+                playStartup()
+            } else if (NetworkManager.fanSpeed >= 3) {
+                NetworkManager.setFan("75")
+            } else if (NetworkManager.fanSpeed >= 2) {
+                NetworkManager.setFan("50")
                 playShutdown()
             } else {
-                NetworkManager.setFan("on")
-                playStartup()
+                NetworkManager.setFan("auto")
+                playShutdown()
             }
+        }
+
+        function setPercent(p) {
+            if (typeof NetworkManager === "undefined" || busy)
+                return
+            NetworkManager.setFan(String(p))
+            if (p >= 75)
+                playStartup()
+            else
+                playShutdown()
+        }
+
+        function setAuto() {
+            if (typeof NetworkManager === "undefined" || busy)
+                return
+            NetworkManager.setFan("auto")
         }
     }
 
@@ -940,10 +962,10 @@ Item {
                                 id: climateCol
                                 anchors.fill: parent
                                 anchors.leftMargin: 10
-                                anchors.rightMargin: 10
-                                anchors.topMargin: 6
-                                anchors.bottomMargin: 6
-                                spacing: 2
+                                anchors.rightMargin: 8
+                                anchors.topMargin: 5
+                                anchors.bottomMargin: 5
+                                spacing: 0
 
                                 Text {
                                     text: "КЛИМАТ КОНТРОЛЬ"
@@ -952,17 +974,18 @@ Item {
                                     font.bold: true
                                     font.letterSpacing: 2
                                     opacity: 0.7
+                                    Layout.fillWidth: true
                                 }
 
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
-                                    spacing: 10
+                                    spacing: 6
 
                                     Rectangle {
                                         id: climatePowerBtn
-                                        Layout.preferredWidth: 40
-                                        Layout.preferredHeight: 40
+                                        Layout.preferredWidth: 34
+                                        Layout.preferredHeight: 34
                                         Layout.alignment: Qt.AlignVCenter
                                         radius: 4
                                         color: {
@@ -979,6 +1002,7 @@ Item {
                                                          : Qt.lighter(Theme.danger, 1.15))
                                         border.width: climatePowerBtnMouse.containsMouse ? 2 : 1
                                         scale: climatePowerBtnMouse.pressed ? 0.94 : (climatePowerBtnMouse.containsMouse ? 1.04 : 1.0)
+                                        opacity: NetworkManager.fanManualLockSec > 0 ? 0.7 : 1.0
                                         Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
                                         Behavior on color { ColorAnimation { duration: 180 } }
 
@@ -995,8 +1019,8 @@ Item {
                                             id: powerGlyph
                                             anchors.centerIn: parent
                                             z: 1
-                                            width: 20
-                                            height: 20
+                                            width: 16
+                                            height: 16
                                             antialiasing: true
 
                                             property color strokeColor: climatePowerBtnMouse.pressed ? "#111111" : "white"
@@ -1007,7 +1031,7 @@ Item {
                                                 ctx.reset()
                                                 var cx = width / 2
                                                 var cy = height / 2
-                                                var r = width / 2 - 3.5
+                                                var r = width / 2 - 3.0
                                                 ctx.lineWidth = 2.0
                                                 ctx.lineCap = "round"
                                                 ctx.strokeStyle = strokeColor
@@ -1026,7 +1050,9 @@ Item {
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: climateControl.toggle()
+                                            onClicked: {
+                                                climateControl.toggle()
+                                            }
                                         }
                                     }
 
@@ -1035,10 +1061,10 @@ Item {
                                         color: climateControl.running || climateControl.starting || climateControl.stopping
                                                ? Theme.textPrimary
                                                : Theme.textMuted
-                                        font.pixelSize: 20
+                                        font.pixelSize: 16
                                         font.bold: true
                                         font.family: "Monospace"
-                                        Layout.minimumWidth: 52
+                                        Layout.preferredWidth: 42
                                         horizontalAlignment: Text.AlignRight
                                         Layout.alignment: Qt.AlignVCenter
                                     }
@@ -1053,8 +1079,8 @@ Item {
 
                                     Item {
                                         id: fanGlyph
-                                        width: 24
-                                        height: 24
+                                        width: 20
+                                        height: 20
                                         Layout.alignment: Qt.AlignVCenter
                                         opacity: (climateControl.running || climateControl.starting)
                                                  ? 1 : (climateControl.stopping ? 0.7 : 0.35)
@@ -1072,12 +1098,12 @@ Item {
                                                     ctx.rotate(Math.PI * 2 / 3)
                                                     ctx.beginPath()
                                                     ctx.moveTo(0, 0)
-                                                    ctx.quadraticCurveTo(7, -2.5, 9.5, -1)
-                                                    ctx.quadraticCurveTo(5, 3.5, 0, 0)
+                                                    ctx.quadraticCurveTo(6, -2.2, 8.5, -0.9)
+                                                    ctx.quadraticCurveTo(4.5, 3.2, 0, 0)
                                                     ctx.fill()
                                                 }
                                                 ctx.beginPath()
-                                                ctx.arc(0, 0, 2.1, 0, Math.PI * 2)
+                                                ctx.arc(0, 0, 1.9, 0, Math.PI * 2)
                                                 ctx.fillStyle = Theme.textPrimary
                                                 ctx.fill()
                                             }
@@ -1100,12 +1126,75 @@ Item {
                                         visible: typeof NetworkManager !== "undefined" && NetworkManager.cpuTempC > 0
                                         text: NetworkManager.cpuTempC.toFixed(0) + "°"
                                         color: Theme.textMuted
-                                        font.pixelSize: 12
+                                        font.pixelSize: 11
                                         font.family: "Monospace"
                                         Layout.alignment: Qt.AlignVCenter
                                     }
 
-                                    Item { Layout.fillWidth: true }
+                                    Item {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 4
+                                    }
+
+                                    Row {
+                                        id: fanSpeedRadios
+                                        spacing: 3
+                                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                                        Layout.preferredWidth: implicitWidth
+                                        enabled: typeof NetworkManager !== "undefined"
+                                                 && NetworkManager.fanAvailable
+                                        opacity: enabled ? 1 : 0.4
+
+                                        Repeater {
+                                            model: [
+                                                { label: "50%", action: "50" },
+                                                { label: "75%", action: "75" },
+                                                { label: "100%", action: "100" },
+                                                { label: "AUTO", action: "auto" }
+                                            ]
+                                            delegate: Rectangle {
+                                                width: Math.max(speedLab.implicitWidth + 10, 34)
+                                                height: 22
+                                                radius: 3
+                                                readonly property bool selected: {
+                                                    if (typeof NetworkManager === "undefined")
+                                                        return false
+                                                    if (modelData.action === "auto")
+                                                        return NetworkManager.fanMode === "auto"
+                                                    if (modelData.action === "50")
+                                                        return NetworkManager.fanMode !== "auto"
+                                                               && NetworkManager.fanSpeed === 1
+                                                    if (modelData.action === "75")
+                                                        return NetworkManager.fanMode !== "auto"
+                                                               && NetworkManager.fanSpeed === 2
+                                                    return NetworkManager.fanMode !== "auto"
+                                                           && NetworkManager.fanSpeed >= 3
+                                                }
+                                                color: selected ? accentColor : "#111111"
+                                                border.color: selected ? Qt.lighter(accentColor, 1.2) : "#333333"
+                                                border.width: 1
+
+                                                Text {
+                                                    id: speedLab
+                                                    anchors.centerIn: parent
+                                                    text: modelData.label
+                                                    color: selected ? "#111111" : Theme.textPrimary
+                                                    font.pixelSize: 10
+                                                    font.bold: true
+                                                }
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: {
+                                                        if (modelData.action === "auto")
+                                                            climateControl.setAuto()
+                                                        else
+                                                            climateControl.setPercent(parseInt(modelData.action))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

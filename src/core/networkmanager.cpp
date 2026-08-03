@@ -1,6 +1,7 @@
 #include "networkmanager.h"
 #include "hwidprovider.h"
 #include "thermalmonitor.h"
+#include "fanrelaycontroller.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
 #include <QCoreApplication>
@@ -254,6 +255,9 @@ void NetworkManager::checkTerminalStatus() {
             emit pcRegistrationChanged();
             emit authRequired();
             startPowerHeartbeat();
+            // Post-boot cool-down: climate runs without session to blow room if hot.
+            m_postBootCooldown = true;
+            startClimateControl();
 
             const int overlayTerminalId = m_computerId > 0 ? m_computerId : 1;
             fetchOverlays(overlayTerminalId);
@@ -362,6 +366,18 @@ void NetworkManager::logoutTerminal(int terminalId) {
                             if (responseJson["status"].toString() == "success") {
                 qDebug() << "[DEBUG-C++ LOGOUT] <--- СЕССИЯ УСПЕШНО ЗАКРЫТА НА БЭКЕНДЕ";
                 clearSessionUser();
+
+                const QJsonObject fanObj = responseJson.value(QStringLiteral("fan")).toObject();
+                applyFanStateFromJson(fanObj);
+                const QJsonObject facts = fanObj.value(QStringLiteral("facts")).toObject();
+                const int sessionsLeft = facts.value(QStringLiteral("sessions_in_space")).toInt(
+                    facts.value(QStringLiteral("session")).toBool(false) ? 1 : 0);
+                // Last session in room → always OFF (no orphan ON after empty room).
+                if (sessionsLeft <= 0) {
+                    m_postBootCooldown = false;
+                    ensureFanOffBeforeExit();
+                }
+
                 const QString powerAction = responseJson.value(QStringLiteral("power_action")).toString();
                 if (powerAction == QLatin1String("reboot")
                     || powerAction == QLatin1String("shutdown")) {
@@ -1072,6 +1088,11 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             qDebug() << "[NET] Login OK user=" << user.value("id").toInt(0)
                      << "balance=" << balance
                      << "rawKeys=" << user.keys();
+            m_postBootCooldown = false;
+            m_sawActiveSession = true;
+            const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
+            if (!fanObj.isEmpty())
+                applyFanStateFromJson(fanObj);
             emit loginSucceeded(
                 user.value("name").toString("GUEST"),
                 balance,
@@ -1392,54 +1413,6 @@ void NetworkManager::freeGameAccount(int terminalId, int gameId)
     });
 }
 
-void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
-{
-    const bool available = fanObj.value(QStringLiteral("available")).toBool(false);
-    const bool on = fanObj.value(QStringLiteral("is_on")).toBool(false);
-    const QString mode = fanObj.value(QStringLiteral("manual_mode")).toString();
-
-    const bool changed = (available != m_fanAvailable) || (on != m_fanOn) || (mode != m_fanMode);
-    m_fanAvailable = available;
-    m_fanOn = on;
-    m_fanMode = mode;
-    if (changed)
-        emit fanStateChanged();
-}
-
-void NetworkManager::startClimateControl()
-{
-    if (m_climateActive)
-        return;
-
-    m_climateActive = true;
-    if (!m_climateTimer) {
-        m_climateTimer = new QTimer(this);
-        m_climateTimer->setInterval(10000);
-        connect(m_climateTimer, &QTimer::timeout, this, [this]() {
-            reportThermalNow();
-            fetchFanState();
-        });
-    }
-
-    fetchFanState();
-    reportThermalNow();
-    m_climateTimer->start();
-}
-
-void NetworkManager::stopClimateControl()
-{
-    m_climateActive = false;
-    if (m_climateTimer)
-        m_climateTimer->stop();
-
-    if (m_fanAvailable || m_fanOn || !m_fanMode.isEmpty()) {
-        m_fanAvailable = false;
-        m_fanOn = false;
-        m_fanMode.clear();
-        emit fanStateChanged();
-    }
-}
-
 void NetworkManager::startPowerHeartbeat()
 {
     if (!m_powerHeartbeatTimer) {
@@ -1578,6 +1551,7 @@ void NetworkManager::sendPowerHeartbeat()
 
 void NetworkManager::notifyPowerOffline()
 {
+    ensureFanOffBeforeExit();
     stopPowerHeartbeat();
 
     if (m_serverUrl.isEmpty())
@@ -1622,6 +1596,353 @@ void NetworkManager::notifyPowerOffline()
     reply->deleteLater();
 }
 
+bool NetworkManager::hasRelayConfig() const
+{
+    return m_fanAvailable
+        && !m_fanRelayHost.isEmpty()
+        && m_fanRelayPort > 0
+        && m_fanRelayChannel >= 1
+        && m_fanRelayChannel <= 16
+        && m_fanRelayChannel2 >= 1
+        && m_fanRelayChannel2 <= 16
+        && m_fanRelayChannel != m_fanRelayChannel2;
+}
+
+void NetworkManager::setFanDebug(const QString &line)
+{
+    qWarning().noquote() << "[FAN]" << line;
+    if (m_fanDebug == line)
+        return;
+    m_fanDebug = line;
+    emit fanDebugChanged();
+}
+
+int NetworkManager::computeLocalDesiredPower(const QJsonObject &fanObj) const
+{
+    const QString mode = fanObj.value(QStringLiteral("manual_mode")).toString(m_fanMode);
+
+    if (mode == QLatin1String("force_off"))
+        return 1; // night / duty 120V ≈ 50%
+    if (mode == QLatin1String("force_on")) {
+        int s = fanObj.value(QStringLiteral("desired_power")).toInt(0);
+        if (s <= 0)
+            s = fanObj.value(QStringLiteral("default_on_power")).toInt(3);
+        if (s <= 0)
+            s = 3;
+        if (s > 3)
+            s = 3;
+        return s;
+    }
+
+    const QJsonObject facts = fanObj.value(QStringLiteral("facts")).toObject();
+    const bool session = facts.value(QStringLiteral("session")).toBool(false);
+    const bool thermal = facts.value(QStringLiteral("thermal")).toBool(false);
+
+    if (session)
+        return 3;
+
+    if ((m_postBootCooldown || thermal) && thermal)
+        return 2;
+
+    return 1;
+}
+
+void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source)
+{
+    setFanDebug(QStringLiteral("apply want=%1 source=%2 http://%3/%4/ K1=%5 K2=%6 avail=%7")
+                    .arg(desiredPower)
+                    .arg(source)
+                    .arg(m_fanRelayHost)
+                    .arg(m_fanRelayPort)
+                    .arg(m_fanRelayChannel)
+                    .arg(m_fanRelayChannel2)
+                    .arg(hasRelayConfig() ? QStringLiteral("yes") : QStringLiteral("NO")));
+
+    if (!hasRelayConfig()) {
+        setFanDebug(QStringLiteral("SKIP: no relay config (available=%1 host='%2' ch=%3/%4)")
+                        .arg(m_fanAvailable ? 1 : 0)
+                        .arg(m_fanRelayHost)
+                        .arg(m_fanRelayChannel)
+                        .arg(m_fanRelayChannel2));
+        return;
+    }
+    if (m_fanApplyInFlight) {
+        setFanDebug(QStringLiteral("SKIP: apply already in flight"));
+        return;
+    }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_fanRelayUnreachableUntilMs > now) {
+        const int leftSec = int((m_fanRelayUnreachableUntilMs - now + 999) / 1000);
+        setFanDebug(QStringLiteral("LAN unreachable → http://%1/%2/… (retry %3s)")
+                        .arg(m_fanRelayHost)
+                        .arg(m_fanRelayPort)
+                        .arg(leftSec));
+        return;
+    }
+
+    int want = desiredPower;
+    if (want <= 0)
+        want = 1;
+    if (want > 3)
+        want = 3;
+
+    m_fanApplyInFlight = true;
+    QString error;
+    int applied = m_fanAppliedPower;
+
+    setFanDebug(QStringLiteral("GET status http://%1/%2/99 …")
+                    .arg(m_fanRelayHost)
+                    .arg(m_fanRelayPort));
+    auto status = FanRelayController::readStatus(m_fanRelayHost, m_fanRelayPort);
+    int current = -1;
+    if (status.ok) {
+        m_fanRelayUnreachableUntilMs = 0;
+        current = FanRelayController::speedFromStatus(
+            status.body, m_fanRelayChannel, m_fanRelayChannel2);
+        setFanDebug(QStringLiteral("status ok body='%1' decodedSpeed=%2 want=%3")
+                        .arg(status.body.left(32))
+                        .arg(current)
+                        .arg(want));
+    } else {
+        // /99 уже не отвечает — setSpeed по тому же IP бессмысленен, только удлиняет зависание UI.
+        m_fanRelayUnreachableUntilMs = now + 45000;
+        setFanDebug(QStringLiteral("status FAIL: %1 → http://%2/%3/99. Backoff 45с.")
+                        .arg(status.error, m_fanRelayHost)
+                        .arg(m_fanRelayPort));
+        acknowledgeFanApplied(applied, status.error, source);
+        m_fanApplyInFlight = false;
+        return;
+    }
+
+    if (current == want) {
+        applied = want;
+        setFanDebug(QStringLiteral("already at speed %1 — ack only").arg(want));
+    } else {
+        setFanDebug(QStringLiteral("setSpeed %1 → http://%2/%3/…")
+                        .arg(want)
+                        .arg(m_fanRelayHost)
+                        .arg(m_fanRelayPort));
+        const int got = FanRelayController::setSpeed(
+            m_fanRelayHost, m_fanRelayPort,
+            m_fanRelayChannel, m_fanRelayChannel2,
+            want, &error);
+        if (got > 0) {
+            applied = got;
+            m_fanRelayUnreachableUntilMs = 0;
+            setFanDebug(QStringLiteral("setSpeed OK → speed %1").arg(got));
+        } else {
+            m_fanRelayUnreachableUntilMs = now + 45000;
+            setFanDebug(QStringLiteral("setSpeed FAIL: %1").arg(error));
+        }
+    }
+
+    m_fanAppliedPower = applied;
+    const bool on = applied >= 2;
+    if (m_fanOn != on) {
+        m_fanOn = on;
+        emit fanStateChanged();
+    } else {
+        emit fanStateChanged(); // refresh fanSpeed
+    }
+
+    acknowledgeFanApplied(applied, error, source);
+    m_fanApplyInFlight = false;
+}
+
+void NetworkManager::ensureFanOffBeforeExit()
+{
+    if (m_fanRelayHost.isEmpty()
+        || m_fanRelayChannel < 1 || m_fanRelayChannel > 16
+        || m_fanRelayChannel2 < 1 || m_fanRelayChannel2 > 16)
+        return;
+
+    QString error;
+    int applied = FanRelayController::setSpeed(
+        m_fanRelayHost, m_fanRelayPort,
+        m_fanRelayChannel, m_fanRelayChannel2,
+        1, &error);
+
+    if (applied < 0)
+        applied = 1;
+
+    m_fanAppliedPower = applied;
+    if (m_fanOn) {
+        m_fanOn = false;
+        emit fanStateChanged();
+    }
+    acknowledgeFanApplied(applied, error, QStringLiteral("status_read"));
+}
+
+void NetworkManager::acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan/applied"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(2000);
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("applied_power"), appliedPower);
+    json.insert(QStringLiteral("source"), source);
+    if (!error.isEmpty())
+        json.insert(QStringLiteral("last_error"), error);
+
+    // Sync on exit paths; async otherwise.
+    const bool sync = source == QLatin1String("status_read") && !m_climateActive;
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+
+    if (sync) {
+        QEventLoop loop;
+        QTimer killer;
+        killer.setSingleShot(true);
+        QObject::connect(&killer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        killer.start(2000);
+        loop.exec();
+        if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+            const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+            m_skipRelayApply = true;
+            applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+            m_skipRelayApply = false;
+        }
+        reply->deleteLater();
+        return;
+    }
+
+    if (m_fanAckInFlight) {
+        reply->abort();
+        reply->deleteLater();
+        return;
+    }
+    m_fanAckInFlight = true;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_fanAckInFlight = false;
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[FAN] ack failed:" << reply->errorString();
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success")
+            || root.value(QStringLiteral("status")).toString() == QLatin1String("locked")) {
+            m_skipRelayApply = true;
+            applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+            m_skipRelayApply = false;
+        }
+    });
+}
+
+void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
+{
+    if (fanObj.isEmpty())
+        return;
+
+    const bool available = fanObj.value(QStringLiteral("available")).toBool(false);
+    const QString mode = fanObj.value(QStringLiteral("manual_mode")).toString();
+    const int lockSec = fanObj.value(QStringLiteral("manual_lock")).toObject()
+                            .value(QStringLiteral("remaining_sec")).toInt(0);
+
+    const QJsonObject relay = fanObj.value(QStringLiteral("relay")).toObject();
+    if (!relay.isEmpty()) {
+        m_fanRelayHost = relay.value(QStringLiteral("host")).toString();
+        m_fanRelayPort = relay.value(QStringLiteral("port")).toInt(30000);
+        m_fanRelayChannel = relay.value(QStringLiteral("channel")).toInt(0);
+        m_fanRelayChannel2 = relay.value(QStringLiteral("channel2")).toInt(0);
+    }
+
+    m_fanDefaultOnPower = 3;
+    m_fanAppliedPower = fanObj.value(QStringLiteral("applied_power")).toInt(m_fanAppliedPower);
+    if (m_fanAppliedPower <= 0)
+        m_fanAppliedPower = 1;
+    if (m_fanAppliedPower > 3)
+        m_fanAppliedPower = 3;
+
+    const QJsonObject facts = fanObj.value(QStringLiteral("facts")).toObject();
+    if (m_postBootCooldown && !facts.value(QStringLiteral("thermal")).toBool(false)
+        && !facts.value(QStringLiteral("session")).toBool(false)) {
+        m_postBootCooldown = false;
+    }
+    if (facts.value(QStringLiteral("session")).toBool(false))
+        m_postBootCooldown = false;
+
+    const int desired = computeLocalDesiredPower(fanObj);
+    // Не затирать детальный лог apply/setSpeed после ack (skip path).
+    if (!m_skipRelayApply) {
+        setFanDebug(QStringLiteral("state mode=%1 desired=%2 applied=%3 http://%4/%5/ K1=%6 K2=%7")
+                        .arg(mode)
+                        .arg(desired)
+                        .arg(m_fanAppliedPower)
+                        .arg(m_fanRelayHost)
+                        .arg(m_fanRelayPort)
+                        .arg(m_fanRelayChannel)
+                        .arg(m_fanRelayChannel2));
+    }
+    const bool uiOn = desired >= 2;
+
+    const bool changed = (available != m_fanAvailable) || (uiOn != m_fanOn)
+        || (mode != m_fanMode) || (lockSec != m_fanManualLockSec);
+    m_fanAvailable = available;
+    m_fanOn = uiOn;
+    m_fanMode = mode;
+    m_fanManualLockSec = lockSec;
+    if (changed)
+        emit fanStateChanged();
+
+    if (m_skipRelayApply)
+        return;
+
+    const QJsonObject autoLock = fanObj.value(QStringLiteral("auto_lock")).toObject();
+    const bool autoLocked = autoLock.value(QStringLiteral("locked")).toBool(false);
+    // auto_lock — только для фонового poll; ручной setFan всегда жмёт реле сразу.
+    if (hasRelayConfig() && (!autoLocked || m_forceRelayApply)) {
+        applyDesiredToRelay(desired, QStringLiteral("command"));
+    } else if (!hasRelayConfig()) {
+        setFanDebug(QStringLiteral("no relay yet mode=%1 desired=%2 avail=%3 host='%4'")
+                        .arg(mode)
+                        .arg(desired)
+                        .arg(m_fanAvailable ? 1 : 0)
+                        .arg(m_fanRelayHost));
+    } else if (autoLocked) {
+        setFanDebug(QStringLiteral("auto_lock %1s — skip background apply (want=%2)")
+                        .arg(autoLock.value(QStringLiteral("remaining_sec")).toInt())
+                        .arg(desired));
+    }
+}
+
+void NetworkManager::startClimateControl()
+{
+    if (m_climateActive)
+        return;
+
+    m_climateActive = true;
+    if (!m_climateTimer) {
+        m_climateTimer = new QTimer(this);
+        m_climateTimer->setInterval(10000);
+        connect(m_climateTimer, &QTimer::timeout, this, [this]() {
+            reportThermalNow();
+            fetchFanState();
+        });
+    }
+
+    fetchFanState();
+    reportThermalNow();
+    m_climateTimer->start();
+}
+
+void NetworkManager::stopClimateControl()
+{
+    m_climateActive = false;
+    if (m_climateTimer)
+        m_climateTimer->stop();
+}
+
 void NetworkManager::fetchFanState()
 {
     const int termId = resolveTerminalId(0);
@@ -1654,21 +1975,28 @@ void NetworkManager::setFan(const QString &action)
 {
     const int termId = resolveTerminalId(0);
     if (m_serverUrl.isEmpty() || termId <= 0) {
-        qWarning() << "[CLIMATE] setFan: no server/terminal";
+        setFanDebug(QStringLiteral("setFan: no server/terminal"));
         return;
     }
 
     const QString normalized = action.trimmed().toLower();
     if (normalized != QLatin1String("on")
         && normalized != QLatin1String("off")
-        && normalized != QLatin1String("auto")) {
-        qWarning() << "[CLIMATE] setFan: bad action" << action;
+        && normalized != QLatin1String("auto")
+        && normalized != QLatin1String("50")
+        && normalized != QLatin1String("75")
+        && normalized != QLatin1String("100")) {
+        setFanDebug(QStringLiteral("setFan: bad action %1").arg(action));
         return;
     }
 
-    if (m_fanRequestInFlight)
+    if (m_fanRequestInFlight) {
+        setFanDebug(QStringLiteral("setFan: request in flight"));
         return;
+    }
+    // manual_lock на чужих ПК проверяет бэкенд; свой терминал может менять скорость сразу
     m_fanRequestInFlight = true;
+    setFanDebug(QStringLiteral("setFan POST action=%1 term=%2").arg(normalized).arg(termId));
 
     QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan"));
     QNetworkRequest request(url);
@@ -1685,17 +2013,31 @@ void NetworkManager::setFan(const QString &action)
         reply->deleteLater();
         m_fanRequestInFlight = false;
 
-        if (reply->error() != QNetworkReply::NoError) {
-            qWarning() << "[CLIMATE] setFan failed:" << normalized << reply->errorString();
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray raw = reply->readAll();
+        const QJsonObject root = QJsonDocument::fromJson(raw).object();
+
+        if (reply->error() != QNetworkReply::NoError && httpStatus != 423) {
+            setFanDebug(QStringLiteral("setFan HTTP fail %1 %2").arg(httpStatus).arg(reply->errorString()));
             fetchFanState();
             return;
         }
 
-        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
-        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success"))
-            applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
-        else
-            fetchFanState();
+        setFanDebug(QStringLiteral("setFan OK action=%1 mode=%2 desired=%3")
+                        .arg(normalized)
+                        .arg(root.value(QStringLiteral("fan")).toObject()
+                                 .value(QStringLiteral("manual_mode")).toString())
+                        .arg(root.value(QStringLiteral("fan")).toObject()
+                                 .value(QStringLiteral("desired_power")).toInt()));
+        m_fanRelayUnreachableUntilMs = 0; // ручной клик — сразу пробуем LAN снова
+        m_forceRelayApply = true;
+        applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+        m_forceRelayApply = false;
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("locked")
+            || httpStatus == 423) {
+            setFanDebug(QStringLiteral("setFan cooldown %1s")
+                            .arg(root.value(QStringLiteral("remaining_sec")).toInt()));
+        }
     });
 }
 
