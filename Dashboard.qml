@@ -2763,6 +2763,7 @@ Item {
                                     var lastBalance = dashboardRoot.userBalance
                                     var lastOrderId = 0
                                     var lastStatusLabel = ""
+                                    var lastFiscalReceipt = null
 
                                     function finishCheckout() {
                                         console.log("[SHOP] checkout done remaining=", pending, "failed=", failed,
@@ -2803,6 +2804,15 @@ Item {
                                                     NetworkManager.checkOrderStatus(
                                                                 parseInt(dashboardRoot.termId) || root.terminalId,
                                                                 root.trackedOrderId)
+                                            }
+                                            if (lastFiscalReceipt
+                                                    && lastFiscalReceipt.fiscal_receipt_url
+                                                    && String(lastFiscalReceipt.fiscal_receipt_url).length > 0) {
+                                                fiscalReceiptPopup.receiptUrl = String(lastFiscalReceipt.fiscal_receipt_url)
+                                                fiscalReceiptPopup.receiptAmount = Number(lastFiscalReceipt.amount || 0)
+                                                fiscalReceiptPopup.isStub = !!lastFiscalReceipt.is_stub
+                                                fiscalReceiptPopup.description = String(lastFiscalReceipt.description || "")
+                                                Qt.callLater(function () { fiscalReceiptPopup.open() })
                                             }
                                         } else {
                                             console.error("[SHOP] checkout failed:", lastError)
@@ -2850,6 +2860,9 @@ Item {
                                                     lastOrderId = parseInt(res.order_id) || lastOrderId
                                                 if (res.status_label)
                                                     lastStatusLabel = res.status_label
+                                                if (res.fiscal_receipt
+                                                        && res.fiscal_receipt.fiscal_receipt_url)
+                                                    lastFiscalReceipt = res.fiscal_receipt
                                             } else {
                                                 failed++
                                                 lastError = (res && res.message)

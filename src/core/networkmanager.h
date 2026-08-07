@@ -225,6 +225,8 @@ private:
     QString primaryMacAddress() const;
     bool isLocalSessionActive() const;
     void handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive);
+    void publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description);
+    void pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt);
 
     QNetworkAccessManager *m_networkManager;
     QTimer *m_climateTimer = nullptr;

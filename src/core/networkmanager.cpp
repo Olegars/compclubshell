@@ -1122,16 +1122,11 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
             const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
             if (!receiptUrl.isEmpty()) {
-                m_pendingReceiptUrl = receiptUrl;
-                m_pendingReceiptAmount = jsonToDouble(receipt.value(QStringLiteral("amount")), 0.0);
-                m_pendingReceiptStub = receipt.value(QStringLiteral("is_stub")).toBool(false);
-                m_pendingReceiptDescription = receipt.value(QStringLiteral("description")).toString();
-                emit pendingReceiptChanged();
-                emit fiscalReceiptReady(
-                    m_pendingReceiptUrl,
-                    m_pendingReceiptAmount,
-                    m_pendingReceiptStub,
-                    m_pendingReceiptDescription);
+                publishFiscalReceipt(
+                    receiptUrl,
+                    jsonToDouble(receipt.value(QStringLiteral("amount")), 0.0),
+                    receipt.value(QStringLiteral("is_stub")).toBool(false),
+                    receipt.value(QStringLiteral("description")).toString());
             } else {
                 clearPendingReceipt();
             }
@@ -1267,6 +1262,81 @@ void NetworkManager::syncTopUpPayment(const QString &paymentId)
 
         // Always refresh: webhook may have credited already, or sync just did.
         refreshBalance();
+
+        if (!paid)
+            return;
+
+        const QString receiptUrl = response.value(QStringLiteral("fiscal_receipt_url")).toString();
+        const double amount = jsonToDouble(response.value(QStringLiteral("amount")), 0.0);
+        const bool stub = response.value(QStringLiteral("is_stub_receipt")).toBool(false);
+        const QString description = response.value(QStringLiteral("description")).toString(
+            QStringLiteral("Пополнение через ЮKassa"));
+
+        if (!receiptUrl.isEmpty()) {
+            publishFiscalReceipt(receiptUrl, amount, stub, description);
+        } else {
+            // Фискализация может идти очередью — дотягиваем URL.
+            pollTopUpReceipt(paymentId, amount, 0);
+        }
+    });
+}
+
+void NetworkManager::publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description)
+{
+    if (url.isEmpty())
+        return;
+
+    m_pendingReceiptUrl = url;
+    m_pendingReceiptAmount = amount;
+    m_pendingReceiptStub = isStub;
+    m_pendingReceiptDescription = description;
+    emit pendingReceiptChanged();
+    emit fiscalReceiptReady(url, amount, isStub, description);
+}
+
+void NetworkManager::pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt)
+{
+    if (m_serverUrl.isEmpty() || paymentId.isEmpty() || attempt > 8)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/billing/yookassa/receipt/") + paymentId);
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("X-Requested-With", "XMLHttpRequest");
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, paymentId, fallbackAmount, attempt]() {
+        reply->deleteLater();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QTimer::singleShot(700, this, [this, paymentId, fallbackAmount, attempt]() {
+                pollTopUpReceipt(paymentId, fallbackAmount, attempt + 1);
+            });
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QJsonObject response = doc.isObject() ? doc.object() : QJsonObject();
+        const QString receiptUrl = response.value(QStringLiteral("fiscal_receipt_url")).toString();
+        const QString status = response.value(QStringLiteral("fiscal_status")).toString();
+        const double amount = jsonToDouble(response.value(QStringLiteral("amount")), fallbackAmount);
+        const bool stub = response.value(QStringLiteral("is_stub_receipt")).toBool(
+            status == QLatin1String("skipped"));
+        const QString description = response.value(QStringLiteral("description")).toString(
+            QStringLiteral("Пополнение через ЮKassa"));
+
+        if (!receiptUrl.isEmpty()) {
+            publishFiscalReceipt(receiptUrl, amount, stub, description);
+            return;
+        }
+
+        if (status == QLatin1String("error") || status == QLatin1String("void"))
+            return;
+
+        QTimer::singleShot(700, this, [this, paymentId, fallbackAmount, attempt]() {
+            pollTopUpReceipt(paymentId, fallbackAmount, attempt + 1);
+        });
     });
 }
 
