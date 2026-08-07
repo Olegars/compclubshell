@@ -507,8 +507,42 @@ Item {
         if (typeof NetworkManager !== 'undefined') {
             NetworkManager.fetchProducts()
             NetworkManager.startClimateControl()
+            climateControl.syncFromNetwork()
+            // Логин успел положить чек до загрузки Dashboard.
+            if (NetworkManager.pendingReceiptUrl && NetworkManager.pendingReceiptUrl.length > 0)
+                Qt.callLater(openFiscalReceiptPopup)
         }
-        climateControl.playStartup()
+    }
+
+    function openFiscalReceiptPopup() {
+        if (typeof NetworkManager === 'undefined')
+            return
+        const url = NetworkManager.pendingReceiptUrl || ""
+        if (!url || url.length < 1)
+            return
+        fiscalReceiptPopup.receiptUrl = url
+        fiscalReceiptPopup.receiptAmount = NetworkManager.pendingReceiptAmount || 0
+        fiscalReceiptPopup.isStub = !!NetworkManager.pendingReceiptStub
+        fiscalReceiptPopup.description = NetworkManager.pendingReceiptDescription || ""
+        fiscalReceiptPopup.open()
+    }
+
+    function closeFiscalReceiptPopup() {
+        fiscalReceiptPopup.close()
+        if (typeof NetworkManager !== 'undefined')
+            NetworkManager.clearPendingReceipt()
+    }
+
+    Connections {
+        target: typeof NetworkManager !== 'undefined' ? NetworkManager : null
+        function onFiscalReceiptReady(url, amount, isStub, description) {
+            fiscalReceiptPopup.receiptUrl = url || ""
+            fiscalReceiptPopup.receiptAmount = amount || 0
+            fiscalReceiptPopup.isStub = !!isStub
+            fiscalReceiptPopup.description = description || ""
+            if (fiscalReceiptPopup.receiptUrl.length > 0)
+                fiscalReceiptPopup.open()
+        }
     }
 
     // --- Климат-контроль: декор оборотов / кнопка ---
@@ -518,80 +552,156 @@ Item {
         property bool running: false
         property bool stopping: false
         property int rpm: 0
+        property int targetRpm: 1500
+        property int pendingFinalRpm: -1
         property bool busy: starting || stopping
 
-        function playStartup() {
-            if (starting)
-                return
-            stopping = false
-            starting = true
-            running = false
-            rpmRamp.stop()
-            rpmJitter.stop()
-            rpm = 0
-            rpmRamp.to = 3000
-            rpmRamp.duration = 5000
-            rpmRamp.easing.type = Easing.OutCubic
-            rpmRamp.start()
-            blinkAnim.restart()
+        function rpmForSpeed(speed) {
+            var s = parseInt(speed)
+            if (s >= 3)
+                return 3000
+            if (s >= 2)
+                return 2250
+            return 1500
         }
 
-        function playShutdown() {
-            starting = false
-            stopping = true
+        function rpmForPercent(p) {
+            var n = parseInt(p)
+            if (n >= 100)
+                return 3000
+            if (n >= 75)
+                return 2250
+            return 1500
+        }
+
+        function startRamp(toRpm) {
+            var rising = toRpm > rpm
+            starting = rising && toRpm > 0
+            stopping = !rising
             running = false
+            if (rising && toRpm > 0)
+                blinkAnim.restart()
+            else
+                blinkAnim.stop()
+
+            rpmRamp.to = toRpm
+            rpmRamp.duration = Math.max(600, Math.abs(toRpm - rpm) * 1.2)
+            rpmRamp.easing.type = rising ? Easing.OutCubic : Easing.InOutQuad
+            rpmRamp.start()
+        }
+
+        function rampTo(target) {
+            target = Math.max(0, Math.min(3000, parseInt(target) || 0))
+            if (pendingFinalRpm < 0
+                    && target === targetRpm
+                    && (running || starting || stopping)
+                    && Math.abs(rpm - target) < 40)
+                return
+
             rpmRamp.stop()
             rpmJitter.stop()
             blinkAnim.stop()
-            rpmRamp.to = 0
-            // Выбег крыльчатки: дольше разгона и с затухающим хвостом.
-            rpmRamp.duration = 6000
-            rpmRamp.easing.type = Easing.InQuad
-            rpmRamp.start()
+            if (typeof softStepHold !== "undefined")
+                softStepHold.stop()
+            pendingFinalRpm = -1
+
+            if (target <= 0) {
+                targetRpm = 0
+                starting = false
+                stopping = true
+                running = false
+                rpmRamp.to = 0
+                rpmRamp.duration = Math.max(800, Math.abs(rpm) * 2)
+                rpmRamp.easing.type = Easing.InQuad
+                rpmRamp.start()
+                return
+            }
+
+            // 50%↔100%: сначала ~2250 (~2.5с как на реле), потом цель
+            var mid = 2250
+            var crosses = (rpm <= 1800 && target >= 2700) || (rpm >= 2700 && target <= 1800)
+            if (crosses) {
+                targetRpm = target
+                pendingFinalRpm = target
+                startRamp(mid)
+                return
+            }
+
+            targetRpm = target
+            startRamp(target)
         }
 
         function setRunningSteady() {
             starting = false
             stopping = false
-            running = true
+            running = targetRpm > 0
             blinkAnim.stop()
-            if (rpm < 2900)
-                rpm = 3000
-            rpmJitter.restart()
+            if (targetRpm > 0 && Math.abs(rpm - targetRpm) > 80)
+                rpm = targetRpm
+            if (running)
+                rpmJitter.restart()
+            else
+                rpmJitter.stop()
+        }
+
+        function syncFromNetwork() {
+            if (typeof NetworkManager === "undefined" || !NetworkManager.fanAvailable) {
+                rampTo(0)
+                return
+            }
+            // desired speed 1..3 → 1500 / 2250 / 3000
+            rampTo(rpmForSpeed(NetworkManager.fanSpeed))
+        }
+
+        function isLocked() {
+            return typeof NetworkManager !== "undefined"
+                   && NetworkManager.fanManualLockSec > 0
+        }
+
+        function speedForPercent(p) {
+            var n = parseInt(p)
+            if (n >= 100)
+                return 3
+            if (n >= 75)
+                return 2
+            return 1
         }
 
         function toggle() {
             if (typeof NetworkManager === "undefined")
                 return
-            if (busy)
+            if (isLocked())
                 return
-            // Legacy power button: cycle auto→100→75→50→auto
             if (NetworkManager.fanMode === "auto") {
                 NetworkManager.setFan("100")
-                playStartup()
             } else if (NetworkManager.fanSpeed >= 3) {
                 NetworkManager.setFan("75")
             } else if (NetworkManager.fanSpeed >= 2) {
                 NetworkManager.setFan("50")
-                playShutdown()
             } else {
                 NetworkManager.setFan("auto")
-                playShutdown()
             }
+            // RPM только после реального ответа API (onFanStateChanged)
         }
 
         function setPercent(p) {
-            if (typeof NetworkManager === "undefined" || busy)
+            if (typeof NetworkManager === "undefined")
+                return
+            if (isLocked())
+                return
+            // Уже на этой мощности — не дергаем API и не крутим эмуляцию
+            if (NetworkManager.fanMode !== "auto"
+                    && NetworkManager.fanSpeed === speedForPercent(p))
                 return
             NetworkManager.setFan(String(p))
-            if (p >= 75)
-                playStartup()
-            else
-                playShutdown()
         }
 
         function setAuto() {
-            if (typeof NetworkManager === "undefined" || busy)
+            if (typeof NetworkManager === "undefined")
+                return
+            if (NetworkManager.fanMode === "auto")
+                return
+            if (isLocked())
                 return
             NetworkManager.setFan("auto")
         }
@@ -602,14 +712,35 @@ Item {
         target: climateControl
         property: "rpm"
         onFinished: {
-            if (climateControl.starting && climateControl.rpm >= 2950) {
+            if (!climateControl.starting && !climateControl.stopping)
+                return
+
+            // Мягкий шаг эмуляции: подержали mid, идём к финалу
+            if (climateControl.pendingFinalRpm >= 0
+                    && Math.abs(climateControl.rpm - 2250) <= 80) {
+                var finalRpm = climateControl.pendingFinalRpm
+                climateControl.pendingFinalRpm = -1
+                climateControl.targetRpm = 2250
                 climateControl.setRunningSteady()
-            } else if (climateControl.stopping && climateControl.rpm <= 5) {
-                climateControl.rpm = 0
-                climateControl.stopping = false
-                climateControl.running = false
+                softStepHold.finalRpm = finalRpm
+                softStepHold.restart()
+                return
+            }
+
+            if (Math.abs(climateControl.rpm - climateControl.targetRpm) <= 30
+                    || climateControl.rpm === rpmRamp.to) {
+                climateControl.rpm = climateControl.targetRpm
+                climateControl.setRunningSteady()
             }
         }
+    }
+
+    Timer {
+        id: softStepHold
+        interval: 2500
+        repeat: false
+        property int finalRpm: 3000
+        onTriggered: climateControl.rampTo(finalRpm)
     }
 
     Timer {
@@ -618,9 +749,11 @@ Item {
         repeat: true
         running: false
         onTriggered: {
-            if (!climateControl.running)
+            if (!climateControl.running || climateControl.targetRpm <= 0)
                 return
-            climateControl.rpm = 2900 + Math.floor(Math.random() * 101)
+            var base = climateControl.targetRpm
+            var wobble = Math.max(25, Math.floor(base * 0.02))
+            climateControl.rpm = base - wobble + Math.floor(Math.random() * (wobble * 2 + 1))
         }
     }
 
@@ -651,14 +784,7 @@ Item {
         function onFanStateChanged() {
             if (typeof NetworkManager === "undefined")
                 return
-            // Подхватываем внешнее включение (сессия / другой ПК / термо).
-            // Старт при входе в сессию не рвём: бекенд может ответить чуть позже.
-            if (NetworkManager.fanOn) {
-                if (!climateControl.running && !climateControl.starting && !climateControl.stopping)
-                    climateControl.playStartup()
-            } else if (!climateControl.stopping && climateControl.running) {
-                climateControl.playShutdown()
-            }
+            climateControl.syncFromNetwork()
         }
     }
 
@@ -939,16 +1065,16 @@ Item {
                         Layout.fillWidth: true
                         spacing: 10
 
-                        // Общая высота плиток: без неё SOS брал размер у соседа
-                        // внутри того же ряда и получался чуть другим.
+                        // Общая высота плиток: климат и SOS одной высоты
                         readonly property int tileSize: 72
+                        readonly property int climateH: 88
 
                         Rectangle {
                             id: climateBox
                             Layout.fillWidth: true
-                            Layout.preferredHeight: topTilesRow.tileSize
-                            Layout.minimumHeight: topTilesRow.tileSize
-                            Layout.maximumHeight: topTilesRow.tileSize
+                            Layout.preferredHeight: topTilesRow.climateH
+                            Layout.minimumHeight: topTilesRow.climateH
+                            Layout.maximumHeight: topTilesRow.climateH
                             Layout.alignment: Qt.AlignVCenter
                             color: "#0a0f0b"
                             border.color: (climateControl.running || climateControl.starting)
@@ -958,25 +1084,33 @@ Item {
                             radius: 4
                             Behavior on border.color { ColorAnimation { duration: 200 } }
 
+                            // Обратный отсчёт cooldown в правом верхнем углу
+                            Text {
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.topMargin: 5
+                                anchors.rightMargin: 8
+                                z: 5
+                                visible: typeof NetworkManager !== "undefined"
+                                         && NetworkManager.fanManualLockSec > 0
+                                text: NetworkManager.fanManualLockSec + "с"
+                                color: Theme.warning
+                                font.pixelSize: 14
+                                font.bold: true
+                                font.family: "Monospace"
+                                opacity: 0.95
+                            }
+
                             ColumnLayout {
                                 id: climateCol
                                 anchors.fill: parent
                                 anchors.leftMargin: 10
                                 anchors.rightMargin: 8
-                                anchors.topMargin: 5
-                                anchors.bottomMargin: 5
-                                spacing: 0
+                                anchors.topMargin: 4
+                                anchors.bottomMargin: 4
+                                spacing: 3
 
-                                Text {
-                                    text: "КЛИМАТ КОНТРОЛЬ"
-                                    color: accentColor
-                                    font.pixelSize: Theme.fontCaption
-                                    font.bold: true
-                                    font.letterSpacing: 2
-                                    opacity: 0.7
-                                    Layout.fillWidth: true
-                                }
-
+                                // Строка 1: питание + RPM
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
@@ -984,8 +1118,8 @@ Item {
 
                                     Rectangle {
                                         id: climatePowerBtn
-                                        Layout.preferredWidth: 34
-                                        Layout.preferredHeight: 34
+                                        Layout.preferredWidth: 30
+                                        Layout.preferredHeight: 30
                                         Layout.alignment: Qt.AlignVCenter
                                         radius: 4
                                         color: {
@@ -1019,8 +1153,8 @@ Item {
                                             id: powerGlyph
                                             anchors.centerIn: parent
                                             z: 1
-                                            width: 16
-                                            height: 16
+                                            width: 15
+                                            height: 15
                                             antialiasing: true
 
                                             property color strokeColor: climatePowerBtnMouse.pressed ? "#111111" : "white"
@@ -1031,7 +1165,7 @@ Item {
                                                 ctx.reset()
                                                 var cx = width / 2
                                                 var cy = height / 2
-                                                var r = width / 2 - 3.0
+                                                var r = width / 2 - 2.8
                                                 ctx.lineWidth = 2.0
                                                 ctx.lineCap = "round"
                                                 ctx.strokeStyle = strokeColor
@@ -1039,7 +1173,7 @@ Item {
                                                 ctx.arc(cx, cy + 1, r, -Math.PI / 3, Math.PI + Math.PI / 3)
                                                 ctx.stroke()
                                                 ctx.beginPath()
-                                                ctx.moveTo(cx, cy - r - 1.5)
+                                                ctx.moveTo(cx, cy - r - 1.2)
                                                 ctx.lineTo(cx, cy)
                                                 ctx.stroke()
                                             }
@@ -1050,147 +1184,155 @@ Item {
                                             anchors.fill: parent
                                             hoverEnabled: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: {
-                                                climateControl.toggle()
-                                            }
+                                            onClicked: climateControl.toggle()
                                         }
                                     }
 
-                                    Text {
-                                        text: climateControl.rpm.toString()
-                                        color: climateControl.running || climateControl.starting || climateControl.stopping
-                                               ? Theme.textPrimary
-                                               : Theme.textMuted
-                                        font.pixelSize: 16
-                                        font.bold: true
-                                        font.family: "Monospace"
-                                        Layout.preferredWidth: 42
-                                        horizontalAlignment: Text.AlignRight
+                                    Column {
                                         Layout.alignment: Qt.AlignVCenter
-                                    }
-                                    Text {
-                                        text: "RPM"
-                                        color: accentColor
-                                        font.pixelSize: Theme.fontCaption
-                                        font.bold: true
-                                        opacity: 0.65
-                                        Layout.alignment: Qt.AlignVCenter
-                                    }
-
-                                    Item {
-                                        id: fanGlyph
-                                        width: 20
-                                        height: 20
-                                        Layout.alignment: Qt.AlignVCenter
-                                        opacity: (climateControl.running || climateControl.starting)
-                                                 ? 1 : (climateControl.stopping ? 0.7 : 0.35)
-
-                                        Canvas {
-                                            id: fanCanvas
-                                            anchors.fill: parent
-                                            antialiasing: true
-                                            onPaint: {
-                                                var ctx = getContext("2d")
-                                                ctx.reset()
-                                                ctx.translate(width / 2, height / 2)
-                                                ctx.fillStyle = accentColor
-                                                for (var i = 0; i < 3; i++) {
-                                                    ctx.rotate(Math.PI * 2 / 3)
-                                                    ctx.beginPath()
-                                                    ctx.moveTo(0, 0)
-                                                    ctx.quadraticCurveTo(6, -2.2, 8.5, -0.9)
-                                                    ctx.quadraticCurveTo(4.5, 3.2, 0, 0)
-                                                    ctx.fill()
-                                                }
-                                                ctx.beginPath()
-                                                ctx.arc(0, 0, 1.9, 0, Math.PI * 2)
-                                                ctx.fillStyle = Theme.textPrimary
-                                                ctx.fill()
-                                            }
-                                            Component.onCompleted: requestPaint()
-
-                                            RotationAnimator on rotation {
-                                                from: 0
-                                                to: 360
-                                                duration: climateControl.starting ? 300
-                                                          : (climateControl.stopping ? 1600 : 520)
-                                                loops: Animation.Infinite
-                                                running: climateControl.running
-                                                         || climateControl.starting
-                                                         || climateControl.stopping
-                                            }
+                                        spacing: 0
+                                        Text {
+                                            text: "КЛИМАТ КОНТРОЛЬ"
+                                            color: accentColor
+                                            font.pixelSize: 9
+                                            font.bold: true
+                                            font.letterSpacing: 1.4
+                                            opacity: 0.7
                                         }
-                                    }
+                                        Row {
+                                            spacing: 5
+                                            Text {
+                                                text: climateControl.rpm.toString()
+                                                color: climateControl.running || climateControl.starting || climateControl.stopping
+                                                       ? Theme.textPrimary
+                                                       : Theme.textMuted
+                                                font.pixelSize: 16
+                                                font.bold: true
+                                                font.family: "Monospace"
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                            Text {
+                                                text: "RPM"
+                                                color: accentColor
+                                                font.pixelSize: Theme.fontCaption
+                                                font.bold: true
+                                                opacity: 0.65
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                            Item {
+                                                id: fanGlyph
+                                                width: 18
+                                                height: 18
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                opacity: (climateControl.running || climateControl.starting)
+                                                         ? 1 : (climateControl.stopping ? 0.7 : 0.35)
 
-                                    Text {
-                                        visible: typeof NetworkManager !== "undefined" && NetworkManager.cpuTempC > 0
-                                        text: NetworkManager.cpuTempC.toFixed(0) + "°"
-                                        color: Theme.textMuted
-                                        font.pixelSize: 11
-                                        font.family: "Monospace"
-                                        Layout.alignment: Qt.AlignVCenter
-                                    }
-
-                                    Item {
-                                        Layout.fillWidth: true
-                                        Layout.minimumWidth: 4
-                                    }
-
-                                    Row {
-                                        id: fanSpeedRadios
-                                        spacing: 3
-                                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-                                        Layout.preferredWidth: implicitWidth
-                                        enabled: typeof NetworkManager !== "undefined"
-                                                 && NetworkManager.fanAvailable
-                                        opacity: enabled ? 1 : 0.4
-
-                                        Repeater {
-                                            model: [
-                                                { label: "50%", action: "50" },
-                                                { label: "75%", action: "75" },
-                                                { label: "100%", action: "100" },
-                                                { label: "AUTO", action: "auto" }
-                                            ]
-                                            delegate: Rectangle {
-                                                width: Math.max(speedLab.implicitWidth + 10, 34)
-                                                height: 22
-                                                radius: 3
-                                                readonly property bool selected: {
-                                                    if (typeof NetworkManager === "undefined")
-                                                        return false
-                                                    if (modelData.action === "auto")
-                                                        return NetworkManager.fanMode === "auto"
-                                                    if (modelData.action === "50")
-                                                        return NetworkManager.fanMode !== "auto"
-                                                               && NetworkManager.fanSpeed === 1
-                                                    if (modelData.action === "75")
-                                                        return NetworkManager.fanMode !== "auto"
-                                                               && NetworkManager.fanSpeed === 2
-                                                    return NetworkManager.fanMode !== "auto"
-                                                           && NetworkManager.fanSpeed >= 3
-                                                }
-                                                color: selected ? accentColor : "#111111"
-                                                border.color: selected ? Qt.lighter(accentColor, 1.2) : "#333333"
-                                                border.width: 1
-
-                                                Text {
-                                                    id: speedLab
-                                                    anchors.centerIn: parent
-                                                    text: modelData.label
-                                                    color: selected ? "#111111" : Theme.textPrimary
-                                                    font.pixelSize: 10
-                                                    font.bold: true
-                                                }
-                                                MouseArea {
+                                                Canvas {
+                                                    id: fanCanvas
                                                     anchors.fill: parent
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: {
-                                                        if (modelData.action === "auto")
-                                                            climateControl.setAuto()
-                                                        else
-                                                            climateControl.setPercent(parseInt(modelData.action))
+                                                    antialiasing: true
+                                                    onPaint: {
+                                                        var ctx = getContext("2d")
+                                                        ctx.reset()
+                                                        ctx.translate(width / 2, height / 2)
+                                                        ctx.fillStyle = accentColor
+                                                        for (var i = 0; i < 3; i++) {
+                                                            ctx.rotate(Math.PI * 2 / 3)
+                                                            ctx.beginPath()
+                                                            ctx.moveTo(0, 0)
+                                                            ctx.quadraticCurveTo(6, -2.2, 8.5, -0.9)
+                                                            ctx.quadraticCurveTo(4.5, 3.2, 0, 0)
+                                                            ctx.fill()
+                                                        }
+                                                        ctx.beginPath()
+                                                        ctx.arc(0, 0, 1.9, 0, Math.PI * 2)
+                                                        ctx.fillStyle = Theme.textPrimary
+                                                        ctx.fill()
                                                     }
+                                                    Component.onCompleted: requestPaint()
+
+                                                    RotationAnimator on rotation {
+                                                        from: 0
+                                                        to: 360
+                                                        duration: climateControl.targetRpm >= 2800 ? 380
+                                                                  : (climateControl.targetRpm >= 2000 ? 520
+                                                                     : (climateControl.targetRpm > 0 ? 780 : 1600))
+                                                        loops: Animation.Infinite
+                                                        running: climateControl.running
+                                                                 || climateControl.starting
+                                                                 || climateControl.stopping
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                visible: typeof NetworkManager !== "undefined" && NetworkManager.cpuTempC > 0
+                                                text: NetworkManager.cpuTempC.toFixed(0) + "°"
+                                                color: Theme.textMuted
+                                                font.pixelSize: 11
+                                                font.family: "Monospace"
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                        }
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+                                }
+
+                                // Строка 2: скорости
+                                RowLayout {
+                                    id: fanSpeedRadios
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 22
+                                    spacing: 4
+                                    enabled: typeof NetworkManager !== "undefined"
+                                             && NetworkManager.fanAvailable
+                                             && NetworkManager.fanManualLockSec <= 0
+                                    opacity: enabled ? 1 : 0.4
+
+                                    Repeater {
+                                        model: [
+                                            { label: "50%", action: "50" },
+                                            { label: "75%", action: "75" },
+                                            { label: "100%", action: "100" },
+                                            { label: "AUTO", action: "auto" }
+                                        ]
+                                        delegate: Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 22
+                                            radius: 3
+                                            readonly property bool selected: {
+                                                if (typeof NetworkManager === "undefined")
+                                                    return false
+                                                if (modelData.action === "auto")
+                                                    return NetworkManager.fanMode === "auto"
+                                                if (modelData.action === "50")
+                                                    return NetworkManager.fanMode !== "auto"
+                                                           && NetworkManager.fanSpeed === 1
+                                                if (modelData.action === "75")
+                                                    return NetworkManager.fanMode !== "auto"
+                                                           && NetworkManager.fanSpeed === 2
+                                                return NetworkManager.fanMode !== "auto"
+                                                       && NetworkManager.fanSpeed >= 3
+                                            }
+                                            color: selected ? accentColor : "#111111"
+                                            border.color: selected ? Qt.lighter(accentColor, 1.2) : "#333333"
+                                            border.width: 1
+
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: modelData.label
+                                                color: selected ? "#111111" : Theme.textPrimary
+                                                font.pixelSize: 10
+                                                font.bold: true
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (modelData.action === "auto")
+                                                        climateControl.setAuto()
+                                                    else
+                                                        climateControl.setPercent(parseInt(modelData.action))
                                                 }
                                             }
                                         }
@@ -1201,10 +1343,10 @@ Item {
 
                         Rectangle {
                             id: sosBtn
-                            Layout.preferredWidth: topTilesRow.tileSize
-                            Layout.preferredHeight: topTilesRow.tileSize
-                            Layout.minimumHeight: topTilesRow.tileSize
-                            Layout.maximumHeight: topTilesRow.tileSize
+                            Layout.preferredWidth: topTilesRow.climateH
+                            Layout.preferredHeight: topTilesRow.climateH
+                            Layout.minimumHeight: topTilesRow.climateH
+                            Layout.maximumHeight: topTilesRow.climateH
                             Layout.alignment: Qt.AlignVCenter
                             radius: 4
                             // Та же «воздушная» подача, что у климат-блока:
@@ -1308,7 +1450,7 @@ Item {
                         }
                     }
 
-                    // Зона + пользователь — компактная identity-карточка сайдбара
+                    // Зона + пользователь + баланс
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.topMargin: 2
@@ -1325,9 +1467,10 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.leftMargin: 12
                             anchors.rightMargin: 12
-                            spacing: 10
+                            spacing: 8
 
                             Row {
+                                width: parent.width
                                 spacing: 8
                                 Rectangle {
                                     width: 3
@@ -1345,26 +1488,120 @@ Item {
                                     font.letterSpacing: 1.6
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
-                            }
-
-                            Column {
-                                width: parent.width
-                                spacing: 3
                                 Text {
-                                    text: "ПОЛЬЗОВАТЕЛЬ"
-                                    color: accentColor
-                                    font.pixelSize: 10
-                                    font.bold: true
-                                    font.letterSpacing: 1.8
-                                    opacity: 0.55
-                                }
-                                Text {
-                                    width: parent.width
+                                    width: Math.max(0, parent.width - zoneBadge.width - 19)
                                     text: dashboardRoot.userName
                                     color: Theme.textPrimary
-                                    font.pixelSize: Theme.fontHeading
+                                    font.pixelSize: 13
                                     font.bold: true
+                                    font.letterSpacing: 1.6
                                     elide: Text.ElideRight
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+
+                            Item {
+                                width: parent.width
+                                height: sidebarBalance.implicitHeight
+
+                                Text {
+                                    id: sidebarBalance
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"
+                                    color: Theme.textSecondary
+                                    font.pixelSize: 18
+                                    transformOrigin: Item.Left
+                                }
+
+                                Text {
+                                    id: sidebarBalanceGain
+                                    anchors.left: sidebarBalance.right
+                                    anchors.leftMargin: 12
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "+" + dashboardRoot.balanceGain.toFixed(0) + " ₽"
+                                    color: Theme.success
+                                    font.pixelSize: 18
+                                    font.bold: true
+                                    opacity: 0
+                                }
+
+                                Connections {
+                                    target: dashboardRoot
+                                    function onBalanceIncreased(gain) {
+                                        sidebarBalanceFlash.restart()
+                                        sidebarGainFloat.restart()
+                                    }
+                                }
+
+                                SequentialAnimation {
+                                    id: sidebarBalanceFlash
+
+                                    ParallelAnimation {
+                                        NumberAnimation {
+                                            target: sidebarBalance; property: "scale"
+                                            to: 1.16; duration: 320; easing.type: Easing.OutBack
+                                        }
+                                        ColorAnimation {
+                                            target: sidebarBalance; property: "color"
+                                            to: Theme.success; duration: 320
+                                        }
+                                    }
+
+                                    SequentialAnimation {
+                                        loops: 2
+                                        ColorAnimation {
+                                            target: sidebarBalance; property: "color"
+                                            to: Theme.textPrimary; duration: 260
+                                        }
+                                        ColorAnimation {
+                                            target: sidebarBalance; property: "color"
+                                            to: Theme.success; duration: 260
+                                        }
+                                    }
+
+                                    ParallelAnimation {
+                                        NumberAnimation {
+                                            target: sidebarBalance; property: "scale"
+                                            to: 1.0; duration: 520; easing.type: Easing.OutCubic
+                                        }
+                                        ColorAnimation {
+                                            target: sidebarBalance; property: "color"
+                                            to: Theme.textSecondary; duration: 640
+                                        }
+                                    }
+                                }
+
+                                SequentialAnimation {
+                                    id: sidebarGainFloat
+
+                                    PropertyAction {
+                                        target: sidebarBalanceGain
+                                        property: "anchors.verticalCenterOffset"; value: 0
+                                    }
+                                    ParallelAnimation {
+                                        NumberAnimation {
+                                            target: sidebarBalanceGain; property: "opacity"
+                                            to: 1; duration: 300
+                                        }
+                                        NumberAnimation {
+                                            target: sidebarBalanceGain
+                                            property: "anchors.verticalCenterOffset"
+                                            to: -10; duration: 300; easing.type: Easing.OutCubic
+                                        }
+                                    }
+                                    PauseAnimation { duration: 1800 }
+                                    ParallelAnimation {
+                                        NumberAnimation {
+                                            target: sidebarBalanceGain; property: "opacity"
+                                            to: 0; duration: 800
+                                        }
+                                        NumberAnimation {
+                                            target: sidebarBalanceGain
+                                            property: "anchors.verticalCenterOffset"
+                                            to: -26; duration: 800; easing.type: Easing.OutCubic
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1387,113 +1624,6 @@ Item {
                                    : (secondsLeft < 300 ? Theme.danger
                                       : (secondsLeft < 900 ? Theme.warning : Theme.textPrimary))
                             Behavior on color { ColorAnimation { duration: 250 } }
-                        }
-                        Item {
-                            width: parent.width
-                            height: sidebarBalance.implicitHeight
-
-                            Text {
-                                id: sidebarBalance
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"
-                                color: Theme.textSecondary
-                                font.pixelSize: 18
-                                transformOrigin: Item.Left
-                            }
-
-                            // Прибавка всплывает над строкой баланса и тает.
-                            Text {
-                                id: sidebarBalanceGain
-                                anchors.left: sidebarBalance.right
-                                anchors.leftMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "+" + dashboardRoot.balanceGain.toFixed(0) + " ₽"
-                                color: Theme.success
-                                font.pixelSize: 18
-                                font.bold: true
-                                opacity: 0
-                            }
-
-                            Connections {
-                                target: dashboardRoot
-                                function onBalanceIncreased(gain) {
-                                    sidebarBalanceFlash.restart()
-                                    sidebarGainFloat.restart()
-                                }
-                            }
-
-                            SequentialAnimation {
-                                id: sidebarBalanceFlash
-
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: sidebarBalance; property: "scale"
-                                        to: 1.16; duration: 320; easing.type: Easing.OutBack
-                                    }
-                                    ColorAnimation {
-                                        target: sidebarBalance; property: "color"
-                                        to: Theme.success; duration: 320
-                                    }
-                                }
-
-                                SequentialAnimation {
-                                    loops: 2
-                                    ColorAnimation {
-                                        target: sidebarBalance; property: "color"
-                                        to: Theme.textPrimary; duration: 260
-                                    }
-                                    ColorAnimation {
-                                        target: sidebarBalance; property: "color"
-                                        to: Theme.success; duration: 260
-                                    }
-                                }
-
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: sidebarBalance; property: "scale"
-                                        to: 1.0; duration: 520; easing.type: Easing.OutCubic
-                                    }
-                                    ColorAnimation {
-                                        target: sidebarBalance; property: "color"
-                                        to: Theme.textSecondary; duration: 640
-                                    }
-                                }
-                            }
-
-                            SequentialAnimation {
-                                id: sidebarGainFloat
-
-                                // Сдвигаем через verticalCenterOffset: анимация y
-                                // конфликтовала бы с якорем по центру.
-                                PropertyAction {
-                                    target: sidebarBalanceGain
-                                    property: "anchors.verticalCenterOffset"; value: 0
-                                }
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: sidebarBalanceGain; property: "opacity"
-                                        to: 1; duration: 300
-                                    }
-                                    NumberAnimation {
-                                        target: sidebarBalanceGain
-                                        property: "anchors.verticalCenterOffset"
-                                        to: -10; duration: 300; easing.type: Easing.OutCubic
-                                    }
-                                }
-                                PauseAnimation { duration: 1800 }
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: sidebarBalanceGain; property: "opacity"
-                                        to: 0; duration: 800
-                                    }
-                                    NumberAnimation {
-                                        target: sidebarBalanceGain
-                                        property: "anchors.verticalCenterOffset"
-                                        to: -26; duration: 800; easing.type: Easing.OutCubic
-                                    }
-                                }
-                            }
                         }
                     }
 
@@ -2798,9 +2928,170 @@ Item {
     }
 
     Popup {
+        id: fiscalReceiptPopup
+        width: Math.min(440, parent.width * 0.9)
+        height: Math.min(620, parent.height * 0.92)
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        padding: 0
+        z: 9500
+
+        property string receiptUrl: ""
+        property real receiptAmount: 0
+        property bool isStub: false
+        property string description: ""
+
+        readonly property string qrImageUrl: receiptUrl.length > 0
+            ? ("https://api.qrserver.com/v1/create-qr-code/?size=280x280&data="
+               + encodeURIComponent(receiptUrl))
+            : ""
+
+        readonly property string amountText: {
+            const n = Number(receiptAmount || 0)
+            if (!isFinite(n) || Math.abs(n) < 0.0001)
+                return ""
+            const abs = Math.round(Math.abs(n))
+            return (n < 0 ? "−" : (n > 0 ? "+" : "")) + abs + " ₽"
+        }
+
+        background: Rectangle {
+            color: Theme.bgPanel
+            radius: Theme.radiusSm
+            border.width: 1
+            border.color: Qt.rgba(Theme.shop.r, Theme.shop.g, Theme.shop.b, 0.4)
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 28
+            spacing: 14
+
+            Text {
+                Layout.fillWidth: true
+                text: "КАССОВЫЙ ЧЕК"
+                color: Theme.shop
+                font.pixelSize: 22
+                font.bold: true
+                font.italic: true
+                font.letterSpacing: 1.2
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+                visible: fiscalReceiptPopup.amountText.length > 0
+                Layout.fillWidth: true
+                text: fiscalReceiptPopup.amountText
+                color: "#ffffff"
+                font.pixelSize: 34
+                font.bold: true
+                font.italic: true
+                font.family: "Consolas"
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+                visible: fiscalReceiptPopup.description.length > 0
+                Layout.fillWidth: true
+                text: fiscalReceiptPopup.description
+                color: Theme.textSecondary
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+                visible: fiscalReceiptPopup.isStub
+                Layout.fillWidth: true
+                text: "Демо · касса на сервере выключена"
+                color: "#fbbf24"
+                font.pixelSize: 11
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 240
+                Layout.alignment: Qt.AlignHCenter
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 220
+                    height: 220
+                    radius: 16
+                    color: "#ffffff"
+
+                    Image {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        source: fiscalReceiptPopup.qrImageUrl
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        cache: false
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: paperHint.implicitHeight + 20
+                radius: 12
+                color: Qt.rgba(1, 1, 1, 0.04)
+                border.width: 1
+                border.color: Qt.rgba(1, 1, 1, 0.08)
+
+                Text {
+                    id: paperHint
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.margins: 12
+                    text: "Если нужен бумажный чек — обратитесь к администратору"
+                    color: Theme.textMuted
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 56
+                radius: Theme.radiusSm
+                color: closeReceiptTap.pressed ? Qt.darker(Theme.shop, 1.2)
+                     : (closeReceiptHover.hovered ? Theme.warning : Theme.shop)
+
+                HoverHandler {
+                    id: closeReceiptHover
+                    cursorShape: Qt.PointingHandCursor
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "ЗАКРЫТЬ"
+                    color: "#0a0a0a"
+                    font.pixelSize: 15
+                    font.bold: true
+                    font.italic: true
+                    font.letterSpacing: 1.4
+                }
+
+                TapHandler {
+                    id: closeReceiptTap
+                    onTapped: closeFiscalReceiptPopup()
+                }
+            }
+        }
+    }
+
+    Popup {
         id: depositPopup
         width: Math.min(560, parent.width * 0.9)
-        height: Math.min(520, parent.height * 0.85)
+        height: Math.min(620, parent.height * 0.9)
         anchors.centerIn: parent
         modal: true
         focus: true
@@ -2832,6 +3123,7 @@ Item {
         property int selectedAmount: 500
         property bool waitingPayment: false
         property bool creating: false
+        property bool sendReceipt: false
         property string statusText: ""
         property string lastError: ""
         property string widgetUrl: ""
@@ -2840,6 +3132,7 @@ Item {
         onOpened: {
             depositPopup.waitingPayment = false
             depositPopup.creating = false
+            depositPopup.sendReceipt = false
             depositPopup.statusText = ""
             depositPopup.lastError = ""
             depositPopup.widgetUrl = ""
@@ -3123,6 +3416,51 @@ Item {
                 // Кнопка прижата к низу карточки.
                 Item { Layout.fillHeight: true }
 
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Rectangle {
+                        width: 22
+                        height: 22
+                        radius: 4
+                        color: depositPopup.sendReceipt ? Theme.shop : "transparent"
+                        border.width: 1
+                        border.color: depositPopup.sendReceipt ? Theme.shop : "#333"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✓"
+                            color: "#0a0a0a"
+                            font.bold: true
+                            font.pixelSize: 14
+                            visible: depositPopup.sendReceipt
+                        }
+                        TapHandler {
+                            enabled: !depositPopup.creating
+                            onTapped: depositPopup.sendReceipt = !depositPopup.sendReceipt
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Отправить чек на Email/SMS"
+                        color: Theme.textSecondary
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                        TapHandler {
+                            enabled: !depositPopup.creating
+                            onTapped: depositPopup.sendReceipt = !depositPopup.sendReceipt
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: "Нажимая «Оплатить», вы соглашаетесь получить чек в виде QR-кода на экране"
+                    color: Theme.textMuted
+                    font.pixelSize: 10
+                    wrapMode: Text.WordWrap
+                }
+
                 Rectangle {
                     id: payButton
 
@@ -3174,7 +3512,7 @@ Item {
                             if (typeof NetworkManager !== "undefined") {
                                 depositPopup.creating = true
                                 depositCreateTimeout.restart()
-                                NetworkManager.createTopUp(depositPopup.selectedAmount)
+                                NetworkManager.createTopUp(depositPopup.selectedAmount, depositPopup.sendReceipt)
                             } else {
                                 depositPopup.lastError = "NetworkManager недоступен"
                             }

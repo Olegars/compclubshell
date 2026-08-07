@@ -6,6 +6,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
+#include <QtGlobal>
 #include <QUrl>
 
 QString FanRelayController::commandUrl(const QString &host, int modulePort, const QString &cmd)
@@ -149,7 +150,7 @@ int FanRelayController::speedFromStatus(const QString &statusBody, int channelK1
 }
 
 int FanRelayController::setSpeed(const QString &host, int modulePort, int channelK1, int channelK2,
-                                 int speed, QString *errorOut, int timeoutMs)
+                                 int speed, QString *errorOut, int timeoutMs, int softStepMs)
 {
     if (channelK1 < 1 || channelK1 > 16 || channelK2 < 1 || channelK2 > 16
         || channelK1 == channelK2) {
@@ -165,44 +166,69 @@ int FanRelayController::setSpeed(const QString &host, int modulePort, int channe
         s = 3;
 
     // Safe order: drop K2 before raising K1 when leaving high; drop K1 before raising K2 for high.
-    auto applyOne = [&](int ch, bool on) -> bool {
-        const QString cmd = commandForChannel(ch, on);
-        qWarning().noquote()
-            << "[FAN-W5100] setSpeed" << s
-            << "K" << ch << (on ? "ON" : "OFF")
-            << "cmd" << cmd
-            << "url" << commandUrl(host, modulePort, cmd);
-        const Result r = setChannel(host, modulePort, ch, on, timeoutMs);
-        if (!r.ok) {
-            const QString err = QStringLiteral("ch%1 %2: %3")
-                                    .arg(ch)
-                                    .arg(on ? QStringLiteral("ON") : QStringLiteral("OFF"))
-                                    .arg(r.error);
-            if (errorOut)
-                *errorOut = err;
-            qWarning().noquote() << "[FAN-W5100] FAIL" << err;
-            return false;
+    auto applyLevel = [&](int level) -> bool {
+        auto applyOne = [&](int ch, bool on) -> bool {
+            const QString cmd = commandForChannel(ch, on);
+            qWarning().noquote()
+                << "[FAN-W5100] setSpeed" << level
+                << "K" << ch << (on ? "ON" : "OFF")
+                << "cmd" << cmd
+                << "url" << commandUrl(host, modulePort, cmd);
+            const Result r = setChannel(host, modulePort, ch, on, timeoutMs);
+            if (!r.ok) {
+                const QString err = QStringLiteral("ch%1 %2: %3")
+                                        .arg(ch)
+                                        .arg(on ? QStringLiteral("ON") : QStringLiteral("OFF"))
+                                        .arg(r.error);
+                if (errorOut)
+                    *errorOut = err;
+                qWarning().noquote() << "[FAN-W5100] FAIL" << err;
+                return false;
+            }
+            qWarning().noquote() << "[FAN-W5100] OK body=" << r.body.left(40);
+            return true;
+        };
+
+        if (level == 3) {
+            if (!applyOne(channelK1, false))
+                return false;
+            if (!applyOne(channelK2, true))
+                return false;
+        } else if (level == 2) {
+            if (!applyOne(channelK2, false))
+                return false;
+            if (!applyOne(channelK1, true))
+                return false;
+        } else {
+            if (!applyOne(channelK2, false))
+                return false;
+            if (!applyOne(channelK1, false))
+                return false;
         }
-        qWarning().noquote() << "[FAN-W5100] OK body=" << r.body.left(40);
         return true;
     };
 
-    if (s == 3) {
-        if (!applyOne(channelK1, false))
-            return -1;
-        if (!applyOne(channelK2, true))
-            return -1;
-    } else if (s == 2) {
-        if (!applyOne(channelK2, false))
-            return -1;
-        if (!applyOne(channelK1, true))
-            return -1;
-    } else {
-        if (!applyOne(channelK2, false))
-            return -1;
-        if (!applyOne(channelK1, false))
-            return -1;
+    int current = -1;
+    {
+        const Result st0 = readStatus(host, modulePort, timeoutMs);
+        if (st0.ok)
+            current = speedFromStatus(st0.body, channelK1, channelK2);
     }
+
+    // 50%↔100% (1↔3): короткий заход через 75%, чтобы смягчить каскад.
+    if (current > 0 && qAbs(current - s) >= 2 && softStepMs > 0) {
+        qWarning().noquote()
+            << "[FAN-W5100] soft-step" << current << "→ 2 →" << s
+            << "dwell" << softStepMs << "ms";
+        if (!applyLevel(2))
+            return -1;
+        QEventLoop pause;
+        QTimer::singleShot(softStepMs, &pause, &QEventLoop::quit);
+        pause.exec();
+    }
+
+    if (!applyLevel(s))
+        return -1;
 
     const Result st = readStatus(host, modulePort, timeoutMs);
     if (!st.ok) {

@@ -279,8 +279,10 @@ Window {
             console.log("[POWER] Сессия закрыта на сервере — сброс UI")
             if (typeof HidMonitor !== "undefined")
                 HidMonitor.stopWatch()
-            if (typeof NetworkManager !== "undefined")
+            if (typeof NetworkManager !== "undefined") {
                 NetworkManager.stopClimateControl()
+                NetworkManager.setFan("auto")
+            }
             root.sessionUser = ""
         }
 
@@ -525,6 +527,14 @@ Window {
         target: Theme
         property: "zoneType"
         value: root.pcTypeFromDatabase
+    }
+
+    function closeSetupScreen() {
+        setupScreenLoader.source = ""
+        if (!screenSwitcher.sourceComponent)
+            screenSwitcher.sourceComponent = loginScreenComponent
+        if (root.terminalId <= 0 && typeof NetworkManager !== "undefined")
+            root.terminalId = NetworkManager.computerId
     }
 
     // Весь интерфейс живёт в макете 1920x1080 и масштабируется целиком.

@@ -372,9 +372,12 @@ void NetworkManager::logoutTerminal(int terminalId) {
                 const QJsonObject facts = fanObj.value(QStringLiteral("facts")).toObject();
                 const int sessionsLeft = facts.value(QStringLiteral("sessions_in_space")).toInt(
                     facts.value(QStringLiteral("session")).toBool(false) ? 1 : 0);
-                // Last session in room → always OFF (no orphan ON after empty room).
+                // Last session in room → night + clear force_on on cloud via auto.
                 if (sessionsLeft <= 0) {
                     m_postBootCooldown = false;
+                    m_userSessionActive = false;
+                    // Drop marketing force_on so next shell start does not ramp to 100%.
+                    setFan(QStringLiteral("auto"));
                     ensureFanOffBeforeExit();
                 }
 
@@ -796,8 +799,10 @@ void NetworkManager::clearSessionUser()
         m_lastBookingId = 0;
         emit lastBookingIdChanged();
     }
+    clearPendingReceipt();
     m_lastKnownBalance = -1.0;
     m_balanceRefreshInFlight = false;
+    m_userSessionActive = false;
     stopClimateControl();
     m_featuredLabel = QStringLiteral("Популярно в клубе");
     m_featuredMode = QStringLiteral("club");
@@ -806,6 +811,21 @@ void NetworkManager::clearSessionUser()
     if (m_gamesModel)
         m_gamesModel->setFeaturedGames({});
     emit featuredChanged();
+}
+
+void NetworkManager::clearPendingReceipt()
+{
+    if (m_pendingReceiptUrl.isEmpty()
+        && m_pendingReceiptAmount == 0.0
+        && !m_pendingReceiptStub
+        && m_pendingReceiptDescription.isEmpty()) {
+        return;
+    }
+    m_pendingReceiptUrl.clear();
+    m_pendingReceiptAmount = 0.0;
+    m_pendingReceiptStub = false;
+    m_pendingReceiptDescription.clear();
+    emit pendingReceiptChanged();
 }
 
 int NetworkManager::resolveTerminalId(int terminalId) const
@@ -1090,14 +1110,39 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
                      << "rawKeys=" << user.keys();
             m_postBootCooldown = false;
             m_sawActiveSession = true;
+            m_userSessionActive = true;
             const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
-            if (!fanObj.isEmpty())
+            // Sync UI/state without applying stale force_on from previous session.
+            if (!fanObj.isEmpty()) {
+                m_skipRelayApply = true;
                 applyFanStateFromJson(fanObj);
+                m_skipRelayApply = false;
+            }
+
+            const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
+            const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
+            if (!receiptUrl.isEmpty()) {
+                m_pendingReceiptUrl = receiptUrl;
+                m_pendingReceiptAmount = jsonToDouble(receipt.value(QStringLiteral("amount")), 0.0);
+                m_pendingReceiptStub = receipt.value(QStringLiteral("is_stub")).toBool(false);
+                m_pendingReceiptDescription = receipt.value(QStringLiteral("description")).toString();
+                emit pendingReceiptChanged();
+                emit fiscalReceiptReady(
+                    m_pendingReceiptUrl,
+                    m_pendingReceiptAmount,
+                    m_pendingReceiptStub,
+                    m_pendingReceiptDescription);
+            } else {
+                clearPendingReceipt();
+            }
+
             emit loginSucceeded(
                 user.value("name").toString("GUEST"),
                 balance,
                 user.value("time_remaining").toString("00:00:00"),
                 cleanPhone);
+            // Marketing: always ramp to 100% after auth; client may lower later.
+            setFan(QStringLiteral("100"));
         } else {
             emit loginFailed(response.value("message").toString(
                 tr("Неверный логин или PIN-код")));
@@ -1225,7 +1270,7 @@ void NetworkManager::syncTopUpPayment(const QString &paymentId)
     });
 }
 
-void NetworkManager::createTopUp(double amount)
+void NetworkManager::createTopUp(double amount, bool sendReceipt)
 {
     if (m_serverUrl.isEmpty()) {
         emit topUpFailed(tr("Сервер не настроен"));
@@ -1251,12 +1296,14 @@ void NetworkManager::createTopUp(double amount)
     QJsonObject json;
     json.insert(QStringLiteral("terminal_id"), tid);
     json.insert(QStringLiteral("amount"), amount);
+    json.insert(QStringLiteral("send_receipt"), sendReceipt);
     if (m_lastBookingId > 0)
         json.insert(QStringLiteral("booking_id"), m_lastBookingId);
     if (m_userId > 0)
         json.insert(QStringLiteral("user_id"), m_userId);
 
-    qDebug() << "[NET] createTopUp amount=" << amount << "terminal=" << tid;
+    qDebug() << "[NET] createTopUp amount=" << amount << "terminal=" << tid
+             << "send_receipt=" << sendReceipt;
     QNetworkReply *reply = m_networkManager->post(
         request, QJsonDocument(json).toJson(QJsonDocument::Compact));
 
@@ -1598,8 +1645,19 @@ void NetworkManager::notifyPowerOffline()
 
 bool NetworkManager::hasRelayConfig() const
 {
-    return m_fanAvailable
-        && !m_fanRelayHost.isEmpty()
+    if (!m_fanAvailable)
+        return false;
+    if (!m_fanRelays.isEmpty()) {
+        for (const FanRelayEndpoint &r : m_fanRelays) {
+            if (r.host.isEmpty() || r.port <= 0
+                || r.channel < 1 || r.channel > 16
+                || r.channel2 < 1 || r.channel2 > 16
+                || r.channel == r.channel2)
+                return false;
+        }
+        return true;
+    }
+    return !m_fanRelayHost.isEmpty()
         && m_fanRelayPort > 0
         && m_fanRelayChannel >= 1
         && m_fanRelayChannel <= 16
@@ -1615,6 +1673,37 @@ void NetworkManager::setFanDebug(const QString &line)
         return;
     m_fanDebug = line;
     emit fanDebugChanged();
+}
+
+void NetworkManager::setFanManualLockSec(int sec)
+{
+    if (sec < 0)
+        sec = 0;
+    if (m_fanManualLockSec == sec)
+        return;
+    m_fanManualLockSec = sec;
+    emit fanStateChanged();
+
+    if (!m_fanLockTimer) {
+        m_fanLockTimer = new QTimer(this);
+        m_fanLockTimer->setInterval(1000);
+        connect(m_fanLockTimer, &QTimer::timeout, this, [this]() {
+            if (m_fanManualLockSec <= 0) {
+                m_fanLockTimer->stop();
+                return;
+            }
+            --m_fanManualLockSec;
+            emit fanStateChanged();
+            if (m_fanManualLockSec <= 0)
+                m_fanLockTimer->stop();
+        });
+    }
+    if (m_fanManualLockSec > 0) {
+        if (!m_fanLockTimer->isActive())
+            m_fanLockTimer->start();
+    } else {
+        m_fanLockTimer->stop();
+    }
 }
 
 int NetworkManager::computeLocalDesiredPower(const QJsonObject &fanObj) const
@@ -1649,21 +1738,26 @@ int NetworkManager::computeLocalDesiredPower(const QJsonObject &fanObj) const
 
 void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source)
 {
-    setFanDebug(QStringLiteral("apply want=%1 source=%2 http://%3/%4/ K1=%5 K2=%6 avail=%7")
+    QVector<FanRelayEndpoint> targets = m_fanRelays;
+    if (targets.isEmpty() && !m_fanRelayHost.isEmpty()) {
+        FanRelayEndpoint one;
+        one.host = m_fanRelayHost;
+        one.port = m_fanRelayPort;
+        one.channel = m_fanRelayChannel;
+        one.channel2 = m_fanRelayChannel2;
+        targets.append(one);
+    }
+
+    setFanDebug(QStringLiteral("apply want=%1 source=%2 relays=%3 avail=%4")
                     .arg(desiredPower)
                     .arg(source)
-                    .arg(m_fanRelayHost)
-                    .arg(m_fanRelayPort)
-                    .arg(m_fanRelayChannel)
-                    .arg(m_fanRelayChannel2)
+                    .arg(targets.size())
                     .arg(hasRelayConfig() ? QStringLiteral("yes") : QStringLiteral("NO")));
 
-    if (!hasRelayConfig()) {
-        setFanDebug(QStringLiteral("SKIP: no relay config (available=%1 host='%2' ch=%3/%4)")
+    if (!hasRelayConfig() || targets.isEmpty()) {
+        setFanDebug(QStringLiteral("SKIP: no relay config (available=%1 relays=%2)")
                         .arg(m_fanAvailable ? 1 : 0)
-                        .arg(m_fanRelayHost)
-                        .arg(m_fanRelayChannel)
-                        .arg(m_fanRelayChannel2));
+                        .arg(targets.size()));
         return;
     }
     if (m_fanApplyInFlight) {
@@ -1674,10 +1768,7 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_fanRelayUnreachableUntilMs > now) {
         const int leftSec = int((m_fanRelayUnreachableUntilMs - now + 999) / 1000);
-        setFanDebug(QStringLiteral("LAN unreachable → http://%1/%2/… (retry %3s)")
-                        .arg(m_fanRelayHost)
-                        .arg(m_fanRelayPort)
-                        .arg(leftSec));
+        setFanDebug(QStringLiteral("LAN unreachable (retry %1s)").arg(leftSec));
         return;
     }
 
@@ -1690,61 +1781,64 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
     m_fanApplyInFlight = true;
     QString error;
     int applied = m_fanAppliedPower;
+    bool anyOk = false;
 
-    setFanDebug(QStringLiteral("GET status http://%1/%2/99 …")
-                    .arg(m_fanRelayHost)
-                    .arg(m_fanRelayPort));
-    auto status = FanRelayController::readStatus(m_fanRelayHost, m_fanRelayPort);
-    int current = -1;
-    if (status.ok) {
-        m_fanRelayUnreachableUntilMs = 0;
-        current = FanRelayController::speedFromStatus(
-            status.body, m_fanRelayChannel, m_fanRelayChannel2);
-        setFanDebug(QStringLiteral("status ok body='%1' decodedSpeed=%2 want=%3")
-                        .arg(status.body.left(32))
-                        .arg(current)
+    for (int i = 0; i < targets.size(); ++i) {
+        const FanRelayEndpoint &t = targets.at(i);
+        setFanDebug(QStringLiteral("relay[%1/%2] http://%3/%4/ K%5+K%6 want=%7")
+                        .arg(i + 1)
+                        .arg(targets.size())
+                        .arg(t.host)
+                        .arg(t.port)
+                        .arg(t.channel)
+                        .arg(t.channel2)
                         .arg(want));
-    } else {
-        // /99 уже не отвечает — setSpeed по тому же IP бессмысленен, только удлиняет зависание UI.
-        m_fanRelayUnreachableUntilMs = now + 45000;
-        setFanDebug(QStringLiteral("status FAIL: %1 → http://%2/%3/99. Backoff 45с.")
-                        .arg(status.error, m_fanRelayHost)
-                        .arg(m_fanRelayPort));
-        acknowledgeFanApplied(applied, status.error, source);
+
+        auto status = FanRelayController::readStatus(t.host, t.port);
+        int current = -1;
+        if (status.ok) {
+            current = FanRelayController::speedFromStatus(status.body, t.channel, t.channel2);
+            setFanDebug(QStringLiteral("status ok speed=%1 want=%2").arg(current).arg(want));
+        } else {
+            m_fanRelayUnreachableUntilMs = now + 45000;
+            error = status.error;
+            setFanDebug(QStringLiteral("status FAIL: %1 → http://%2/%3/99")
+                            .arg(status.error, t.host)
+                            .arg(t.port));
+            continue;
+        }
+
+        if (current == want) {
+            applied = want;
+            anyOk = true;
+            continue;
+        }
+
+        QString localErr;
+        const int got = FanRelayController::setSpeed(
+            t.host, t.port, t.channel, t.channel2, want, &localErr);
+        if (got > 0) {
+            applied = got;
+            anyOk = true;
+            m_fanRelayUnreachableUntilMs = 0;
+            setFanDebug(QStringLiteral("setSpeed OK → speed %1").arg(got));
+        } else {
+            error = localErr;
+            m_fanRelayUnreachableUntilMs = now + 45000;
+            setFanDebug(QStringLiteral("setSpeed FAIL: %1").arg(localErr));
+        }
+    }
+
+    if (!anyOk && !error.isEmpty()) {
+        acknowledgeFanApplied(applied, error, source);
         m_fanApplyInFlight = false;
         return;
     }
 
-    if (current == want) {
-        applied = want;
-        setFanDebug(QStringLiteral("already at speed %1 — ack only").arg(want));
-    } else {
-        setFanDebug(QStringLiteral("setSpeed %1 → http://%2/%3/…")
-                        .arg(want)
-                        .arg(m_fanRelayHost)
-                        .arg(m_fanRelayPort));
-        const int got = FanRelayController::setSpeed(
-            m_fanRelayHost, m_fanRelayPort,
-            m_fanRelayChannel, m_fanRelayChannel2,
-            want, &error);
-        if (got > 0) {
-            applied = got;
-            m_fanRelayUnreachableUntilMs = 0;
-            setFanDebug(QStringLiteral("setSpeed OK → speed %1").arg(got));
-        } else {
-            m_fanRelayUnreachableUntilMs = now + 45000;
-            setFanDebug(QStringLiteral("setSpeed FAIL: %1").arg(error));
-        }
-    }
-
     m_fanAppliedPower = applied;
     const bool on = applied >= 2;
-    if (m_fanOn != on) {
-        m_fanOn = on;
-        emit fanStateChanged();
-    } else {
-        emit fanStateChanged(); // refresh fanSpeed
-    }
+    m_fanOn = on;
+    emit fanStateChanged();
 
     acknowledgeFanApplied(applied, error, source);
     m_fanApplyInFlight = false;
@@ -1752,19 +1846,30 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
 
 void NetworkManager::ensureFanOffBeforeExit()
 {
-    if (m_fanRelayHost.isEmpty()
-        || m_fanRelayChannel < 1 || m_fanRelayChannel > 16
-        || m_fanRelayChannel2 < 1 || m_fanRelayChannel2 > 16)
+    QVector<FanRelayEndpoint> targets = m_fanRelays;
+    if (targets.isEmpty() && !m_fanRelayHost.isEmpty()
+        && m_fanRelayChannel >= 1 && m_fanRelayChannel2 >= 1) {
+        FanRelayEndpoint one;
+        one.host = m_fanRelayHost;
+        one.port = m_fanRelayPort;
+        one.channel = m_fanRelayChannel;
+        one.channel2 = m_fanRelayChannel2;
+        targets.append(one);
+    }
+    if (targets.isEmpty())
         return;
 
     QString error;
-    int applied = FanRelayController::setSpeed(
-        m_fanRelayHost, m_fanRelayPort,
-        m_fanRelayChannel, m_fanRelayChannel2,
-        1, &error);
-
-    if (applied < 0)
-        applied = 1;
+    int applied = 1;
+    for (const FanRelayEndpoint &t : targets) {
+        QString localErr;
+        const int got = FanRelayController::setSpeed(
+            t.host, t.port, t.channel, t.channel2, 1, &localErr, 2000, 0);
+        if (got > 0)
+            applied = got;
+        else if (!localErr.isEmpty())
+            error = localErr;
+    }
 
     m_fanAppliedPower = applied;
     if (m_fanOn) {
@@ -1850,7 +1955,36 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
                             .value(QStringLiteral("remaining_sec")).toInt(0);
 
     const QJsonObject relay = fanObj.value(QStringLiteral("relay")).toObject();
-    if (!relay.isEmpty()) {
+    m_fanRelays.clear();
+    const QJsonArray relaysArr = fanObj.value(QStringLiteral("relays")).toArray();
+    if (!relaysArr.isEmpty()) {
+        for (const QJsonValue &rv : relaysArr) {
+            const QJsonObject r = rv.toObject();
+            FanRelayEndpoint ep;
+            ep.fanId = r.value(QStringLiteral("fan_id")).toInt(0);
+            ep.host = r.value(QStringLiteral("host")).toString();
+            ep.port = r.value(QStringLiteral("port")).toInt(30000);
+            ep.channel = r.value(QStringLiteral("channel")).toInt(0);
+            ep.channel2 = r.value(QStringLiteral("channel2")).toInt(0);
+            if (!ep.host.isEmpty())
+                m_fanRelays.append(ep);
+        }
+    }
+    if (m_fanRelays.isEmpty() && !relay.isEmpty()) {
+        FanRelayEndpoint ep;
+        ep.host = relay.value(QStringLiteral("host")).toString();
+        ep.port = relay.value(QStringLiteral("port")).toInt(30000);
+        ep.channel = relay.value(QStringLiteral("channel")).toInt(0);
+        ep.channel2 = relay.value(QStringLiteral("channel2")).toInt(0);
+        if (!ep.host.isEmpty())
+            m_fanRelays.append(ep);
+    }
+    if (!m_fanRelays.isEmpty()) {
+        m_fanRelayHost = m_fanRelays.first().host;
+        m_fanRelayPort = m_fanRelays.first().port;
+        m_fanRelayChannel = m_fanRelays.first().channel;
+        m_fanRelayChannel2 = m_fanRelays.first().channel2;
+    } else if (!relay.isEmpty()) {
         m_fanRelayHost = relay.value(QStringLiteral("host")).toString();
         m_fanRelayPort = relay.value(QStringLiteral("port")).toInt(30000);
         m_fanRelayChannel = relay.value(QStringLiteral("channel")).toInt(0);
@@ -1887,11 +2021,13 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
     const bool uiOn = desired >= 2;
 
     const bool changed = (available != m_fanAvailable) || (uiOn != m_fanOn)
-        || (mode != m_fanMode) || (lockSec != m_fanManualLockSec);
+        || (mode != m_fanMode) || (lockSec != m_fanManualLockSec)
+        || (desired != m_fanDesiredPower);
     m_fanAvailable = available;
     m_fanOn = uiOn;
     m_fanMode = mode;
-    m_fanManualLockSec = lockSec;
+    setFanManualLockSec(lockSec);
+    m_fanDesiredPower = desired;
     if (changed)
         emit fanStateChanged();
 
@@ -1900,6 +2036,29 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
 
     const QJsonObject autoLock = fanObj.value(QStringLiteral("auto_lock")).toObject();
     const bool autoLocked = autoLock.value(QStringLiteral("locked")).toBool(false);
+    const bool thermal = facts.value(QStringLiteral("thermal")).toBool(false);
+
+    // Lobby / before auth: report thermal only; actuate relays solely when hot.
+    // Do not apply stale cloud force_on (e.g. previous session left at 100%).
+    if (!m_userSessionActive) {
+        if (!hasRelayConfig()) {
+            setFanDebug(QStringLiteral("pre-login: no relay yet"));
+            return;
+        }
+        if (!thermal) {
+            setFanDebug(QStringLiteral("pre-login idle — skip relay (cloud want=%1)")
+                            .arg(desired));
+            return;
+        }
+        // Thermal cool-down without session: mid only.
+        if (!autoLocked || m_forceRelayApply)
+            applyDesiredToRelay(2, QStringLiteral("prelogin_thermal"));
+        else
+            setFanDebug(QStringLiteral("pre-login thermal auto_lock %1s")
+                            .arg(autoLock.value(QStringLiteral("remaining_sec")).toInt()));
+        return;
+    }
+
     // auto_lock — только для фонового poll; ручной setFan всегда жмёт реле сразу.
     if (hasRelayConfig() && (!autoLocked || m_forceRelayApply)) {
         applyDesiredToRelay(desired, QStringLiteral("command"));
@@ -1994,7 +2153,10 @@ void NetworkManager::setFan(const QString &action)
         setFanDebug(QStringLiteral("setFan: request in flight"));
         return;
     }
-    // manual_lock на чужих ПК проверяет бэкенд; свой терминал может менять скорость сразу
+    if (m_fanManualLockSec > 0) {
+        setFanDebug(QStringLiteral("setFan: cooldown %1s").arg(m_fanManualLockSec));
+        return;
+    }
     m_fanRequestInFlight = true;
     setFanDebug(QStringLiteral("setFan POST action=%1 term=%2").arg(normalized).arg(termId));
 
@@ -2023,21 +2185,258 @@ void NetworkManager::setFan(const QString &action)
             return;
         }
 
+        const bool locked = root.value(QStringLiteral("status")).toString() == QLatin1String("locked")
+            || httpStatus == 423;
+        const QJsonObject fanObj = root.value(QStringLiteral("fan")).toObject();
+
+        if (locked) {
+            setFanDebug(QStringLiteral("setFan cooldown %1s — no power change")
+                            .arg(root.value(QStringLiteral("remaining_sec")).toInt()));
+            m_skipRelayApply = true;
+            applyFanStateFromJson(fanObj);
+            m_skipRelayApply = false;
+            return;
+        }
+
         setFanDebug(QStringLiteral("setFan OK action=%1 mode=%2 desired=%3")
                         .arg(normalized)
-                        .arg(root.value(QStringLiteral("fan")).toObject()
-                                 .value(QStringLiteral("manual_mode")).toString())
-                        .arg(root.value(QStringLiteral("fan")).toObject()
-                                 .value(QStringLiteral("desired_power")).toInt()));
-        m_fanRelayUnreachableUntilMs = 0; // ручной клик — сразу пробуем LAN снова
+                        .arg(fanObj.value(QStringLiteral("manual_mode")).toString())
+                        .arg(fanObj.value(QStringLiteral("desired_power")).toInt()));
+        m_fanRelayUnreachableUntilMs = 0;
         m_forceRelayApply = true;
-        applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
+        applyFanStateFromJson(fanObj);
         m_forceRelayApply = false;
-        if (root.value(QStringLiteral("status")).toString() == QLatin1String("locked")
-            || httpStatus == 423) {
-            setFanDebug(QStringLiteral("setFan cooldown %1s")
-                            .arg(root.value(QStringLiteral("remaining_sec")).toInt()));
+    });
+}
+
+void NetworkManager::fetchFanDiscover()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0) {
+        m_fanDiscoverStatus = QStringLiteral("Нет terminal_id — сначала зарегистрируйте ПК");
+        m_fanDiscoverBoards.clear();
+        emit fanDiscoverChanged();
+        return;
+    }
+
+    m_fanDiscoverBusy = true;
+    m_fanDiscoverStatus = QStringLiteral("Загрузка плат…");
+    emit fanDiscoverChanged();
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan/discover"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("terminal_id"), QString::number(termId));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_fanDiscoverBusy = false;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (reply->error() != QNetworkReply::NoError
+            || root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            m_fanDiscoverStatus = root.value(QStringLiteral("message")).toString(
+                reply->errorString().isEmpty() ? QStringLiteral("Ошибка discover") : reply->errorString());
+            m_fanDiscoverBoards.clear();
+            emit fanDiscoverChanged();
+            return;
         }
+        if (!root.value(QStringLiteral("available")).toBool(false)) {
+            m_fanDiscoverStatus = root.value(QStringLiteral("reason")).toString() == QLatin1String("no_space")
+                ? QStringLiteral("У ПК нет комнаты (space) — привяжите в админке")
+                : QStringLiteral("Discover недоступен");
+            m_fanDiscoverBoards.clear();
+            m_fanDiscoverSpaceName.clear();
+            emit fanDiscoverChanged();
+            return;
+        }
+
+        m_fanDiscoverSpaceName = root.value(QStringLiteral("space_name")).toString();
+        m_fanDiscoverSlotsUsed = root.value(QStringLiteral("slots_used")).toInt(0);
+        m_fanDiscoverSlotsMax = root.value(QStringLiteral("slots_max")).toInt(2);
+
+        m_fanDiscoverBound.clear();
+        QJsonArray boundArr = root.value(QStringLiteral("bound")).toArray();
+        if (boundArr.isEmpty()) {
+            const QJsonObject cur = root.value(QStringLiteral("current")).toObject();
+            if (!cur.isEmpty())
+                boundArr.append(cur);
+        }
+        for (const QJsonValue &bv : boundArr) {
+            const QJsonObject b = bv.toObject();
+            QVariantMap row;
+            row.insert(QStringLiteral("fan_id"), b.value(QStringLiteral("fan_id")).toInt());
+            row.insert(QStringLiteral("channel"), b.value(QStringLiteral("channel")).toInt());
+            row.insert(QStringLiteral("channel2"), b.value(QStringLiteral("channel2")).toInt());
+            row.insert(QStringLiteral("host"), b.value(QStringLiteral("host")).toString());
+            row.insert(QStringLiteral("port"), b.value(QStringLiteral("port")).toInt(30000));
+            row.insert(QStringLiteral("label"), b.value(QStringLiteral("label")).toString(
+                QStringLiteral("K%1+K%2")
+                    .arg(b.value(QStringLiteral("channel")).toInt())
+                    .arg(b.value(QStringLiteral("channel2")).toInt())));
+            m_fanDiscoverBound.append(row);
+        }
+
+        m_fanDiscoverStatus = QStringLiteral("Комната: %1 · привязано %2/%3")
+                                  .arg(m_fanDiscoverSpaceName)
+                                  .arg(m_fanDiscoverSlotsUsed)
+                                  .arg(m_fanDiscoverSlotsMax);
+
+        m_fanDiscoverBoards.clear();
+        const QJsonArray boards = root.value(QStringLiteral("boards")).toArray();
+        for (const QJsonValue &bv : boards) {
+            const QJsonObject b = bv.toObject();
+            QVariantMap board;
+            board.insert(QStringLiteral("id"), b.value(QStringLiteral("id")).toInt());
+            board.insert(QStringLiteral("name"), b.value(QStringLiteral("name")).toString());
+            board.insert(QStringLiteral("host"), b.value(QStringLiteral("host")).toString());
+            board.insert(QStringLiteral("port"), b.value(QStringLiteral("port")).toInt(30000));
+            QVariantList pairs;
+            for (const QJsonValue &pv : b.value(QStringLiteral("pairs")).toArray()) {
+                const QJsonObject p = pv.toObject();
+                QVariantMap pair;
+                pair.insert(QStringLiteral("channel"), p.value(QStringLiteral("channel")).toInt());
+                pair.insert(QStringLiteral("channel2"), p.value(QStringLiteral("channel2")).toInt());
+                pair.insert(QStringLiteral("label"), p.value(QStringLiteral("label")).toString());
+                pair.insert(QStringLiteral("status"), p.value(QStringLiteral("status")).toString());
+                pair.insert(QStringLiteral("space_name"), p.value(QStringLiteral("space_name")).toString());
+                pairs.append(pair);
+            }
+            board.insert(QStringLiteral("pairs"), pairs);
+            m_fanDiscoverBoards.append(board);
+        }
+        emit fanDiscoverChanged();
+    });
+}
+
+void NetworkManager::bindFanPair(int boardId, int channel, int channel2)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || boardId <= 0) {
+        emit fanBindFinished(false, QStringLiteral("Нет terminal/board"));
+        return;
+    }
+    if (m_fanDiscoverBusy) {
+        emit fanBindFinished(false, QStringLiteral("Занято"));
+        return;
+    }
+    m_fanDiscoverBusy = true;
+    emit fanDiscoverChanged();
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan/bind"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("relay_board_id"), boardId);
+    json.insert(QStringLiteral("channel"), channel);
+    json.insert(QStringLiteral("channel2"), channel2);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_fanDiscoverBusy = false;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        const bool ok = reply->error() == QNetworkReply::NoError
+            && root.value(QStringLiteral("status")).toString() == QLatin1String("success");
+        const QString msg = root.value(QStringLiteral("message")).toString(
+            ok ? QStringLiteral("OK") : reply->errorString());
+        emit fanBindFinished(ok, msg);
+        if (ok) {
+            const QJsonObject fanObj = root.value(QStringLiteral("fan")).toObject();
+            if (!fanObj.isEmpty()) {
+                m_forceRelayApply = true;
+                applyFanStateFromJson(fanObj);
+                m_forceRelayApply = false;
+            }
+            fetchFanDiscover();
+        } else {
+            emit fanDiscoverChanged();
+        }
+    });
+}
+
+void NetworkManager::unbindFan(int fanId)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || fanId <= 0) {
+        emit fanBindFinished(false, QStringLiteral("Нет terminal/fan_id"));
+        return;
+    }
+    if (m_fanDiscoverBusy) {
+        emit fanBindFinished(false, QStringLiteral("Занято"));
+        return;
+    }
+    m_fanDiscoverBusy = true;
+    emit fanDiscoverChanged();
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/fan/unbind"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("fan_id"), fanId);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_fanDiscoverBusy = false;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        const bool ok = reply->error() == QNetworkReply::NoError
+            && root.value(QStringLiteral("status")).toString() == QLatin1String("success");
+        const QString msg = root.value(QStringLiteral("message")).toString(
+            ok ? QStringLiteral("OK") : reply->errorString());
+        emit fanBindFinished(ok, msg);
+        fetchFanDiscover();
+        fetchFanState();
+    });
+}
+
+void NetworkManager::testFanPair(const QString &host, int modulePort, int channel, int channel2)
+{
+    if (m_fanTestInFlight) {
+        emit fanTestFinished(false, QStringLiteral("Тест уже идёт"));
+        return;
+    }
+    if (host.trimmed().isEmpty() || modulePort <= 0 || channel < 1 || channel2 < 1) {
+        emit fanTestFinished(false, QStringLiteral("Некорректная цель"));
+        return;
+    }
+
+    m_fanTestInFlight = true;
+    emit fanDiscoverChanged();
+    setFanDebug(QStringLiteral("TEST pulse http://%1/%2/ K%3+K%4 → 100%")
+                    .arg(host)
+                    .arg(modulePort)
+                    .arg(channel)
+                    .arg(channel2));
+
+    QString err;
+    const int got = FanRelayController::setSpeed(
+        host, modulePort, channel, channel2, 3, &err, 2000, /*softStepMs*/ 0);
+    if (got < 0) {
+        m_fanTestInFlight = false;
+        emit fanTestFinished(false, err.isEmpty() ? QStringLiteral("setSpeed FAIL") : err);
+        emit fanDiscoverChanged();
+        return;
+    }
+
+    QTimer::singleShot(2500, this, [this, host, modulePort, channel, channel2]() {
+        QString err2;
+        FanRelayController::setSpeed(
+            host, modulePort, channel, channel2, 1, &err2, 2000, 0);
+        m_fanTestInFlight = false;
+        setFanDebug(QStringLiteral("TEST done → night K%1+K%2").arg(channel).arg(channel2));
+        emit fanTestFinished(true, QStringLiteral("Пульс 100% ~2.5с → дежурный"));
+        emit fanDiscoverChanged();
     });
 }
 

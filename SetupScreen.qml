@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
+import QtQuick.Window
 import sector0451
 
 Rectangle {
@@ -9,10 +9,21 @@ Rectangle {
     anchors.fill: parent
     color: Theme.bgRoot
 
-    // Подтягиваем зоны из C++ модели
     readonly property var zonesList: (typeof NetworkManager !== "undefined")
                                      ? NetworkManager.getAvailableZones()
                                      : ["singl", "duo", "trio", "kvatro", "bootcamp", "tv"]
+
+    readonly property bool pcRegistered: typeof NetworkManager !== "undefined"
+                                         && NetworkManager.computerId > 0
+
+    property string fanMsg: ""
+    property bool fanMsgOk: true
+    property int selectedBoardId: 0
+    property int selectedK1: 0
+    property int selectedK2: 0
+    property string selectedHost: ""
+    property int selectedPort: 30000
+    property string selectedLabel: ""
 
     Image {
         anchors.fill: parent
@@ -21,150 +32,441 @@ Rectangle {
         opacity: 0.3
     }
 
-    Column {
-        anchors.centerIn: parent
-        spacing: 35
-        width: 500
+    Component.onCompleted: {
+        if (pcRegistered)
+            NetworkManager.fetchFanDiscover()
+    }
 
-        // Заголовок экрана конфигурации
-        Column {
-            width: parent.width
-            spacing: 10
-            Text {
-                text: "REACTOR CONTROL"
-                color: Theme.accent
-                font.pixelSize: 32
-                font.bold: true
-                font.letterSpacing: 2
-                anchors.horizontalCenter: parent.horizontalCenter
-            }
-            Text {
-                text: "ПЕРВИЧНАЯ РЕГИСТРАЦИЯ ТЕРМИНАЛА"
-                color: Theme.textMuted
-                font.pixelSize: 12
-                font.bold: true
-                font.letterSpacing: 1
-                anchors.horizontalCenter: parent.horizontalCenter
-            }
+    Connections {
+        target: typeof NetworkManager !== "undefined" ? NetworkManager : null
+        function onComputerIdChanged() {
+            if (setupRoot.pcRegistered)
+                NetworkManager.fetchFanDiscover()
         }
+        function onFanBindFinished(ok, message) {
+            setupRoot.fanMsgOk = ok
+            setupRoot.fanMsg = message
+        }
+        function onFanTestFinished(ok, message) {
+            setupRoot.fanMsgOk = ok
+            setupRoot.fanMsg = message
+        }
+    }
 
-        // БЛОК ВВОДА ИМЕНИ КОМПЬЮТЕРА
+    function closeSetup() {
+        var win = Window.window
+        if (win && typeof win.closeSetupScreen === "function")
+            win.closeSetupScreen()
+    }
+
+    function selectPair(board, pair) {
+        if (!board || !pair || pair.status === "taken")
+            return
+        selectedBoardId = board.id
+        selectedHost = board.host
+        selectedPort = board.port
+        selectedK1 = pair.channel
+        selectedK2 = pair.channel2
+        selectedLabel = (board.name || "") + " · " + pair.label
+        fanMsg = "Выбрано: " + selectedLabel
+        fanMsgOk = true
+    }
+
+    function runTest() {
+        if (selectedBoardId <= 0 || selectedK1 <= 0)
+            return
+        fanMsg = "Тест 100% ~2.5с…"
+        fanMsgOk = true
+        NetworkManager.testFanPair(selectedHost, selectedPort, selectedK1, selectedK2)
+    }
+
+    function runBind() {
+        if (selectedBoardId <= 0 || selectedK1 <= 0)
+            return
+        NetworkManager.bindFanPair(selectedBoardId, selectedK1, selectedK2)
+    }
+
+    Flickable {
+        id: flick
+        anchors.fill: parent
+        anchors.margins: 36
+        contentWidth: width
+        contentHeight: mainCol.implicitHeight + 20
+        clip: true
+
         Column {
-            width: parent.width
-            spacing: 12
+            id: mainCol
+            width: Math.min(760, flick.width)
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 22
 
-            Text {
-                text: "НАЗВАНИЕ КОМПЬЮТЕРА (ПРИВЯЗКА К БАЗЕ)"
-                color: Theme.accent
-                font.pixelSize: 11
-                font.bold: true
-                font.letterSpacing: 1
-            }
-
-            TextField {
-                id: pcNameInputField
+            RowLayout {
                 width: parent.width
-                height: 60
-                font.pixelSize: 22
-                font.bold: true
-                font.family: "Roboto"
-                font.letterSpacing: 1
-                color: "white"
-                placeholderText: "Например: PC-01, DUO-05..."
-                placeholderTextColor: "#334155"
-                selectionColor: Theme.accent
-                selectedTextColor: "black"
-                verticalAlignment: TextInput.AlignVCenter
-                leftPadding: 20
-                focus: true
-
-                background: Rectangle {
-                    color: pcNameInputField.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle
-                    border.color: pcNameInputField.activeFocus ? Theme.accent : Theme.accentBorder
-                    border.width: pcNameInputField.activeFocus ? 2 : 1
-                    radius: Theme.radiusSm
-
-                    Behavior on color { ColorAnimation { duration: 150 } }
-                    Behavior on border.color { ColorAnimation { duration: 150 } }
+                Text {
+                    Layout.fillWidth: true
+                    text: "REACTOR CONTROL"
+                    color: Theme.accent
+                    font.pixelSize: 28
+                    font.bold: true
+                    font.letterSpacing: 2
+                }
+                Button {
+                    text: "НАЗАД"
+                    onClicked: setupRoot.closeSetup()
+                    contentItem: Text {
+                        text: parent.text
+                        color: Theme.textMuted
+                        font.pixelSize: 12
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        color: "#111"
+                        border.color: "#333"
+                        radius: 4
+                    }
                 }
             }
 
             Text {
-                id: errorValidationText
-                text: "Пожалуйста, введите имя компьютера перед выбором зоны"
-                color: Theme.danger
-                font.pixelSize: 12
-                visible: false
-            }
-        }
-
-        Rectangle {
-            width: parent.width
-            height: 1
-            color: Theme.accent
-            opacity: 0.2
-        }
-
-        // БЛОК ВЫБОРА ИГРОВОЙ ЗОНЫ
-        Column {
-            width: parent.width
-            spacing: 15
-
-            Text {
-                text: "ВЫБЕРИТЕ ИГРОВУЮ ЗОНУ ДЛЯ ЭТОГО ХАРДА"
+                text: setupRoot.pcRegistered
+                      ? "НАСТРОЙКА · terminal #" + NetworkManager.computerId
+                      : "ПЕРВИЧНАЯ РЕГИСТРАЦИЯ ТЕРМИНАЛА"
                 color: Theme.textMuted
-                font.pixelSize: 11
+                font.pixelSize: 12
                 font.bold: true
                 font.letterSpacing: 1
             }
 
-            Repeater {
-                model: setupRoot.zonesList
-                delegate: Button {
-                    id: zoneBtn
+            // Registration (only if not registered)
+            Column {
+                width: parent.width
+                spacing: 10
+                visible: !setupRoot.pcRegistered
+
+                Text {
+                    text: "НАЗВАНИЕ КОМПЬЮТЕРА"
+                    color: Theme.accent
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+                TextField {
+                    id: pcNameInputField
                     width: parent.width
-                    height: 55
-                    scale: zoneBtn.down ? 0.98 : 1.0
-
-                    Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
-
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-
-                    contentItem: Text {
-                        text: modelData
-                        color: zoneBtn.hovered ? "black" : Theme.accent
-                        font.pixelSize: 16
-                        font.bold: true
-                        font.letterSpacing: 1
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
+                    height: 52
+                    font.pixelSize: 18
+                    font.bold: true
+                    color: "white"
+                    placeholderText: "PC-01, DUO-05…"
+                    placeholderTextColor: "#334155"
+                    leftPadding: 14
                     background: Rectangle {
-                        color: zoneBtn.down ? Theme.accentDeep
-                                            : (zoneBtn.hovered ? Theme.accent : Theme.accentPanel)
-                        border.color: zoneBtn.hovered ? Theme.accent : Theme.accentBorder
+                        color: pcNameInputField.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle
+                        border.color: pcNameInputField.activeFocus ? Theme.accent : Theme.accentBorder
                         border.width: 1
                         radius: Theme.radiusSm
-                        Behavior on color { ColorAnimation { duration: 100 } }
-                        Behavior on border.color { ColorAnimation { duration: 100 } }
                     }
-
-                    onClicked: {
-                        var cleanName = pcNameInputField.text.trim();
-                        if (cleanName === "") {
-                            errorValidationText.visible = true;
-                            pcNameInputField.forceActiveFocus();
-                        } else {
-                            errorValidationText.visible = false;
-                            console.log("[SETUP] Регистрация станции. Имя:", cleanName, "| Зона:", modelData);
-
-                            // Вызов обновлённого C++ метода с двумя параметрами!
-                            NetworkManager.registerStation(modelData, cleanName);
+                }
+                Text {
+                    id: errorValidationText
+                    text: "Введите имя перед выбором зоны"
+                    color: Theme.danger
+                    font.pixelSize: 12
+                    visible: false
+                }
+                Text {
+                    text: "ЗОНА"
+                    color: Theme.textMuted
+                    font.pixelSize: 11
+                    font.bold: true
+                    topPadding: 6
+                }
+                Repeater {
+                    model: setupRoot.zonesList
+                    delegate: Button {
+                        id: zoneBtn
+                        width: mainCol.width
+                        height: 46
+                        contentItem: Text {
+                            text: modelData
+                            color: zoneBtn.hovered ? "black" : Theme.accent
+                            font.pixelSize: 14
+                            font.bold: true
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            color: zoneBtn.hovered ? Theme.accent : Theme.accentPanel
+                            border.color: Theme.accentBorder
+                            radius: Theme.radiusSm
+                        }
+                        onClicked: {
+                            var cleanName = pcNameInputField.text.trim()
+                            if (!cleanName) {
+                                errorValidationText.visible = true
+                                return
+                            }
+                            errorValidationText.visible = false
+                            NetworkManager.registerStation(modelData, cleanName)
                         }
                     }
                 }
             }
+
+            // Fan discovery
+            Rectangle {
+                width: parent.width
+                visible: setupRoot.pcRegistered
+                radius: 8
+                color: "#0a0f0b"
+                border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
+                border.width: 1
+                implicitHeight: fanInner.implicitHeight + 32
+
+                Column {
+                    id: fanInner
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 16
+                    spacing: 10
+
+                    Text {
+                        text: "ВЕНТИЛЯТОР · DISCOVERY"
+                        color: Theme.accent
+                        font.pixelSize: 13
+                        font.bold: true
+                        font.letterSpacing: 1.4
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "ТЕСТ пульсирует 100% ~2.5с. Услышали свой — ПРИВЯЗАТЬ. В комнате до "
+                              + NetworkManager.fanDiscoverSlotsMax + " вентиляторов."
+                        color: Theme.textMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: NetworkManager.fanDiscoverStatus
+                        color: Theme.textSecondary
+                        font.pixelSize: 11
+                        font.family: "Monospace"
+                    }
+                    Text {
+                        visible: setupRoot.fanMsg.length > 0
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: setupRoot.fanMsg
+                        color: setupRoot.fanMsgOk ? Theme.success : Theme.danger
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+
+                    Row {
+                        spacing: 8
+                        Button {
+                            text: "ОБНОВИТЬ СПИСОК"
+                            height: 34
+                            enabled: !NetworkManager.fanDiscoverBusy
+                            onClicked: NetworkManager.fetchFanDiscover()
+                            contentItem: Text {
+                                text: parent.text
+                                color: Theme.accent
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle { color: "#111"; border.color: "#333"; radius: 4 }
+                        }
+                        Button {
+                            text: "ТЕСТ"
+                            height: 34
+                            enabled: setupRoot.selectedBoardId > 0 && !NetworkManager.fanDiscoverBusy
+                            onClicked: setupRoot.runTest()
+                            contentItem: Text {
+                                text: parent.text
+                                color: parent.enabled ? "#111" : Theme.textMuted
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle {
+                                color: parent.enabled ? Theme.accent : "#222"
+                                radius: 4
+                            }
+                        }
+                        Button {
+                            text: "ПРИВЯЗАТЬ"
+                            height: 34
+                            enabled: setupRoot.selectedBoardId > 0
+                                     && !NetworkManager.fanDiscoverBusy
+                                     && NetworkManager.fanDiscoverSlotsUsed < NetworkManager.fanDiscoverSlotsMax
+                            onClicked: setupRoot.runBind()
+                            contentItem: Text {
+                                text: parent.text
+                                color: parent.enabled ? "#111" : Theme.textMuted
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle {
+                                color: parent.enabled ? Theme.success : "#222"
+                                radius: 4
+                            }
+                        }
+                    }
+
+                    Text {
+                        visible: setupRoot.selectedLabel.length > 0
+                        text: "Выбрано: " + setupRoot.selectedLabel
+                        color: Theme.textPrimary
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+
+                    Column {
+                        width: parent.width
+                        spacing: 6
+                        visible: NetworkManager.fanDiscoverBound.length > 0
+                        Text {
+                            text: "ПРИВЯЗАНО (" + NetworkManager.fanDiscoverSlotsUsed
+                                  + "/" + NetworkManager.fanDiscoverSlotsMax + ")"
+                            color: Theme.success
+                            font.pixelSize: 11
+                            font.bold: true
+                        }
+                        Repeater {
+                            model: NetworkManager.fanDiscoverBound
+                            delegate: RowLayout {
+                                width: parent.width
+                                required property var modelData
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "#" + modelData.fan_id + " · " + modelData.label
+                                          + " · " + modelData.host
+                                    color: Theme.textPrimary
+                                    font.pixelSize: 11
+                                    font.family: "Monospace"
+                                    elide: Text.ElideRight
+                                }
+                                Button {
+                                    text: "ОТВЯЗАТЬ"
+                                    height: 28
+                                    enabled: !NetworkManager.fanDiscoverBusy
+                                    onClicked: NetworkManager.unbindFan(modelData.fan_id)
+                                    contentItem: Text {
+                                        text: parent.text
+                                        color: Theme.danger
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    background: Rectangle {
+                                        color: "#1a0808"
+                                        border.color: "#662222"
+                                        radius: 4
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Repeater {
+                        model: NetworkManager.fanDiscoverBoards
+
+                        delegate: Column {
+                            id: boardCol
+                            width: fanInner.width
+                            spacing: 8
+                            required property var modelData
+
+                            Text {
+                                text: (boardCol.modelData.name || "BOARD")
+                                      + "  http://" + boardCol.modelData.host + "/" + boardCol.modelData.port + "/"
+                                color: Theme.textPrimary
+                                font.pixelSize: 12
+                                font.bold: true
+                                font.family: "Monospace"
+                            }
+
+                            Flow {
+                                width: parent.width
+                                spacing: 8
+
+                                Repeater {
+                                    model: boardCol.modelData.pairs
+
+                                    delegate: Rectangle {
+                                        id: pairCard
+                                        required property var modelData
+                                        readonly property bool isMine: modelData.status === "mine"
+                                        readonly property bool isTaken: modelData.status === "taken"
+                                        readonly property bool isSel: setupRoot.selectedBoardId === boardCol.modelData.id
+                                                                     && setupRoot.selectedK1 === modelData.channel
+                                                                     && setupRoot.selectedK2 === modelData.channel2
+
+                                        width: 158
+                                        height: 56
+                                        radius: 6
+                                        opacity: isTaken ? 0.4 : 1
+                                        color: isSel ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.22)
+                                                     : (isMine ? Qt.rgba(0.13, 0.77, 0.36, 0.14) : "#101010")
+                                        border.width: 1
+                                        border.color: isSel ? Theme.accent
+                                                            : (isMine ? Theme.success : "#333")
+
+                                        Column {
+                                            anchors.centerIn: parent
+                                            spacing: 2
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                text: pairCard.modelData.label
+                                                      + (pairCard.isMine ? " ✓" : "")
+                                                color: pairCard.isMine ? Theme.success : Theme.textPrimary
+                                                font.pixelSize: 13
+                                                font.bold: true
+                                            }
+                                            Text {
+                                                anchors.horizontalCenter: parent.horizontalCenter
+                                                visible: pairCard.isTaken
+                                                text: pairCard.modelData.space_name || "занят"
+                                                color: Theme.textMuted
+                                                font.pixelSize: 10
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: !pairCard.isTaken
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: setupRoot.selectPair(boardCol.modelData, pairCard.modelData)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        visible: NetworkManager.fanDiscoverBoards.length === 0
+                                 && !NetworkManager.fanDiscoverBusy
+                        text: "Нет активных плат W5100 в клубе — добавьте плату в /admin/fans"
+                        color: Theme.textMuted
+                        font.pixelSize: 11
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                    }
+                }
+            }
+
+            Item { width: 1; height: 24 }
         }
     }
 }
