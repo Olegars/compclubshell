@@ -229,6 +229,7 @@ void SessionAlertManager::startSession(const QString &timeRemaining)
     if (m_remainingSeconds <= 0) {
         m_tickTimer.stop();
         qWarning() << "[SESSION-ALERT] start ignored — zero/invalid time:" << timeRemaining;
+        emit sessionExpired();
         return;
     }
 
@@ -240,6 +241,31 @@ void SessionAlertManager::startSession(const QString &timeRemaining)
 
     qWarning() << "[SESSION-ALERT] started |" << m_timeRemaining
                << "| seconds" << m_remainingSeconds;
+}
+
+void SessionAlertManager::syncTimeRemaining(const QString &timeRemaining)
+{
+    const int seconds = std::max(0, parseTimeToSeconds(timeRemaining));
+    if (!m_sessionActive && seconds <= 0)
+        return;
+
+    const int previous = m_remainingSeconds;
+    m_remainingSeconds = seconds;
+    setTimeRemaining(formatSeconds(m_remainingSeconds));
+
+    if (m_remainingSeconds <= 0) {
+        m_tickTimer.stop();
+        setSessionActive(false);
+        qWarning() << "[SESSION-ALERT] synced to zero — expire";
+        emit sessionExpired();
+        return;
+    }
+
+    setSessionActive(true);
+    checkThresholdCrossings(previous > 0 ? previous : (m_remainingSeconds + 1));
+
+    if (!m_tickTimer.isActive())
+        m_tickTimer.start();
 }
 
 void SessionAlertManager::reset()
@@ -282,6 +308,7 @@ void SessionAlertManager::onTick()
         m_tickTimer.stop();
         setSessionActive(false);
         qWarning() << "[SESSION-ALERT] countdown reached zero";
+        emit sessionExpired();
     }
 }
 

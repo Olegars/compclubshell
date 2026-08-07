@@ -178,6 +178,8 @@ signals:
     void pendingReceiptChanged();
     /** Emitted only when polled balance differs from the last known value. */
     void balanceUpdated(double balance);
+    /** Polled session clock from /api/shell/balance (HH:MM:SS + active flag). */
+    void sessionTimeUpdated(const QString &timeRemaining, bool sessionActive);
     void topUpReady(const QString &widgetUrl, const QString &paymentId, double amount);
     void topUpFailed(const QString &message);
     void overlaysReady(const QVariantMap &data);

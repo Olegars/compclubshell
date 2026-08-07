@@ -22,6 +22,8 @@ public:
 
     /** Start / restart booking countdown from HH:MM:SS (or MM:SS). Resets warning thresholds. */
     Q_INVOKABLE void startSession(const QString &timeRemaining);
+    /** Resync remaining from server without resetting warning flags already fired. */
+    Q_INVOKABLE void syncTimeRemaining(const QString &timeRemaining);
     /** Stop countdown and hide toast (logout / session close). */
     Q_INVOKABLE void reset();
     /** Stub for «ПРОДЛИТЬ ВРЕМЯ» — toast + log, no API. */
@@ -36,6 +38,8 @@ signals:
     void sessionActiveChanged();
     void warningShown(int minutesLeft);
     void extendTimeRequested();
+    /** Local countdown hit zero — shell should logout. */
+    void sessionExpired();
 
 private slots:
     void onTick();

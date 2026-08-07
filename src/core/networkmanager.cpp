@@ -1202,6 +1202,21 @@ void NetworkManager::refreshBalance()
         if (response.value(QStringLiteral("status")).toString() != QLatin1String("success"))
             return;
 
+        const bool hasSessionClock = response.contains(QStringLiteral("time_remaining"))
+            || response.contains(QStringLiteral("session_active"));
+        if (hasSessionClock) {
+            const QString timeRemaining = response.value(QStringLiteral("time_remaining"))
+                .toString(QStringLiteral("00:00:00"));
+            const bool sessionActive = response.value(QStringLiteral("session_active")).toBool(false);
+            emit sessionTimeUpdated(timeRemaining, sessionActive);
+
+            if (!sessionActive && isLocalSessionActive() && m_sawActiveSession) {
+                m_sawActiveSession = false;
+                clearSessionUser();
+                emit sessionForceEnded();
+            }
+        }
+
         double balance = -1.0;
         if (response.contains(QStringLiteral("balance")))
             balance = jsonToDouble(response.value(QStringLiteral("balance")), -1.0);

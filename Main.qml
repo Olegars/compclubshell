@@ -251,6 +251,19 @@ Window {
             if (typeof SessionAlert !== "undefined")
                 root.sessionTime = SessionAlert.timeRemaining
         }
+        function onSessionExpired() {
+            console.log("[SESSION] Локальный таймер истёк — выход")
+            if (typeof HidMonitor !== "undefined")
+                HidMonitor.stopWatch()
+            if (typeof NetworkManager !== "undefined") {
+                NetworkManager.stopClimateControl()
+                NetworkManager.setFan("auto")
+                var tid = NetworkManager.computerId > 0 ? NetworkManager.computerId : root.terminalId
+                if (tid > 0)
+                    NetworkManager.logoutTerminal(tid)
+            }
+            root.sessionUser = ""
+        }
     }
 
     Connections {
@@ -284,6 +297,15 @@ Window {
                 NetworkManager.setFan("auto")
             }
             root.sessionUser = ""
+        }
+
+        function onSessionTimeUpdated(timeRemaining, sessionActive) {
+            if (!sessionActive)
+                return
+            if (typeof SessionAlert !== "undefined" && SessionAlert.sessionActive)
+                SessionAlert.syncTimeRemaining(timeRemaining)
+            else if (root.sessionUser && root.sessionUser !== "GUEST" && root.sessionUser !== "")
+                root.sessionTime = timeRemaining
         }
 
         function onLoginSucceeded(userName, balance, timeRemaining, phone) {
