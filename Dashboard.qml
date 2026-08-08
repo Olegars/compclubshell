@@ -1797,6 +1797,13 @@ Item {
                         ActionBtn { compact: true; text: "ПОПОЛНИТЬ"; icon: "💳"; baseColor: Theme.shop; onClicked: depositPopup.open() }
                         ActionBtn {
                             compact: true
+                            text: "ПЕРЕСЕСТЬ"
+                            icon: "↔"
+                            baseColor: "#06b6d4"
+                            onClicked: transferPopup.open()
+                        }
+                        ActionBtn {
+                            compact: true
                             text: "ПАУЗА"
                             icon: "⏳"
                             baseColor: "#3b82f6"
@@ -3100,6 +3107,301 @@ Item {
             }
         }
     }
+
+    Popup {
+        id: transferPopup
+        width: Math.min(480, parent.width * 0.9)
+        height: Math.min(560, parent.height * 0.88)
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 0
+        property var targets: []
+        property int selectedId: 0
+        property string warning: ""
+        property string errorText: ""
+        property real charge: 0
+        property bool busy: false
+        property bool loading: false
+        property string donePin: ""
+        property string donePcName: ""
+
+        onOpened: {
+            transferPopup.donePin = ""
+            transferPopup.donePcName = ""
+            loadTransferTargets()
+        }
+
+        function finishAndLeave() {
+            transferPopup.close()
+            if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
+            if (typeof NetworkManager !== "undefined") {
+                NetworkManager.stopClimateControl()
+                NetworkManager.setFan("auto")
+                NetworkManager.clearSessionUser()
+            }
+            if (typeof root !== "undefined") root.sessionUser = ""
+            dashboardRoot.visible = false
+        }
+
+        function loadTransferTargets() {
+            transferPopup.loading = true
+            transferPopup.errorText = ""
+            transferPopup.warning = ""
+            transferPopup.selectedId = 0
+            transferPopup.targets = []
+            var baseUrl = dashboardRoot.apiBase()
+            var pcId = parseInt(dashboardRoot.termId)
+            if (!baseUrl.length || !pcId) {
+                transferPopup.loading = false
+                transferPopup.errorText = "Нет terminal_id"
+                return
+            }
+            var xhr = new XMLHttpRequest()
+            xhr.open("GET", baseUrl + "/api/shell/transfer/targets?terminal_id=" + pcId)
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE)
+                    return
+                transferPopup.loading = false
+                if (xhr.status !== 200) {
+                    transferPopup.errorText = "Не удалось загрузить ПК"
+                    return
+                }
+                try {
+                    var res = JSON.parse(xhr.responseText)
+                    transferPopup.targets = res.targets || []
+                    if (!transferPopup.targets.length)
+                        transferPopup.errorText = "Нет свободных ПК"
+                } catch (e) {
+                    transferPopup.errorText = "Ошибка ответа"
+                }
+            }
+            xhr.send()
+        }
+
+        function previewTarget(id) {
+            if (transferPopup.donePin.length)
+                return
+            transferPopup.selectedId = id
+            transferPopup.busy = true
+            transferPopup.errorText = ""
+            var baseUrl = dashboardRoot.apiBase()
+            var pcId = parseInt(dashboardRoot.termId)
+            var xhr = new XMLHttpRequest()
+            xhr.open("POST", baseUrl + "/api/shell/transfer/preview")
+            xhr.setRequestHeader("Content-Type", "application/json")
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE)
+                    return
+                transferPopup.busy = false
+                if (xhr.status !== 200) {
+                    try {
+                        var err = JSON.parse(xhr.responseText)
+                        transferPopup.errorText = err.message || "Ошибка расчёта"
+                    } catch (e) {
+                        transferPopup.errorText = "Ошибка расчёта"
+                    }
+                    transferPopup.warning = ""
+                    return
+                }
+                try {
+                    var res = JSON.parse(xhr.responseText)
+                    transferPopup.warning = (res.preview && res.preview.warning) ? res.preview.warning : ""
+                    transferPopup.charge = (res.preview && res.preview.charge) ? Number(res.preview.charge) : 0
+                } catch (e) {
+                    transferPopup.errorText = "Ошибка ответа"
+                }
+            }
+            xhr.send(JSON.stringify({
+                "terminal_id": pcId,
+                "target_computer_id": id
+            }))
+        }
+
+        function confirmTransfer() {
+            if (!transferPopup.selectedId || transferPopup.busy || transferPopup.donePin.length)
+                return
+            transferPopup.busy = true
+            transferPopup.errorText = ""
+            var baseUrl = dashboardRoot.apiBase()
+            var pcId = parseInt(dashboardRoot.termId)
+            var xhr = new XMLHttpRequest()
+            xhr.open("POST", baseUrl + "/api/shell/transfer/confirm")
+            xhr.setRequestHeader("Content-Type", "application/json")
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE)
+                    return
+                transferPopup.busy = false
+                if (xhr.status !== 200) {
+                    try {
+                        var err = JSON.parse(xhr.responseText)
+                        transferPopup.errorText = err.message || "Не удалось пересесть"
+                    } catch (e) {
+                        transferPopup.errorText = "Не удалось пересесть"
+                    }
+                    return
+                }
+                try {
+                    var res = JSON.parse(xhr.responseText)
+                    transferPopup.donePin = String(res.pin_code || (res.result && res.result.pin_code) || "")
+                    transferPopup.donePcName = String((res.to && res.to.name) || (res.result && res.result.to && res.result.to.name) || "")
+                    transferPopup.warning = ""
+                } catch (e) {
+                    transferPopup.errorText = "Ошибка ответа"
+                }
+            }
+            xhr.send(JSON.stringify({
+                "terminal_id": pcId,
+                "target_computer_id": transferPopup.selectedId
+            }))
+        }
+
+        background: Rectangle {
+            color: Theme.bgPanel
+            radius: Theme.radiusSm
+            border.width: 1
+            border.color: "#0e7490"
+        }
+
+        contentItem: Column {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 12
+
+            Text {
+                text: transferPopup.donePin.length ? "ГОТОВО" : "ПЕРЕСАДКА"
+                color: "#22d3ee"
+                font.pixelSize: 22
+                font.bold: true
+                font.italic: true
+            }
+
+            // Success: new PIN
+            Column {
+                width: parent.width
+                spacing: 10
+                visible: transferPopup.donePin.length > 0
+                Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "Войдите PIN на " + (transferPopup.donePcName.length ? transferPopup.donePcName : "новом ПК")
+                    color: "#888"
+                    font.pixelSize: 12
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: transferPopup.donePin
+                    color: "#22c55e"
+                    font.pixelSize: 48
+                    font.bold: true
+                    font.family: "Consolas"
+                }
+                Rectangle {
+                    width: parent.width
+                    height: 48
+                    radius: 8
+                    color: "#06b6d4"
+                    Text { anchors.centerIn: parent; text: "ПОНЯТНО"; color: "#0a0a0a"; font.bold: true; font.pixelSize: 14 }
+                    MouseArea { anchors.fill: parent; onClicked: transferPopup.finishAndLeave() }
+                }
+            }
+
+            Text {
+                width: parent.width
+                visible: transferPopup.donePin.length === 0
+                wrapMode: Text.WordWrap
+                text: transferPopup.loading ? "Загрузка…" : (transferPopup.errorText.length ? transferPopup.errorText : "Выберите свободный ПК")
+                color: transferPopup.errorText.length ? "#f87171" : "#888"
+                font.pixelSize: 12
+            }
+
+            ListView {
+                width: parent.width
+                height: 220
+                clip: true
+                visible: transferPopup.donePin.length === 0
+                model: transferPopup.targets
+                spacing: 6
+                delegate: Rectangle {
+                    width: ListView.view.width
+                    height: 52
+                    radius: 8
+                    color: transferPopup.selectedId === modelData.id ? "#083344" : "#111"
+                    border.color: transferPopup.selectedId === modelData.id ? "#22d3ee" : "#333"
+                    border.width: 1
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        anchors.leftMargin: 12
+                        Text {
+                            text: modelData.name
+                            color: "white"
+                            font.bold: true
+                            font.pixelSize: 14
+                        }
+                        Text {
+                            text: (modelData.zone || "зона —") + " · " + Math.round(modelData.hourly_rate) + " ₽/ч"
+                            color: "#888"
+                            font.pixelSize: 11
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: transferPopup.previewTarget(modelData.id)
+                    }
+                }
+            }
+
+            Text {
+                width: parent.width
+                visible: transferPopup.donePin.length === 0 && transferPopup.warning.length > 0
+                wrapMode: Text.WordWrap
+                text: transferPopup.warning
+                color: "#fbbf24"
+                font.pixelSize: 13
+            }
+            Text {
+                visible: transferPopup.donePin.length === 0 && transferPopup.warning.length > 0
+                text: "Доплата: " + transferPopup.charge.toFixed(2) + " ₽"
+                color: "#94a3b8"
+                font.pixelSize: 11
+            }
+
+            Row {
+                spacing: 10
+                width: parent.width
+                visible: transferPopup.donePin.length === 0
+                Rectangle {
+                    width: parent.width * 0.35 - 5
+                    height: 44
+                    radius: 8
+                    color: "#222"
+                    Text { anchors.centerIn: parent; text: "ОТМЕНА"; color: "#aaa"; font.bold: true; font.pixelSize: 12 }
+                    MouseArea { anchors.fill: parent; onClicked: transferPopup.close() }
+                }
+                Rectangle {
+                    width: parent.width * 0.65 - 5
+                    height: 44
+                    radius: 8
+                    color: (transferPopup.selectedId && !transferPopup.busy) ? "#06b6d4" : "#333"
+                    Text {
+                        anchors.centerIn: parent
+                        text: transferPopup.busy ? "…" : "ПОДТВЕРДИТЬ"
+                        color: (transferPopup.selectedId && !transferPopup.busy) ? "#0a0a0a" : "#666"
+                        font.bold: true
+                        font.pixelSize: 12
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: transferPopup.selectedId > 0 && !transferPopup.busy
+                        onClicked: transferPopup.confirmTransfer()
+                    }
+                }
+            }
+        }
+    }
+
 
     Popup {
         id: depositPopup
