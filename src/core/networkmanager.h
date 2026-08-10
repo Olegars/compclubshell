@@ -121,6 +121,9 @@ public:
     /** Poll shell order status for terminal (and optional order_id). Updates hasActiveOrder on Main.qml. */
     Q_INVOKABLE void checkOrderStatus(int terminalId = 0, int orderId = 0);
     Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
+    /** QR login challenge for the login screen (poll until consumed). */
+    Q_INVOKABLE void requestQrChallenge(int terminalId = 0);
+    Q_INVOKABLE void stopQrLoginPoll();
     /** Poll spendable balance for the active shell session (no-op when logged out). */
     Q_INVOKABLE void refreshBalance();
     /** Create YooKassa embedded widget top-up; emits topUpReady(widgetUrl, ...). */
@@ -173,6 +176,8 @@ signals:
     void loginSucceeded(const QString &userName, double balance, const QString &timeRemaining, const QString &phone);
     void loginFailed(const QString &message);
     void loginRequestFinished();
+    void qrChallengeReady(const QString &token, const QString &qrPayload, const QString &expiresAt);
+    void qrChallengeFailed(const QString &message);
     /** Чек полного расчёта после входа на бронь (URL + сумма для QR-попапа). */
     void fiscalReceiptReady(const QString &url, double amount, bool isStub, const QString &description);
     void pendingReceiptChanged();
@@ -229,11 +234,15 @@ private:
     void handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive);
     void publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description);
     void pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt);
+    void applyQrLoginSuccess(const QJsonObject &response);
+    void pollQrStatusOnce();
 
     QNetworkAccessManager *m_networkManager;
     QTimer *m_climateTimer = nullptr;
     QTimer *m_fanLockTimer = nullptr;
     QTimer *m_powerHeartbeatTimer = nullptr;
+    QTimer *m_qrPollTimer = nullptr;
+    QString m_qrToken;
     bool m_isPcRegistered;
     QString m_serverUrl;
     QString m_configFilePath;

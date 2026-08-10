@@ -286,6 +286,8 @@ Window {
             console.log("[DEBUG-MAIN] Конец onAuthRequired. Итоговый terminalId =", root.terminalId)
             // LobbyAudio после фокуса телефона — COM/MediaPlayer не бьёт в тот же кадр, что оверлеи.
             lobbyStartTimer.restart()
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.requestQrChallenge(root.terminalId)
         }
 
         function onSessionForceEnded() {
@@ -310,6 +312,8 @@ Window {
 
         function onLoginSucceeded(userName, balance, timeRemaining, phone) {
             lobbyStartTimer.stop()
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.stopQrLoginPoll()
             if (typeof Launcher !== "undefined") Launcher.applyQosPolicies(true)
             root.quickMenuIntroduced = false
             root.sessionPhone = phone
@@ -715,80 +719,216 @@ Window {
                 }
             }
 
-            Item {
-                id: logoArea
-                width: 800
-                height: 120
-                anchors.top: parent.top
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.topMargin: 40
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 20
-                    Text { text: "REACTOR"; color: "#000"; font.pixelSize: 80; style: Text.Outline; styleColor: Theme.accent }
-                    Text { text: "0 4 5 1"; color: Theme.accent; font.pixelSize: 60; font.bold: true; opacity: 0.8 }
-                }
+            FontLoader {
+                id: bomberFont
+                source: Qt.resolvedUrl("fonts/bomber.otf")
             }
 
-            Column {
+            // Высота средней колонки = три оверлея + два spacing (как leftColumn/rightColumn).
+            readonly property int overlayColumnHeight: root.blockHeight * 3 + 40
+
+            ColumnLayout {
                 id: authColumn
-                anchors.centerIn: parent
-                spacing: 18
-
-            Rectangle {
-                id: authCenter
                 width: 420
-                height: 520
-                color: Theme.accentPanel
-                border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
-                border.width: 2
-                radius: 4
-                opacity: 0.95
-                property int authStep: 1
+                height: loginScreen.overlayColumnHeight
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 10
 
-                Column {
-                    anchors.fill: parent
-                    anchors.margins: 40
-                    spacing: 25
+                Text {
+                    id: logo0451
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.preferredHeight: 78
+                    text: "0451"
+                    color: Theme.accent
+                    font.family: bomberFont.status === FontLoader.Ready ? bomberFont.name : "sans-serif"
+                    font.pixelSize: 78
+                    font.letterSpacing: 6
+                    style: Text.Outline
+                    styleColor: "#001a0a"
+                }
+
+                // Шапка терминала
+                Rectangle {
+                    id: authHeader
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 64
+                    color: Theme.accentPanel
+                    border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
+                    border.width: 2
+                    radius: 4
+                    opacity: 0.95
 
                     Column {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        Text { text: "TERMINAL_ID"; color: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent; font.pixelSize: 12; opacity: 0.6; anchors.horizontalCenter: parent.horizontalCenter }
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Text {
+                            text: "TERMINAL_ID"
+                            color: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent
+                            font.pixelSize: 10
+                            opacity: 0.6
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
                         Text {
                             text: root.pcNameString
                             color: "white"
-                            font.pixelSize: 54
+                            font.pixelSize: 30
                             font.bold: true
                             anchors.horizontalCenter: parent.horizontalCenter
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
                                 acceptedButtons: Qt.LeftButton
-                                onClicked: { if (mouse.modifiers & Qt.ControlModifier) { screenSwitcher.sourceComponent = null; setupScreenLoader.source = "SetupScreen.qml" } }
+                                onClicked: {
+                                    if (mouse.modifiers & Qt.ControlModifier) {
+                                        screenSwitcher.sourceComponent = null
+                                        setupScreenLoader.source = "SetupScreen.qml"
+                                    }
+                                }
                             }
                         }
                     }
+                }
 
-                    Rectangle { width: parent.width; height: 1; color: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent; opacity: 0.3 }
+                // Блок: вход по QR
+                Rectangle {
+                    id: qrLoginPanel
+                    visible: root.sessionUser !== "PAUSE"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: 220
+                    color: Theme.accentPanel
+                    border.color: Theme.accentBorder
+                    border.width: 2
+                    radius: 4
+                    opacity: 0.95
+                    property string qrPayload: ""
+                    property string qrHint: "Загрузка QR…"
+                    // Квадрат QR: почти ширина блока, но оставляет место подписи сверху/снизу.
+                    readonly property int qrSide: Math.max(160, Math.min(width - 40, Math.floor(height * 0.58)))
 
-                    Item {
-                        width: parent.width
-                        height: 230
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 16
+                        spacing: 0
+
+                        Item { Layout.fillHeight: true; Layout.preferredHeight: 10 }
+
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "ВХОД ПО QR КОДУ"
+                            color: Theme.accent
+                            font.pixelSize: 12
+                            font.bold: true
+                            font.letterSpacing: 2
+                        }
+
+                        Item { Layout.preferredHeight: 10 }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                            text: "Отсканируйте код в личном кабинете"
+                            color: Theme.textSecondary
+                            font.pixelSize: 11
+                        }
+
+                        Item { Layout.fillHeight: true; Layout.preferredHeight: 14 }
+
+                        Item {
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.preferredWidth: qrLoginPanel.qrSide
+                            Layout.preferredHeight: qrLoginPanel.qrSide
+                            Rectangle {
+                                anchors.fill: parent
+                                color: "#ffffff"
+                                radius: 4
+                            }
+                            Image {
+                                anchors.centerIn: parent
+                                width: parent.width - 14
+                                height: parent.height - 14
+                                fillMode: Image.PreserveAspectFit
+                                asynchronous: true
+                                source: qrLoginPanel.qrPayload.length
+                                    ? ("https://api.qrserver.com/v1/create-qr-code/?size=320x320&data="
+                                       + encodeURIComponent(qrLoginPanel.qrPayload))
+                                    : ""
+                            }
+                        }
+
+                        Item { Layout.fillHeight: true; Layout.preferredHeight: 14 }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                            text: qrLoginPanel.qrHint
+                            color: Theme.textMuted
+                            font.pixelSize: 10
+                        }
+
+                        Item { Layout.fillHeight: true; Layout.preferredHeight: 10 }
+                    }
+
+                    Connections {
+                        target: NetworkManager
+                        function onQrChallengeReady(token, qrPayload, expiresAt) {
+                            qrLoginPanel.qrPayload = qrPayload
+                            qrLoginPanel.qrHint = "Код обновится автоматически"
+                        }
+                        function onQrChallengeFailed(message) {
+                            qrLoginPanel.qrHint = message || "QR недоступен"
+                        }
+                    }
+                }
+
+                // Блок: вход по PIN (телефон + PIN) / пауза — компактный, без fillHeight
+                Rectangle {
+                    id: authCenter
+                    Layout.fillWidth: true
+                    Layout.fillHeight: root.sessionUser === "PAUSE"
+                    Layout.preferredHeight: root.sessionUser === "PAUSE" ? 260 : 238
+                    Layout.maximumHeight: root.sessionUser === "PAUSE" ? 400 : 250
+                    color: Theme.accentPanel
+                    border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
+                    border.width: 2
+                    radius: 4
+                    opacity: 0.95
+                    property int authStep: 1
+
+                    Column {
+                        id: authInner
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 8
+
+                        Text {
+                            visible: root.sessionUser !== "PAUSE"
+                            text: "ВХОД ПО PIN КОДУ"
+                            color: Theme.accent
+                            font.pixelSize: 11
+                            font.bold: true
+                            font.letterSpacing: 2
+                            anchors.horizontalCenter: parent.horizontalCenter
+                        }
 
                         Column {
                             visible: root.sessionUser === "PAUSE"
                             width: parent.width
-                            spacing: 15
+                            spacing: 12
 
-                            Text { text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"; color: Theme.info; font.pixelSize: 20; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
-                            Text { text: "Введите PIN-код для разблокировки"; color: Theme.textSecondary; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
+                            Text { text: "ОЖИДАЮ ВОЗВРАЩЕНИЯ"; color: Theme.info; font.pixelSize: 16; font.bold: true; font.letterSpacing: 1; anchors.horizontalCenter: parent.horizontalCenter }
+                            Text { text: "Введите PIN-код для разблокировки"; color: Theme.textSecondary; font.pixelSize: 11; anchors.horizontalCenter: parent.horizontalCenter }
 
                             TextField {
                                 id: pausePinInput
                                 width: parent.width
-                                height: 55
-                                font.pixelSize: 22
-                                font.bold: false
+                                height: 40
+                                font.pixelSize: 17
                                 font.family: "Roboto"
                                 font.letterSpacing: 4
                                 inputMask: "0000;_"
@@ -799,7 +939,6 @@ Window {
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: TextInput.AlignVCenter
                                 focus: false
-
                                 Timer { id: pauseFocusTimer; interval: 80; running: false; repeat: false; onTriggered: { pausePinInput.forceActiveFocus(); pausePinInput.cursorPosition = 0 } }
                                 Component.onCompleted: { if (root.sessionUser === "PAUSE") pauseFocusTimer.start() }
                                 onVisibleChanged: { if (visible && root.sessionUser === "PAUSE") pauseFocusTimer.start() }
@@ -813,40 +952,30 @@ Window {
                                 }
                                 background: Rectangle { color: pausePinInput.activeFocus ? Theme.infoSurface : Theme.infoSurfaceIdle; border.color: pausePinInput.activeFocus ? Theme.info : Theme.infoDeep; border.width: pausePinInput.activeFocus ? 2 : 1; radius: 4 }
                             }
-
                             Text { id: pauseErrorText; text: "Неверный PIN-код"; visible: false; color: Theme.danger; font.pixelSize: 12; anchors.horizontalCenter: parent.horizontalCenter }
                             Button {
                                 id: resumePauseBtn
                                 width: parent.width
-                                height: 50
+                                height: 44
                                 text: "Я ВЕРНУЛСЯ"
                                 scale: resumePauseBtn.down ? 0.96 : 1.0
-
                                 Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
-
                                 HoverHandler { cursorShape: Qt.PointingHandCursor }
-
                                 contentItem: Text {
                                     text: resumePauseBtn.text
                                     color: resumePauseBtn.hovered ? "#020202" : Theme.info
-                                    font.pixelSize: 15
+                                    font.pixelSize: 14
                                     font.bold: true
                                     font.letterSpacing: 2
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: Text.AlignVCenter
                                 }
-
                                 background: Rectangle {
                                     radius: 4
-                                    color: resumePauseBtn.down ? Theme.infoDeep
-                                                               : (resumePauseBtn.hovered ? Theme.info : Theme.infoSurfaceIdle)
+                                    color: resumePauseBtn.down ? Theme.infoDeep : (resumePauseBtn.hovered ? Theme.info : Theme.infoSurfaceIdle)
                                     border.color: resumePauseBtn.hovered ? Theme.info : Theme.infoDeep
                                     border.width: resumePauseBtn.hovered ? 2 : 1
-
-                                    Behavior on color { ColorAnimation { duration: 120 } }
-                                    Behavior on border.color { ColorAnimation { duration: 120 } }
                                 }
-
                                 onClicked: {
                                     if (!root.resumeFromPause(pausePinInput.text))
                                         pauseErrorText.visible = true
@@ -859,21 +988,22 @@ Window {
                         }
 
                         Column {
+                            id: authFormCol
                             visible: root.sessionUser !== "PAUSE"
                             width: parent.width
-                            spacing: 12
+                            spacing: 0
 
                             Column {
                                 visible: authCenter.authStep === 1
                                 width: parent.width
-                                spacing: 12
-                                Text { text: "НОМЕР ТЕЛЕФОНА"; color: Theme.accent; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
+                                spacing: 0
+                                Text { text: "НОМЕР ТЕЛЕФОНА"; color: Theme.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
+                                Item { width: 1; height: Math.round(authActionBtn.height * 0.5) }
                                 TextField {
                                     id: phoneInput
                                     width: parent.width
-                                    height: 55
-                                    font.pixelSize: 22
-                                    font.bold: false
+                                    height: 36
+                                    font.pixelSize: 16
                                     font.family: "Roboto"
                                     font.letterSpacing: 1
                                     inputMask: "+7 (999) 999-99-99;_"
@@ -887,7 +1017,14 @@ Window {
                                     Component.onCompleted: { if (root.sessionUser !== "PAUSE") focusTimer.start() }
                                     onVisibleChanged: { if (visible && authCenter.authStep === 1 && root.sessionUser !== "PAUSE") focusTimer.start() }
                                     onActiveFocusChanged: { if (activeFocus && (text === "+7 (   )   -  -  " || text === "")) { Qt.callLater(function() { phoneInput.cursorPosition = 4 }) } }
-                                    onAccepted: { authCenter.authStep = 2 }
+                                    onAccepted: {
+                                        if (!phoneInput.acceptableInput) {
+                                            root.authErrorMessage = "Введите номер телефона"
+                                            root.authErrorVisible = true
+                                            return
+                                        }
+                                        authCenter.authStep = 2
+                                    }
                                     background: Rectangle { color: phoneInput.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle; border.color: phoneInput.activeFocus ? Theme.accent : Theme.accentBorder; border.width: phoneInput.activeFocus ? 2 : 1; radius: 4 }
                                 }
                             }
@@ -895,14 +1032,14 @@ Window {
                             Column {
                                 visible: authCenter.authStep === 2
                                 width: parent.width
-                                spacing: 12
-                                Text { text: "PIN-КОД"; color: Theme.accent; font.pixelSize: 11; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
+                                spacing: 0
+                                Text { text: "PIN-КОД"; color: Theme.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 2; anchors.horizontalCenter: parent.horizontalCenter }
+                                Item { width: 1; height: Math.round(authActionBtn.height * 0.5) }
                                 TextField {
                                     id: pinInput
                                     width: parent.width
-                                    height: 55
-                                    font.pixelSize: 22
-                                    font.bold: false
+                                    height: 36
+                                    font.pixelSize: 16
                                     font.family: "Roboto"
                                     font.letterSpacing: 4
                                     inputMask: "0000;_"
@@ -931,17 +1068,22 @@ Window {
                                 visible: root.authErrorVisible
                                 color: Theme.danger
                                 font.bold: true
+                                font.pixelSize: 12
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 Connections { target: pinInput; function onTextChanged() { root.authErrorVisible = false } }
                                 Connections { target: phoneInput; function onTextChanged() { root.authErrorVisible = false } }
                             }
 
-                            Item { height: 5; width: 1 }
+                            // Зазор = половина высоты кнопки «ДАЛЕЕ».
+                            Item {
+                                width: 1
+                                height: Math.round(authActionBtn.height * 0.5)
+                            }
 
                             Rectangle {
                                 id: authActionBtn
                                 width: parent.width
-                                height: 55
+                                height: 40
                                 radius: 4
                                 color: {
                                     if (authBtnMouse.pressed)
@@ -952,11 +1094,9 @@ Window {
                                 }
                                 scale: authBtnMouse.pressed ? 0.95 : 1.0
                                 opacity: (root.isLoggingIn && authCenter.authStep === 2) ? 0.85 : 1.0
-
                                 Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
                                 Behavior on color { ColorAnimation { duration: 120 } }
                                 Behavior on opacity { NumberAnimation { duration: 150 } }
-
                                 readonly property bool waitingLogin: root.isLoggingIn && authCenter.authStep === 2
 
                                 Text {
@@ -964,24 +1104,20 @@ Window {
                                     visible: !authActionBtn.waitingLogin
                                     text: authCenter.authStep === 1 ? "ДАЛЕЕ" : "НАЧАТЬ СЕССИЮ"
                                     color: "#020202"
-                                    font.pixelSize: 15
+                                    font.pixelSize: 13
                                     font.bold: true
                                     font.letterSpacing: 2
                                 }
 
-                                // Спиннер: RotationAnimator на дочернем Item (NumberAnimation on rotation
-                                // при visible=true часто не стартует и «замирает»).
                                 Item {
                                     id: authWaitClock
                                     anchors.centerIn: parent
-                                    width: 28
-                                    height: 28
+                                    width: 26
+                                    height: 26
                                     visible: authActionBtn.waitingLogin
-
                                     Item {
                                         id: authWaitSpinnerItem
                                         anchors.fill: parent
-
                                         Canvas {
                                             id: authWaitCanvas
                                             anchors.fill: parent
@@ -1003,7 +1139,6 @@ Window {
                                             onHeightChanged: requestPaint()
                                         }
                                     }
-
                                     RotationAnimator {
                                         id: authWaitSpin
                                         target: authWaitSpinnerItem
@@ -1014,7 +1149,6 @@ Window {
                                         running: authActionBtn.waitingLogin
                                         easing.type: Easing.Linear
                                     }
-
                                     Connections {
                                         target: authActionBtn
                                         function onWaitingLoginChanged() {
@@ -1036,6 +1170,12 @@ Window {
                                     enabled: !(root.isLoggingIn && authCenter.authStep === 2)
                                     onClicked: {
                                         if (authCenter.authStep === 1) {
+                                            if (!phoneInput.acceptableInput) {
+                                                root.authErrorMessage = "Введите номер телефона"
+                                                root.authErrorVisible = true
+                                                phoneInput.forceActiveFocus()
+                                                return
+                                            }
                                             authCenter.authStep = 2
                                         } else {
                                             root.authErrorVisible = false
@@ -1044,6 +1184,12 @@ Window {
                                         }
                                     }
                                 }
+                            }
+
+                            Item {
+                                visible: authCenter.authStep === 2
+                                width: 1
+                                height: 10
                             }
 
                             Text {
@@ -1055,12 +1201,13 @@ Window {
                                 color: backMouse.containsMouse ? Theme.accent : Theme.textMuted
                                 visible: authCenter.authStep === 2
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                Layout.topMargin: 5
-
                                 Behavior on color { ColorAnimation { duration: 100 } }
-
                                 MouseArea {
-                                    id: backMouse; anchors.fill: parent; anchors.margins: -10; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                    id: backMouse
+                                    anchors.fill: parent
+                                    anchors.margins: -10
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: {
                                         pinInput.text = ""
                                         root.authErrorVisible = false
@@ -1072,92 +1219,91 @@ Window {
                         }
                     }
                 }
-            }
 
-            Rectangle {
-                id: authClock
-                width: authCenter.width
-                height: 116
-                color: Theme.accentPanel
-                border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
-                border.width: 2
-                radius: 4
-                opacity: 0.95
+                // Часы
+                Rectangle {
+                    id: authClock
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 88
+                    Layout.maximumHeight: 92
+                    color: Theme.accentPanel
+                    border.color: root.sessionUser === "PAUSE" ? Theme.infoDeep : Theme.accentBorder
+                    border.width: 2
+                    radius: 4
+                    opacity: 0.95
 
-                readonly property color tint: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent
-                property date now: new Date()
+                    readonly property color tint: root.sessionUser === "PAUSE" ? Theme.info : Theme.accent
+                    property date now: new Date()
 
-                Timer {
-                    interval: 1000
-                    running: true
-                    repeat: true
-                    triggeredOnStart: true
-                    onTriggered: authClock.now = new Date()
-                }
+                    Timer {
+                        interval: 1000
+                        running: true
+                        repeat: true
+                        triggeredOnStart: true
+                        onTriggered: authClock.now = new Date()
+                    }
 
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 6
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 3
 
-                    Row {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: 4
-
-                        Text {
-                            text: Qt.formatTime(authClock.now, "HH")
-                            color: "white"
-                            font.pixelSize: 52
-                            font.bold: true
-                            font.family: "Consolas"
-                            font.letterSpacing: 2
+                        Row {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: 4
+                            Text {
+                                text: Qt.formatTime(authClock.now, "HH")
+                                color: "white"
+                                font.pixelSize: 38
+                                font.bold: true
+                                font.family: "Consolas"
+                                font.letterSpacing: 2
+                            }
+                            Text {
+                                text: ":"
+                                color: authClock.tint
+                                font.pixelSize: 38
+                                font.bold: true
+                                font.family: "Consolas"
+                                opacity: authClock.now.getSeconds() % 2 === 0 ? 1.0 : 0.25
+                                Behavior on opacity { NumberAnimation { duration: 320 } }
+                            }
+                            Text {
+                                text: Qt.formatTime(authClock.now, "mm")
+                                color: "white"
+                                font.pixelSize: 38
+                                font.bold: true
+                                font.family: "Consolas"
+                                font.letterSpacing: 2
+                            }
+                            Text {
+                                text: Qt.formatTime(authClock.now, "ss")
+                                color: authClock.tint
+                                font.pixelSize: 18
+                                font.bold: true
+                                font.family: "Consolas"
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 4
+                            }
                         }
-                        Text {
-                            text: ":"
+
+                        Rectangle {
+                            width: authClock.width - 80
+                            height: 1
                             color: authClock.tint
-                            font.pixelSize: 52
-                            font.bold: true
-                            font.family: "Consolas"
-                            // Секундная пульсация — «живые» часы вместо статики.
-                            opacity: authClock.now.getSeconds() % 2 === 0 ? 1.0 : 0.25
-                            Behavior on opacity { NumberAnimation { duration: 320 } }
+                            opacity: 0.3
+                            anchors.horizontalCenter: parent.horizontalCenter
                         }
+
                         Text {
-                            text: Qt.formatTime(authClock.now, "mm")
-                            color: "white"
-                            font.pixelSize: 52
+                            text: Qt.formatDate(authClock.now, "dddd, d MMMM yyyy").toUpperCase()
+                            color: Theme.textSecondary
+                            font.pixelSize: 10
                             font.bold: true
-                            font.family: "Consolas"
                             font.letterSpacing: 2
+                            anchors.horizontalCenter: parent.horizontalCenter
                         }
-                        Text {
-                            text: Qt.formatTime(authClock.now, "ss")
-                            color: authClock.tint
-                            font.pixelSize: 24
-                            font.bold: true
-                            font.family: "Consolas"
-                            anchors.bottom: parent.bottom
-                            anchors.bottomMargin: 8
-                        }
-                    }
-
-                    Rectangle {
-                        width: authClock.width - 80
-                        height: 1
-                        color: authClock.tint
-                        opacity: 0.3
-                        anchors.horizontalCenter: parent.horizontalCenter
-                    }
-
-                    Text {
-                        text: Qt.formatDate(authClock.now, "dddd, d MMMM yyyy").toUpperCase()
-                        color: Theme.textSecondary
-                        font.pixelSize: 12
-                        font.bold: true
-                        font.letterSpacing: 2
-                        anchors.horizontalCenter: parent.horizontalCenter
                     }
                 }
-            }
             } // authColumn
         }
     }

@@ -47,6 +47,7 @@ qt_add_qml_module(appsector0451
         VoiceIndicator.qml
     RESOURCES
         images/hex_bg.png
+        fonts/bomber.otf
         images/launchers/steam.png
         images/launchers/epic.png
         images/launchers/ea.png

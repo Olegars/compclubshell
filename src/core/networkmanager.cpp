@@ -1147,6 +1147,137 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
     });
 }
 
+void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
+{
+    const QJsonObject user = response.value(QStringLiteral("user")).toObject();
+    const int bookingId = response.value(QStringLiteral("booking_id")).toInt(0);
+    if (m_lastBookingId != bookingId) {
+        m_lastBookingId = bookingId;
+        emit lastBookingIdChanged();
+    }
+    const int uid = user.value(QStringLiteral("id")).toInt(0);
+    if (m_userId != uid) {
+        m_userId = uid;
+        emit userIdChanged();
+    }
+    const double balance = userBalanceFromJson(user);
+    m_lastKnownBalance = balance;
+    m_postBootCooldown = false;
+    m_sawActiveSession = true;
+    m_userSessionActive = true;
+
+    const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
+    if (!fanObj.isEmpty()) {
+        m_skipRelayApply = true;
+        applyFanStateFromJson(fanObj);
+        m_skipRelayApply = false;
+    }
+
+    const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
+    const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
+    if (!receiptUrl.isEmpty()) {
+        publishFiscalReceipt(
+            receiptUrl,
+            jsonToDouble(receipt.value(QStringLiteral("amount")), 0.0),
+            receipt.value(QStringLiteral("is_stub")).toBool(false),
+            receipt.value(QStringLiteral("description")).toString());
+    } else {
+        clearPendingReceipt();
+    }
+
+    emit loginSucceeded(
+        user.value(QStringLiteral("name")).toString(QStringLiteral("GUEST")),
+        balance,
+        user.value(QStringLiteral("time_remaining")).toString(QStringLiteral("00:00:00")),
+        user.value(QStringLiteral("phone")).toString());
+    setFan(QStringLiteral("100"));
+}
+
+void NetworkManager::stopQrLoginPoll()
+{
+    if (m_qrPollTimer)
+        m_qrPollTimer->stop();
+    m_qrToken.clear();
+}
+
+void NetworkManager::pollQrStatusOnce()
+{
+    if (m_serverUrl.isEmpty() || m_qrToken.isEmpty())
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/qr/status"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("token"), m_qrToken);
+    url.setQuery(q);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject response = QJsonDocument::fromJson(reply->readAll()).object();
+        const QString st = response.value(QStringLiteral("status")).toString();
+        if (st == QLatin1String("consumed")) {
+            stopQrLoginPoll();
+            applyQrLoginSuccess(response);
+            return;
+        }
+        if (st == QLatin1String("expired"))
+            requestQrChallenge(m_computerId);
+    });
+}
+
+void NetworkManager::requestQrChallenge(int terminalId)
+{
+    if (m_serverUrl.isEmpty()) {
+        emit qrChallengeFailed(tr("Сервер не настроен"));
+        return;
+    }
+    const int tid = resolveTerminalId(terminalId);
+    if (tid <= 0) {
+        emit qrChallengeFailed(tr("Терминал не привязан"));
+        return;
+    }
+
+    if (!m_qrPollTimer) {
+        m_qrPollTimer = new QTimer(this);
+        m_qrPollTimer->setInterval(1500);
+        connect(m_qrPollTimer, &QTimer::timeout, this, &NetworkManager::pollQrStatusOnce);
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/qr/challenge"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), tid);
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit qrChallengeFailed(tr("Не удалось получить QR"));
+            return;
+        }
+        const QJsonObject response = QJsonDocument::fromJson(reply->readAll()).object();
+        if (response.value(QStringLiteral("status")).toString() != QLatin1String("ok")) {
+            emit qrChallengeFailed(
+                response.value(QStringLiteral("message")).toString(tr("Ошибка QR")));
+            return;
+        }
+        m_qrToken = response.value(QStringLiteral("token")).toString();
+        emit qrChallengeReady(
+            m_qrToken,
+            response.value(QStringLiteral("qr_payload")).toString(),
+            response.value(QStringLiteral("expires_at")).toString());
+        if (m_qrPollTimer && !m_qrPollTimer->isActive())
+            m_qrPollTimer->start();
+    });
+}
+
 void NetworkManager::refreshBalance()
 {
     if (m_serverUrl.isEmpty() || m_balanceRefreshInFlight)

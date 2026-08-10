@@ -1508,7 +1508,7 @@ Item {
                                     id: sidebarBalance
                                     anchors.left: parent.left
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(2) + " ₽"
+                                    text: "БАЛАНС: " + dashboardRoot.userBalance.toFixed(0) + " ₽"
                                     color: Theme.textSecondary
                                     font.pixelSize: 18
                                     transformOrigin: Item.Left
@@ -1755,107 +1755,144 @@ Item {
 
                     Item { height: 5; width: 1 }
 
-                    GridLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: 8
-                        rowSpacing: 8
-                        ActionBtn {
-                            Layout.columnSpan: 2
-                            text: "ПРОДЛИТЬ ВРЕМЯ"
-                            icon: "⏱"
-                            baseColor: accentColor
-                            onClicked: {
-                                console.log("[SESSION] ПРОДЛИТЬ ВРЕМЯ — stub")
-                                if (typeof SessionAlert !== "undefined")
-                                    SessionAlert.requestExtendTime()
-                            }
-                        }
-                        ActionBtn {
-                            id: storeActionBtn
-                            compact: true
-                            text: "МАГАЗИН"
-                            icon: "🛒"
-                            baseColor: Theme.shop
-                            isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
-                            orderIsFinished: (typeof root !== 'undefined'
-                                              && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
-                                                  || root.orderStatusText.indexOf("ОТМЕН") >= 0))
-                            orderIsCooking: (typeof root !== 'undefined'
-                                             && (root.orderStatusCode === "cooking"
-                                                 || root.orderStatusText.indexOf("В РАБОТЕ") >= 0
-                                                 || root.orderStatusText.indexOf("ГОТОВИТ") >= 0))
-                            statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
-                            onClicked: {
-                                console.log("[SHOP] open, termId=", dashboardRoot.termId,
-                                            "balance=", dashboardRoot.userBalance)
-                                if (typeof NetworkManager !== 'undefined')
-                                    NetworkManager.fetchProducts()
-                                storePopup.open()
-                            }
-                        }
-                        ActionBtn { compact: true; text: "ПОПОЛНИТЬ"; icon: "💳"; baseColor: Theme.shop; onClicked: depositPopup.open() }
-                        ActionBtn {
-                            compact: true
-                            text: "ПЕРЕСЕСТЬ"
-                            icon: "↔"
-                            baseColor: "#06b6d4"
-                            onClicked: transferPopup.open()
-                        }
-                        ActionBtn {
-                            compact: true
-                            text: "ПАУЗА"
-                            icon: "⏳"
-                            baseColor: "#3b82f6"
-                            onClicked: {
-                                var baseUrl = dashboardRoot.apiBase()
-                                if (baseUrl.length === 0)
-                                    return
-                                var pcId = parseInt(dashboardRoot.termId)
-                                if (!pcId) {
-                                    console.error("[PAUSE] terminalId пуст")
-                                    return
+                        spacing: 8
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            ActionBtn {
+                                id: storeActionBtn
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "МАГАЗИН"
+                                icon: "🛒"
+                                baseColor: Theme.shop
+                                isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
+                                orderIsFinished: (typeof root !== 'undefined'
+                                                  && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
+                                                      || root.orderStatusText.indexOf("ОТМЕН") >= 0))
+                                orderIsCooking: (typeof root !== 'undefined'
+                                                 && (root.orderStatusCode === "cooking"
+                                                     || root.orderStatusText.indexOf("В РАБОТЕ") >= 0
+                                                     || root.orderStatusText.indexOf("ГОТОВИТ") >= 0))
+                                statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
+                                onClicked: {
+                                    console.log("[SHOP] open, termId=", dashboardRoot.termId,
+                                                "balance=", dashboardRoot.userBalance)
+                                    if (typeof NetworkManager !== 'undefined')
+                                        NetworkManager.fetchProducts()
+                                    storePopup.open()
                                 }
-                                var xhr = new XMLHttpRequest()
-                                xhr.open("POST", baseUrl + "/api/shell/games/pause")
-                                xhr.setRequestHeader("Content-Type", "application/json")
-                                xhr.onreadystatechange = function() {
-                                    if (xhr.readyState !== XMLHttpRequest.DONE)
+                            }
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ПОПОЛНИТЬ"
+                                icon: "💳"
+                                baseColor: Theme.shop
+                                onClicked: depositPopup.open()
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ПРОДЛИТЬ"
+                                icon: "⏱"
+                                baseColor: accentColor
+                                onClicked: {
+                                    console.log("[SESSION] ПРОДЛИТЬ ВРЕМЯ — stub")
+                                    if (typeof SessionAlert !== "undefined")
+                                        SessionAlert.requestExtendTime()
+                                }
+                            }
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ПЕРЕСЕСТЬ"
+                                icon: "↔"
+                                baseColor: "#06b6d4"
+                                onClicked: transferPopup.open()
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ПАУЗА"
+                                icon: "⏳"
+                                baseColor: "#3b82f6"
+                                onClicked: {
+                                    var baseUrl = dashboardRoot.apiBase()
+                                    if (baseUrl.length === 0)
                                         return
-                                    if (xhr.status !== 200) {
-                                        console.error("[PAUSE] HTTP", xhr.status, xhr.responseText)
+                                    var pcId = parseInt(dashboardRoot.termId)
+                                    if (!pcId) {
+                                        console.error("[PAUSE] terminalId пуст")
                                         return
                                     }
-                                    try {
-                                        var res = JSON.parse(xhr.responseText)
-                                        if (res.status === "success" && res.pin_code && typeof root !== 'undefined') {
-                                            root.sessionUserBeforePause = root.sessionUser
-                                            root.temporaryPausePin = String(res.pin_code)
-                                            root.sessionUser = "PAUSE"
-                                            console.log("[PAUSE] OK, одноразовый PIN выдан")
-                                        } else {
-                                            console.error("[PAUSE] отказ:", res.message || xhr.responseText)
+                                    var xhr = new XMLHttpRequest()
+                                    xhr.open("POST", baseUrl + "/api/shell/game/pause")
+                                    xhr.setRequestHeader("Content-Type", "application/json")
+                                    xhr.onreadystatechange = function() {
+                                        if (xhr.readyState !== XMLHttpRequest.DONE)
+                                            return
+                                        if (xhr.status !== 200) {
+                                            console.error("[PAUSE] HTTP", xhr.status, xhr.responseText)
+                                            return
                                         }
-                                    } catch (e) {
-                                        console.error("[PAUSE] parse:", e)
+                                        try {
+                                            var res = JSON.parse(xhr.responseText)
+                                            if (res.status === "success" && res.pin_code && typeof root !== 'undefined') {
+                                                root.sessionUserBeforePause = root.sessionUser
+                                                root.temporaryPausePin = String(res.pin_code)
+                                                root.sessionUser = "PAUSE"
+                                                console.log("[PAUSE] OK, одноразовый PIN выдан")
+                                            } else {
+                                                console.error("[PAUSE] отказ:", res.message || xhr.responseText)
+                                            }
+                                        } catch (e) {
+                                            console.error("[PAUSE] parse:", e)
+                                        }
                                     }
+                                    xhr.send(JSON.stringify({
+                                        "computer_id": pcId,
+                                        "booking_id": (typeof NetworkManager !== 'undefined') ? NetworkManager.lastBookingId : 0
+                                    }))
                                 }
-                                xhr.send(JSON.stringify({
-                                    "computer_id": pcId,
-                                    "booking_id": (typeof NetworkManager !== 'undefined') ? NetworkManager.lastBookingId : 0
-                                }))
                             }
-                        }
-                        ActionBtn {
-                            compact: true
-                            text: "ВЫЙТИ"
-                            icon: "🚪"
-                            baseColor: "#525252"
-                            onClicked: {
-                                if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
-                                if (typeof NetworkManager !== "undefined") NetworkManager.logoutTerminal(dashboardRoot.termId)
-                                if (typeof root !== 'undefined') root.sessionUser = ""
-                                dashboardRoot.visible = false
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ВЫЙТИ"
+                                icon: "🚪"
+                                baseColor: "#525252"
+                                onClicked: {
+                                    if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
+                                    if (typeof NetworkManager !== "undefined") NetworkManager.logoutTerminal(dashboardRoot.termId)
+                                    if (typeof root !== 'undefined') root.sessionUser = ""
+                                    dashboardRoot.visible = false
+                                }
                             }
                         }
                     }
@@ -3363,7 +3400,7 @@ Item {
             }
             Text {
                 visible: transferPopup.donePin.length === 0 && transferPopup.warning.length > 0
-                text: "Доплата: " + transferPopup.charge.toFixed(2) + " ₽"
+                text: "Доплата: " + Math.round(transferPopup.charge) + " ₽"
                 color: "#94a3b8"
                 font.pixelSize: 11
             }
@@ -3495,7 +3532,7 @@ Item {
             function onBalanceUpdated(balance) {
                 if (!depositPopup.waitingPayment)
                     return
-                depositPopup.statusText = "Баланс обновлён: " + Number(balance).toFixed(2) + " ₽"
+                depositPopup.statusText = "Баланс обновлён: " + Number(balance).toFixed(0) + " ₽"
                 payWindow.statusBanner = depositPopup.statusText
                 depositWaitTimer.stop()
                 depositWaitClose.start()
@@ -5055,8 +5092,15 @@ Item {
                                               : (orderIsCooking ? Theme.warning : Theme.danger)
         signal clicked()
 
+        // Не даём тексту/статусу раздувать ширину в RowLayout — колонки строго 50/50.
+        implicitWidth: 0
+        clip: true
         Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        Layout.minimumWidth: 0
         Layout.preferredHeight: compact ? 44 : 50
+        // Hover scale искажает «размер» соседних кнопок — только opacity/border.
+        scale: 1.0
         radius: 4
         color: actionMouse.pressed
                ? (isActiveStatus ? Qt.rgba(0.12, 0.1, 0.02, 1) : Qt.rgba(0.06, 0.12, 0.1, 1))
@@ -5065,10 +5109,8 @@ Item {
                       ? (isActiveStatus && !orderIsFinished ? statusAccent : baseColor)
                       : Qt.darker(baseColor, 1.25)
         border.width: actionMouse.containsMouse || actionMouse.pressed || isActiveStatus ? 2 : 1
-        scale: actionMouse.pressed ? 0.97 : (actionMouse.containsMouse ? 1.02 : 1.0)
         opacity: actionMouse.containsMouse || isActiveStatus ? 1 : 0.94
 
-        Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
         Behavior on opacity { NumberAnimation { duration: 100 } }
         Behavior on border.width { NumberAnimation { duration: 90 } }
         Behavior on color { ColorAnimation { duration: 100 } }
