@@ -1,6 +1,7 @@
 #include "voiceassistant.h"
 #include "voicehotkeymonitor.h"
 #include "networkmanager.h"
+#include "pathresolver.h"
 #include "processmanager.h"
 #include "sessionalertmanager.h"
 #include "audiomanager_win.h"
@@ -33,7 +34,9 @@ QString resolveConfigPath()
 
 QString voiceTempDir()
 {
-    const QString dir = QStringLiteral("C:/ShellVideo/Voice");
+    const QString dir = PathResolver::instance()
+            ? PathResolver::instance()->voiceDir()
+            : QStringLiteral("C:/ShellVideo/Voice");
     QDir().mkpath(dir);
     return dir;
 }

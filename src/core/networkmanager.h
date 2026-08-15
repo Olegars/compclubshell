@@ -56,6 +56,7 @@ class NetworkManager : public QObject
     Q_PROPERTY(QString zoneName READ zoneName NOTIFY zoneInfoChanged)
     Q_PROPERTY(QString zoneSlug READ zoneSlug NOTIFY zoneInfoChanged)
     Q_PROPERTY(QString zoneColor READ zoneColor NOTIFY zoneInfoChanged)
+    Q_PROPERTY(bool maintenance READ maintenance NOTIFY maintenanceChanged)
 public:
     explicit NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent = nullptr);
 
@@ -96,6 +97,8 @@ public:
     QString zoneName() const { return m_zoneName; }
     QString zoneSlug() const { return m_zoneSlug; }
     QString zoneColor() const { return m_zoneColor; }
+    bool maintenance() const { return m_maintenance; }
+    Q_INVOKABLE void setMaintenance(bool on);
 
     QNetworkAccessManager* networkAccessManager() const { return m_networkManager; }
     void setRootQmlObject(QObject* rootObj) { m_rootQml = rootObj; }
@@ -152,6 +155,7 @@ public:
     Q_INVOKABLE void startPowerHeartbeat();
     Q_INVOKABLE void stopPowerHeartbeat();
     Q_INVOKABLE void sendPowerHeartbeat();
+    bool isProduction() const { return m_production; }
     /** aboutToQuit: fan OFF+/99 ack, затем power_state=off. */
     Q_INVOKABLE void notifyPowerOffline();
     /** Синхронно погасить вентилятор и заактить состояние (logout / shutdown). */
@@ -203,6 +207,7 @@ signals:
     void fanTestFinished(bool ok, const QString &message);
     void cpuTempChanged();
     void zoneInfoChanged();
+    void maintenanceChanged();
     /** Backend asks shell to reboot or shutdown after session / idle policy. */
     void powerActionRequested(const QString &action);
     /** Scheduler closed the booking while shell still showed a logged-in user. */
@@ -231,6 +236,7 @@ private:
     void setFanManualLockSec(int sec);
     QString primaryMacAddress() const;
     bool isLocalSessionActive() const;
+    bool isSetupScreenOpen() const;
     void handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive);
     void publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description);
     void pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt);
@@ -262,6 +268,8 @@ private:
     bool m_powerHeartbeatInFlight = false;
     bool m_sawActiveSession = false;
     bool m_idleShutdownRequested = false;
+    bool m_maintenance = false;
+    bool m_production = false;
     QString m_featuredLabel;
     QString m_featuredMode;
     QStringList m_activeDownloads;

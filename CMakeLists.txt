@@ -28,6 +28,8 @@ qt_add_executable(appsector0451
     src/core/voicehotkeymonitor.h src/core/voicehotkeymonitor.cpp
     src/core/voiceassistant.h src/core/voiceassistant.cpp
     src/core/lobbyaudiomanager.h src/core/lobbyaudiomanager.cpp
+    src/core/ccbootsuperclient.h src/core/ccbootsuperclient.cpp
+    src/core/pathresolver.h src/core/pathresolver.cpp
     config.ini
 )
 
@@ -88,6 +90,7 @@ target_link_libraries(appsector0451
         oleaut32
         wbemuuid
         winmm
+        user32
         uiautomationcore
         sapi
         setupapi

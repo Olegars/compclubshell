@@ -1,6 +1,7 @@
 #include "eaauth.h"
 #include "processmanager.h"
 #include "networkmanager.h"
+#include "pathresolver.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -41,10 +42,20 @@ static QString eaDesktopRoot()
 
 static QString defaultEaDesktopExe()
 {
-    const QStringList candidates = {
-        QStringLiteral("C:/Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"),
-        QStringLiteral("C:/Program Files/Electronic Arts/EA Desktop/EADesktop.exe"),
-    };
+    QStringList candidates;
+    if (PathResolver *paths = PathResolver::instance()) {
+        if (!paths->eaPath().isEmpty())
+            candidates << paths->eaPath();
+        candidates = paths->expandLauncherCandidates({
+            QStringLiteral("C:/Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"),
+            QStringLiteral("C:/Program Files/Electronic Arts/EA Desktop/EADesktop.exe"),
+        });
+    } else {
+        candidates = {
+            QStringLiteral("C:/Program Files/Electronic Arts/EA Desktop/EA Desktop/EADesktop.exe"),
+            QStringLiteral("C:/Program Files/Electronic Arts/EA Desktop/EADesktop.exe"),
+        };
+    }
     for (const QString &p : candidates) {
         if (QFileInfo::exists(p))
             return QDir::toNativeSeparators(p);

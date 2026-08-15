@@ -79,8 +79,10 @@ public slots:
     void handleDownloadDecision(bool continueDownload);
     void applyEnterprisePolicies(bool enable);
     Q_INVOKABLE void rebootPC();
-    /** reboot | shutdown — сейчас только лог (реальная мощность отключена для отладки). */
+    /** reboot | shutdown — S5, с flush SSD. Не Sleep. */
     Q_INVOKABLE void applyPowerAction(const QString &action);
+    /** Выход из техрежима: киоск + reboot, чтобы writeback не остался. */
+    Q_INVOKABLE void exitMaintenance();
     // Clear/blur game search before SendInput credentials and when shell returns
     Q_INVOKABLE void requestClearGameSearch();
 
@@ -117,6 +119,9 @@ private:
     void setGameTitle(const QString &title);
     void showShellToggle(bool show);
     void restoreShellUi(bool endSessionPath);
+    void prepareForPowerOff();
+    void executePowerAction(const QString &action);
+    bool gamesBlockedByCache() const;
 
     QProcess *m_process;
     QWindow *m_mainWindow;

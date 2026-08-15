@@ -6,6 +6,8 @@
 #include "eaauth.h"
 #include "riotauth.h"
 #include "directlaunchauth.h"
+#include "pathresolver.h"
+#include "securitymanager.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -25,6 +27,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QTimer>
+#include <QThread>
 #include <QUrl>
 #include <QVector>
 #include <QWindow>
@@ -840,8 +843,12 @@ void ProcessManager::launch(const QString &exePath, const QString &args,
 
 void ProcessManager::launchFirstExisting(const QStringList &candidatePaths, const QString &args)
 {
+    QStringList expanded = candidatePaths;
+    if (PathResolver *paths = PathResolver::instance())
+        expanded = paths->expandLauncherCandidates(candidatePaths);
+
     QStringList tried;
-    for (const QString &raw : candidatePaths) {
+    for (const QString &raw : expanded) {
         const QString path = raw.trimmed();
         if (path.isEmpty())
             continue;
@@ -918,6 +925,9 @@ void ProcessManager::raiseTopmostToolWindow(QObject *windowObject)
 
 void ProcessManager::launchPlatformSession(const QJsonObject &authData, const QString &appIdHint)
 {
+    if (gamesBlockedByCache())
+        return;
+
     requestClearGameSearch();
 
     const QString platformRaw = authData.value(QStringLiteral("platform")).toString().trimmed();
@@ -1902,32 +1912,94 @@ void ProcessManager::toggleSystemLanguage()
 
 void ProcessManager::rebootPC()
 {
-#ifdef Q_OS_WIN
-    qWarning() << "[SYSTEM] rebootPC: shutdown /r /t 0";
-    const bool ok = QProcess::startDetached(
-        QStringLiteral("shutdown"),
-        {QStringLiteral("/r"), QStringLiteral("/t"), QStringLiteral("0")});
-    if (!ok)
-        qWarning() << "[SYSTEM] rebootPC: не удалось запустить shutdown.exe";
-#else
-    qWarning() << "[SYSTEM] rebootPC: не поддерживается на этой платформе";
-#endif
+    executePowerAction(QStringLiteral("reboot"));
 }
 
 void ProcessManager::applyPowerAction(const QString &action)
 {
-    // Заглушка: реальное выключение/перезагрузка пока отключены (иначе долгий цикл отладки).
-    if (action == QLatin1String("reboot")) {
-        qWarning() << "[SYSTEM] applyPowerAction: REBOOT stub — реальный reboot отключён";
-        // rebootPC();
+    // Политика с облака (idle/logout). В dev не гасим ПК — иначе форма входа
+    // сразу делает shutdown. Кнопка техника rebootPC() идёт в executePowerAction.
+    if (m_netManager && !m_netManager->isProduction()) {
+        qWarning() << "[SYSTEM] applyPowerAction stub (production=false):" << action;
         return;
     }
-    if (action == QLatin1String("shutdown")) {
-        qWarning() << "[SYSTEM] applyPowerAction: SHUTDOWN stub — реальный shutdown отключён";
-        // QProcess::startDetached("shutdown", {"/s", "/t", "0"});
+    executePowerAction(action);
+}
+
+void ProcessManager::executePowerAction(const QString &action)
+{
+#ifdef Q_OS_WIN
+    if (action == QLatin1String("reboot") || action == QLatin1String("shutdown")) {
+        qWarning() << "[SYSTEM] executePowerAction:" << action << "— S5, flush SSD";
+        prepareForPowerOff();
+        const QString flag = (action == QLatin1String("reboot"))
+                ? QStringLiteral("/r")
+                : QStringLiteral("/s");
+        const bool ok = QProcess::startDetached(
+            QStringLiteral("shutdown"),
+            {flag, QStringLiteral("/t"), QStringLiteral("0"), QStringLiteral("/f")});
+        if (!ok)
+            qWarning() << "[SYSTEM] executePowerAction: не удалось запустить shutdown.exe" << action;
         return;
     }
-    qWarning() << "[SYSTEM] applyPowerAction: неизвестное действие" << action;
+    qWarning() << "[SYSTEM] executePowerAction: неизвестное действие" << action;
+#else
+    qWarning() << "[SYSTEM] executePowerAction:" << action << "не поддерживается";
+#endif
+}
+
+void ProcessManager::exitMaintenance()
+{
+    if (m_netManager)
+        m_netManager->setMaintenance(false);
+    if (auto *sec = qApp->findChild<SecurityManager *>())
+        sec->lockDownSystem();
+    executePowerAction(QStringLiteral("reboot"));
+}
+
+bool ProcessManager::gamesBlockedByCache() const
+{
+    PathResolver *paths = PathResolver::instance();
+    if (paths && !paths->cacheOk()) {
+        qWarning() << "[LAUNCH] том кэша не готов — запуск игр запрещён";
+        return true;
+    }
+    return false;
+}
+
+void ProcessManager::prepareForPowerOff()
+{
+    if (PathResolver *paths = PathResolver::instance())
+        paths->persistLauncherCaches();
+
+    if (m_platformAuth) {
+        m_platformAuth->killLauncher();
+        if (!m_personalAccount && m_currentTerminalId > 0 && !m_currentLogin.isEmpty()) {
+            m_platformAuth->backupCache(m_netManager, m_currentTerminalId, m_currentLogin,
+                                        m_currentAccountId, m_currentGameId);
+        }
+    }
+    if (m_netManager)
+        m_netManager->notifyPowerOffline();
+
+#ifdef Q_OS_WIN
+    if (PathResolver *paths = PathResolver::instance()) {
+        const QString letter = paths->volumeLetter();
+        if (letter.size() == 1) {
+            const QString vol = letter + QStringLiteral(":\\");
+            HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(vol.utf16()),
+                                   GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING,
+                                   FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                FlushFileBuffers(h);
+                CloseHandle(h);
+            }
+        }
+    }
+#endif
+    QThread::msleep(2000);
 }
 
 void ProcessManager::handleDownloadDecision(bool continueDownload)

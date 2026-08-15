@@ -2,6 +2,7 @@
 #include <QSettings>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QProcess>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -103,6 +104,10 @@ void SecurityManager::lockDownSystem()
     disableStickyKeys();
     setupCustomShell(true); // REACTOR становится главной оболочкой ОС Windows
 
+    if (!m_locked) {
+        m_locked = true;
+        emit lockedChanged();
+    }
     qDebug() << "[SECURITY] === СИСТЕМА НАДЕМНО ЗАБЛОКИРОВАНА В РЕЖИМЕ КЛУБА ===";
 }
 
@@ -128,4 +133,17 @@ void SecurityManager::unlockSystem()
     setRegistryValue(expKey, "NoFind", 0);
 
     setupCustomShell(false); // Возвращаем explorer.exe
+    startExplorer();
+
+    if (m_locked) {
+        m_locked = false;
+        emit lockedChanged();
+    }
+}
+
+void SecurityManager::startExplorer()
+{
+#ifdef Q_OS_WIN
+    QProcess::startDetached(QStringLiteral("explorer.exe"), {});
+#endif
 }

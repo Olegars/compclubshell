@@ -6,15 +6,21 @@
 class SecurityManager : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(bool locked READ locked NOTIFY lockedChanged)
 public:
     explicit SecurityManager(QObject *parent = nullptr);
     ~SecurityManager();
 
-    // Главный метод, запускающий весь комплекс защитных процедур Windows
-    void lockDownSystem();
+    bool locked() const { return m_locked; }
 
-    // Метод для отката изменений (если понадобится для административного обслуживания)
-    void unlockSystem();
+    // Главный метод, запускающий весь комплекс защитных процедур Windows
+    Q_INVOKABLE void lockDownSystem();
+
+    // Откат для обслуживания образа / Super Client
+    Q_INVOKABLE void unlockSystem();
+
+signals:
+    void lockedChanged();
 
 private:
     // Внутренние утилиты для работы с реестром Windows (Registry)
@@ -26,6 +32,9 @@ private:
     void disableTaskMgrAndCtrlAltDel();
     void setupCustomShell(bool enable);
     void disableStickyKeys();
+    void startExplorer();
+
+    bool m_locked = false;
 };
 
 #endif // SECURITYMANAGER_H

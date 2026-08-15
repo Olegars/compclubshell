@@ -24,6 +24,7 @@
 
 // Инфраструктура ядра REACTOR
 #include "src/core/hwidprovider.h"
+#include "src/core/pathresolver.h"
 #include "src/core/networkmanager.h"
 #include "src/core/sessionalertmanager.h"
 #include "src/core/securitymanager.h"
@@ -31,6 +32,7 @@
 #include "src/core/hidinputmonitor.h"
 #include "src/core/voiceassistant.h"
 #include "src/core/lobbyaudiomanager.h"
+#include "src/core/ccbootsuperclient.h"
 
 // C++ Модели данных для QML слоя
 #include "src/models/gamemodel.h"
@@ -38,7 +40,7 @@
 
 namespace {
 
-const char *kDebugLogPath = "C:/ShellVideo/shell-debug.log";
+QString g_debugLogPath = QStringLiteral("C:/ShellVideo/logs/shell-debug.log");
 
 bool isNoisyLogLine(QtMsgType type, const QString &msg)
 {
@@ -85,8 +87,7 @@ bool isNoisyLogLine(QtMsgType type, const QString &msg)
         || msg.contains(QLatin1String("[POWER] logout"))
         || msg.contains(QLatin1String("[POWER] notifyPowerOffline"))
         || msg.contains(QLatin1String("[POWER] offline ack:"))
-        || msg.contains(QLatin1String("SHUTDOWN stub"))
-        || msg.contains(QLatin1String("REBOOT stub"))
+        || msg.contains(QLatin1String("applyPowerAction:"))
         || msg.contains(QLatin1String("[OVERLAYS]"))
         || msg.contains(QLatin1String("[PLAYER-OPTIMIZED]"))
         || msg.contains(QLatin1String("[SHOP]"))
@@ -146,8 +147,8 @@ void reactorMessageHandler(QtMsgType type, const QMessageLogContext &context, co
     fprintf(stderr, "%s\n", qPrintable(line));
     fflush(stderr);
 
-    QDir().mkpath(QStringLiteral("C:/ShellVideo"));
-    QFile f(QString::fromLatin1(kDebugLogPath));
+    QDir().mkpath(QFileInfo(g_debugLogPath).absolutePath());
+    QFile f(g_debugLogPath);
     if (f.open(QIODevice::Append | QIODevice::Text)) {
         QTextStream ts(&f);
         ts << line << '\n';
@@ -266,18 +267,32 @@ int main(int argc, char *argv[])
     QtWebView::initialize();
 
     QGuiApplication app(argc, argv);
+
+    PathResolver *pathResolver = new PathResolver(&app);
+    g_debugLogPath = pathResolver->debugLogPath();
+    QDir().mkpath(QFileInfo(g_debugLogPath).absolutePath());
+
     QQuickStyle::setStyle("Basic");
     // avutil подгружается вместе с Qt Multimedia — глушим после старта и ещё раз чуть позже.
     quietFfmpegNativeLog();
     QTimer::singleShot(1500, &app, []() { quietFfmpegNativeLog(); });
 
-    // ГЛОБАЛЬНЫЙ ФЛАГ РЕЖИМА ПРОДАКШЕНА REACTOR (Для отладки окон поставьте false)
-    bool isProduction = false;
+    SecurityManager *securityManager = new SecurityManager(&app);
+    CcbootSuperClient *ccbootSuper = new CcbootSuperClient(securityManager, &app);
 
-    if (isProduction) {
+    QString secIni = PathResolver::findConfigIni();
+    QSettings secSettings(secIni, QSettings::IniFormat);
+    const QString prodRaw = secSettings.value(QStringLiteral("Security/production")).toString().trimmed().toLower();
+    const bool isProduction = (prodRaw == QLatin1String("1")
+                               || prodRaw == QLatin1String("true")
+                               || prodRaw == QLatin1String("yes"));
+
+    if (ccbootSuper->superClientActive()) {
+        qDebug() << "[REACTOR-MAIN] Super Client активен — киоск не включаем, explorer для правки образа.";
+        securityManager->unlockSystem();
+    } else if (isProduction) {
         qDebug() << "[REACTOR-MAIN] Запуск в режиме PRODUCTION. Инициализация SecurityManager...";
-        SecurityManager security;
-        security.lockDownSystem();
+        securityManager->lockDownSystem();
     } else {
         qDebug() << "[REACTOR-MAIN] Запуск в режиме DEVELOPMENT. Процедуры безопасности Windows пропущены.";
     }
@@ -301,6 +316,8 @@ int main(int argc, char *argv[])
         networkManager, sessionAlertManager, &app);
 
     networkManager->fetchTerminalConfig(HwidProvider::machineHwid());
+    if (ccbootSuper->superClientActive())
+        networkManager->setMaintenance(true);
     networkManager->checkTerminalStatus();
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, networkManager, [networkManager]() {
@@ -319,6 +336,9 @@ int main(int argc, char *argv[])
     rootContext->setContextProperty("HidMonitor", hidMonitor);
     rootContext->setContextProperty("VoiceAssistant", voiceAssistant);
     rootContext->setContextProperty("LobbyAudio", lobbyAudio);
+    rootContext->setContextProperty("SecurityManager", securityManager);
+    rootContext->setContextProperty("Ccboot", ccbootSuper);
+    rootContext->setContextProperty("PathResolver", pathResolver);
 
     qDebug() << "[REACTOR-MAIN] Рабочая директория приложения:" << QDir::currentPath();
     qDebug() << "[REACTOR-MAIN] Поиск корневого интерфейса в QRC ресурсах...";
@@ -327,7 +347,7 @@ int main(int argc, char *argv[])
     const QUrl url(QStringLiteral("qrc:/qt/qml/sector0451/Main.qml"));
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
-                     &app, [url, processManager, networkManager](QObject *obj, const QUrl &objUrl) {
+                     &app, [url, processManager, networkManager, ccbootSuper](QObject *obj, const QUrl &objUrl) {
         if (!obj && url == objUrl) {
             qCritical() << "[REACTOR-MAIN] КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить Main.qml!";
             QCoreApplication::exit(-1);
@@ -339,6 +359,7 @@ int main(int argc, char *argv[])
                 QWindow *mainWindow = qobject_cast<QWindow*>(obj);
                 if (mainWindow) {
                     processManager->setMainWindow(mainWindow);
+                    ccbootSuper->setMainWindow(mainWindow);
                     qDebug() << "[REACTOR-MAIN] Поток QWindow успешно передан в ProcessManager.";
                 }
             }

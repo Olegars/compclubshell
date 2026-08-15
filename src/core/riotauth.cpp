@@ -1,5 +1,6 @@
 #include "riotauth.h"
 #include "networkmanager.h"
+#include "pathresolver.h"
 #include "processmanager.h"
 
 #include <QDateTime>
@@ -1193,8 +1194,11 @@ void RiotAuth::startLauncher(QProcess *process,
         argsStr = launcher.value(QStringLiteral("args")).toString().trimmed();
     }
 
-    const QString defaultRiot =
-        QStringLiteral("C:\\Riot Games\\Riot Client\\RiotClientServices.exe");
+    QString defaultRiot = QStringLiteral("C:\\Riot Games\\Riot Client\\RiotClientServices.exe");
+    if (PathResolver *paths = PathResolver::instance()) {
+        if (!paths->riotPath().isEmpty())
+            defaultRiot = QDir::toNativeSeparators(paths->riotPath());
+    }
     const QString title = authData.value(QStringLiteral("game_title")).toString();
     if (!title.isEmpty())
         m_gameTitle = title;

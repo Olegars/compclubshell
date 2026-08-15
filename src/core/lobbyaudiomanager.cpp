@@ -1,5 +1,6 @@
 #include "lobbyaudiomanager.h"
 #include "networkmanager.h"
+#include "pathresolver.h"
 #include "sessionalertmanager.h"
 #include "audiomanager_win.h"
 
@@ -99,18 +100,21 @@ void LobbyAudioManager::setState(const QString &state)
 
 QString LobbyAudioManager::resolveMusicPath() const
 {
+    const QString dataRoot = PathResolver::instance()
+            ? PathResolver::instance()->lobbyDir()
+            : QStringLiteral("C:/ShellVideo");
     const QStringList candidates = {
         m_musicPath,
         QCoreApplication::applicationDirPath() + QStringLiteral("/sounds/lobby.mp3"),
         QCoreApplication::applicationDirPath() + QStringLiteral("/sounds/lobby.wav"),
-        QStringLiteral("C:/ShellVideo/lobby.mp3"),
-        QStringLiteral("C:/ShellVideo/lobby.wav"),
+        dataRoot + QStringLiteral("/lobby.mp3"),
+        dataRoot + QStringLiteral("/lobby.wav"),
     };
     for (const QString &c : candidates) {
         if (!c.isEmpty() && QFile::exists(c))
             return c;
     }
-    return QStringLiteral("C:/ShellVideo/lobby-ambient.wav");
+    return dataRoot + QStringLiteral("/lobby-ambient.wav");
 }
 
 bool LobbyAudioManager::ensureGeneratedLobbyWav(const QString &path) const
@@ -396,8 +400,11 @@ void LobbyAudioManager::playGreetingBytes(const QByteArray &mp3)
     }
 
     cleanupTempFiles();
-    QDir().mkpath(QStringLiteral("C:/ShellVideo/Voice"));
-    m_tempGreetingPath = QStringLiteral("C:/ShellVideo/Voice/greeting-%1.mp3")
+    const QString voiceDir = PathResolver::instance()
+            ? PathResolver::instance()->voiceDir()
+            : QStringLiteral("C:/ShellVideo/Voice");
+    QDir().mkpath(voiceDir);
+    m_tempGreetingPath = voiceDir + QStringLiteral("/greeting-%1.mp3")
                              .arg(QDateTime::currentMSecsSinceEpoch());
     QFile f(m_tempGreetingPath);
     if (!f.open(QIODevice::WriteOnly) || f.write(mp3) != mp3.size()) {

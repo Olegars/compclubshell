@@ -1,5 +1,6 @@
 #include "steamauth.h"
 #include "networkmanager.h"
+#include "pathresolver.h"
 #include "processmanager.h"
 
 #include <QDateTime>
@@ -203,6 +204,13 @@ SteamAuth::~SteamAuth()
 
 QString SteamAuth::steamInstallPath()
 {
+    if (PathResolver *paths = PathResolver::instance()) {
+        const QString configured = paths->steamPath();
+        if (!configured.isEmpty() && QFileInfo::exists(configured + QStringLiteral("/steam.exe")))
+            return configured;
+        if (!configured.isEmpty())
+            return configured;
+    }
     QSettings settings(QStringLiteral("REACTOR"), QStringLiteral("REACTOR SHELL"));
     return settings.value(QStringLiteral("Paths/steam_path"),
                           QStringLiteral("C:/Program Files (x86)/Steam")).toString();
@@ -588,6 +596,8 @@ bool SteamAuth::applyCache(const QJsonObject &authData)
         const QString appLocal = localAppDataSteamVdfPath();
         if (!appLocal.isEmpty())
             wroteLocal = writeTextFile(appLocal, cachedLocal) && wroteLocal;
+        if (PathResolver *paths = PathResolver::instance())
+            paths->persistFile(appLocal, QStringLiteral("steam/local.vdf"));
     }
 
     qWarning().noquote() << "[STEAM] applyCache club | login:" << login
@@ -903,6 +913,8 @@ void SteamAuth::backupCache(NetworkManager *net, int terminalId, const QString &
     QString localVdf = readTextFile(localAppDataSteamVdfPath());
     if (localVdf.isEmpty())
         localVdf = readTextFile(configDir + QStringLiteral("/local.vdf"));
+    if (PathResolver *paths = PathResolver::instance())
+        paths->persistFile(localAppDataSteamVdfPath(), QStringLiteral("steam/local.vdf"));
 
     QJsonObject rootPayload;
     rootPayload.insert(QStringLiteral("login"), login);

@@ -140,7 +140,9 @@ Window {
     function hideSteamLoading() { hideGameLoading() }
     function scheduleHideSteamLoading() { scheduleHideGameLoading() }
 
-    readonly property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
+    readonly property string fallbackVideo: (typeof PathResolver !== "undefined" && PathResolver.fallbackVideoUrl)
+                                            ? PathResolver.fallbackVideoUrl
+                                            : "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
 
     readonly property int blockWidth: 524
     readonly property int blockHeight: 295
@@ -271,8 +273,7 @@ Window {
 
         function onSetupRequired() {
             console.log("[REACTOR-SHELL] Получен сигнал setupRequired. Переключение на SetupScreen.qml")
-            screenSwitcher.sourceComponent = null
-            setupScreenLoader.source = "SetupScreen.qml"
+            root.openSetupScreen()
         }
 
         function onAuthRequired() {
@@ -490,9 +491,13 @@ Window {
         repeat: false
         onTriggered: {
             // Берём любой мелкий mp4 из кэша, иначе пропускаем.
+            var cacheDir = (typeof PathResolver !== "undefined")
+                    ? PathResolver.overlayCachePath : "C:/ShellVideo/Cache"
+            var lobbyDir = (typeof PathResolver !== "undefined")
+                    ? PathResolver.dataRoot : "C:/ShellVideo"
             var candidates = [
-                "file:///C:/ShellVideo/Cache/fallback_bg.mp4",
-                "file:///C:/ShellVideo/lobby-ambient.wav"
+                "file:///" + String(cacheDir).replace(/\\/g, "/") + "/fallback_bg.mp4",
+                "file:///" + String(lobbyDir).replace(/\\/g, "/") + "/lobby-ambient.wav"
             ]
             for (var i = 0; i < candidates.length; i++) {
                 mediaWarmup.source = candidates[i]
@@ -553,6 +558,14 @@ Window {
         target: Theme
         property: "zoneType"
         value: root.pcTypeFromDatabase
+    }
+
+    function openSetupScreen() {
+        root.isHardwareAdmin = true
+        screenSwitcher.sourceComponent = null
+        setupScreenLoader.source = "SetupScreen.qml"
+        if (typeof Ccboot !== "undefined")
+            Ccboot.refresh()
     }
 
     function closeSetupScreen() {
@@ -696,6 +709,21 @@ Window {
             id: loginScreen
             anchors.fill: parent
 
+            MouseArea {
+                anchors.fill: parent
+                z: 0
+                acceptedButtons: Qt.RightButton
+                onPressed: function(mouse) {
+                    // Win+ПКМ (как просили). Ctrl+ПКМ — запас, если Win заблокирован киоском.
+                    if (mouse.modifiers & Qt.MetaModifier || mouse.modifiers & Qt.ControlModifier) {
+                        root.openSetupScreen()
+                        mouse.accepted = true
+                    } else {
+                        mouse.accepted = false
+                    }
+                }
+            }
+
             Rectangle {
                 anchors.fill: parent
                 color: "#020202"
@@ -778,12 +806,13 @@ Window {
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                acceptedButtons: Qt.LeftButton
-                                onClicked: {
-                                    if (mouse.modifiers & Qt.ControlModifier) {
-                                        screenSwitcher.sourceComponent = null
-                                        setupScreenLoader.source = "SetupScreen.qml"
-                                    }
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: function(mouse) {
+                                    var secret = (mouse.button === Qt.LeftButton && (mouse.modifiers & Qt.ControlModifier))
+                                              || (mouse.button === Qt.RightButton && (mouse.modifiers & Qt.MetaModifier))
+                                              || (mouse.button === Qt.RightButton && (mouse.modifiers & Qt.ControlModifier))
+                                    if (secret)
+                                        root.openSetupScreen()
                                 }
                             }
                         }
@@ -1315,6 +1344,65 @@ Window {
         z: 1000000
         platformName: root.loadingPlatform
         gameTitle: root.loadingGameTitle
+    }
+
+    Rectangle {
+        id: cacheNotReadyBanner
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 52
+        z: 90
+        visible: typeof PathResolver !== "undefined"
+                 && !PathResolver.cacheOk
+                 && !setupScreenLoader.item
+        color: "#4a1515"
+        Text {
+            anchors.centerIn: parent
+            color: "#fecaca"
+            font.pixelSize: 15
+            font.bold: true
+            font.letterSpacing: 1.2
+            text: "КЭШ SSD НЕ ГОТОВ — игры не запустятся. Проверьте том D: / метку GAMES."
+        }
+    }
+
+    Rectangle {
+        id: maintenanceBanner
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: cacheNotReadyBanner.visible ? cacheNotReadyBanner.bottom : parent.top
+        height: 44
+        z: 90
+        visible: typeof NetworkManager !== "undefined"
+                 && NetworkManager.maintenance
+                 && !setupScreenLoader.item
+        color: "#3b2a10"
+        Row {
+            anchors.centerIn: parent
+            spacing: 16
+            Text {
+                color: "#fbbf24"
+                font.pixelSize: 14
+                font.bold: true
+                text: "РЕЖИМ ОБСЛУЖИВАНИЯ — explorer открыт, WOL-off выключен"
+            }
+            Text {
+                color: "#fde68a"
+                font.pixelSize: 13
+                font.bold: true
+                text: "ЗАВЕРШИТЬ И REBOOT"
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -8
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (typeof Launcher !== "undefined")
+                            Launcher.exitMaintenance()
+                    }
+                }
+            }
+        }
     }
 
     }

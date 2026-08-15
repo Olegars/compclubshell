@@ -88,9 +88,15 @@ Item {
     property string pendingGameArgs: ""
     property string pendingGamePlatform: ""
 
-    readonly property string defaultRiotClient: "C:\\Riot Games\\Riot Client\\RiotClientServices.exe"
-    readonly property string defaultEpicLauncher: "C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe"
-    readonly property string defaultEaDesktop: "C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe"
+    readonly property string defaultRiotClient: (typeof PathResolver !== "undefined" && PathResolver.riotPath)
+        ? String(PathResolver.riotPath).replace(/\//g, "\\")
+        : "C:\\Riot Games\\Riot Client\\RiotClientServices.exe"
+    readonly property string defaultEpicLauncher: (typeof PathResolver !== "undefined" && PathResolver.epicPath)
+        ? String(PathResolver.epicPath).replace(/\//g, "\\")
+        : "C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe"
+    readonly property string defaultEaDesktop: (typeof PathResolver !== "undefined" && PathResolver.eaPath)
+        ? String(PathResolver.eaPath).replace(/\//g, "\\")
+        : "C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EADesktop.exe"
 
     readonly property var epicLauncherPaths: [
         "C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe",
@@ -1989,6 +1995,12 @@ Item {
                         }
                     }
 
+                    ActionBtn {
+                        text: "ОБСЛУЖИВАНИЕ"
+                        icon: "⚙"
+                        baseColor: "#b45309"
+                        onClicked: maintenanceConfirmPopup.requestPinAndOpen()
+                    }
                     ActionBtn {
                         text: "ПЕРЕЗАГРУЗКА"
                         icon: "↻"
@@ -4694,6 +4706,147 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: rebootConfirmPopup.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: maintenanceConfirmPopup
+        width: Math.min(560, parent.width - 40)
+        height: 360
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        property string maintPin: ""
+        property bool pinReady: false
+        property bool pinLoading: false
+        property string pinError: ""
+
+        function enterMaintenance() {
+            close()
+            if (typeof SecurityManager !== "undefined")
+                SecurityManager.unlockSystem()
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.setMaintenance(true)
+        }
+
+        function requestPinAndOpen() {
+            if (typeof NetworkManager !== "undefined" && NetworkManager.maintenance) {
+                enterMaintenance()
+                return
+            }
+            maintPin = ""
+            pinReady = false
+            pinLoading = true
+            pinError = ""
+            open()
+
+            var baseUrl = dashboardRoot.apiBase()
+            var pcId = parseInt(dashboardRoot.termId)
+            if (baseUrl.length === 0 || !pcId) {
+                pinLoading = false
+                pinReady = true
+                pinError = ""
+                return
+            }
+            var xhr = new XMLHttpRequest()
+            xhr.open("POST", baseUrl + "/api/shell/games/pause")
+            xhr.setRequestHeader("Content-Type", "application/json")
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE)
+                    return
+                pinLoading = false
+                pinReady = true
+                if (xhr.status === 200) {
+                    try {
+                        var res = JSON.parse(xhr.responseText)
+                        if (res.status === "success" && res.pin_code) {
+                            maintPin = String(res.pin_code)
+                            if (typeof root !== "undefined")
+                                root.temporaryPausePin = maintPin
+                        }
+                    } catch (e) { }
+                }
+            }
+            xhr.send(JSON.stringify({
+                "computer_id": pcId,
+                "booking_id": (typeof NetworkManager !== "undefined") ? NetworkManager.lastBookingId : 0
+            }))
+        }
+
+        background: Rectangle {
+            color: "#0a0505"
+            border.color: "#b45309"
+            radius: Theme.radiusSm
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 28
+            spacing: 14
+            Text {
+                text: "Обслуживание"
+                color: "#f59e0b"
+                font.pixelSize: 22
+                font.bold: true
+                font.letterSpacing: 2
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                color: Theme.textBody
+                font.pixelSize: 15
+                lineHeight: 1.35
+                text: maintenanceConfirmPopup.maintPin.length === 4
+                      ? ("PIN паузы для гостя: " + maintenanceConfirmPopup.maintPin)
+                      : "Снять киоск и открыть explorer. Booking не погасит это место."
+            }
+            Item { Layout.fillHeight: true }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    enabled: !maintenanceConfirmPopup.pinLoading
+                    color: "#b45309"
+                    Text {
+                        anchors.centerIn: parent
+                        text: maintenanceConfirmPopup.pinLoading ? "Пауза…" : "Снять киоск"
+                        color: "white"
+                        font.bold: true
+                        font.pixelSize: 14
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !maintenanceConfirmPopup.pinLoading
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: maintenanceConfirmPopup.enterMaintenance()
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 52
+                    radius: 6
+                    color: "transparent"
+                    border.color: "#b45309"
+                    border.width: 2
+                    Text {
+                        anchors.centerIn: parent
+                        text: "Отмена"
+                        color: "#f59e0b"
+                        font.bold: true
+                        font.pixelSize: 14
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: maintenanceConfirmPopup.close()
                     }
                 }
             }

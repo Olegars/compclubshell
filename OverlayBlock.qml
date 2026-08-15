@@ -11,7 +11,9 @@ Rectangle {
     property bool isActive: true
     property var content: null
     property string videoSourceUrl: ""
-    property string fallbackVideo: "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
+    property string fallbackVideo: (typeof PathResolver !== "undefined" && PathResolver.fallbackVideoUrl)
+                                   ? PathResolver.fallbackVideoUrl
+                                   : "file:///C:/ShellVideo/Cache/fallback_bg.mp4"
     property bool playbackAllowed: true
     // Сдвиг активации плеера между слотами (мс) — не открывать 6 файлов в один тик.
     property int openDelayMs: 0

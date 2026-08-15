@@ -1,5 +1,6 @@
 #include "networkmanager.h"
 #include "hwidprovider.h"
+#include "pathresolver.h"
 #include "thermalmonitor.h"
 #include "fanrelaycontroller.h"
 #include "../models/gamemodel.h"
@@ -62,7 +63,14 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
     QString apiPort = settings.value("Network/api_port", "22222").toString().trimmed();
     m_serverUrl = buildServerUrl(apiIp, apiPort);
 
-    m_cachePath = "C:/ShellVideo/Cache/";
+    const QString prodRaw = settings.value(QStringLiteral("Security/production")).toString().trimmed().toLower();
+    m_production = (prodRaw == QLatin1String("1")
+                    || prodRaw == QLatin1String("true")
+                    || prodRaw == QLatin1String("yes"));
+
+    PathResolver *paths = PathResolver::instance();
+    m_cachePath = paths ? paths->overlayCachePath() + QLatin1Char('/')
+                        : QStringLiteral("C:/ShellVideo/Cache/");
     QDir().mkpath(m_cachePath);
 
     qDebug() << "[REACTOR-SHELL] Путь к кэшу оверлеев:" << m_cachePath;
@@ -209,6 +217,12 @@ void NetworkManager::checkTerminalStatus() {
 
     QJsonObject json;
     json["hwid"] = m_hwid;
+    const QString mac = primaryMacAddress();
+    if (!mac.isEmpty())
+        json["mac_address"] = mac;
+    const QString legacy = HwidProvider::legacyMachineGuid();
+    if (!legacy.isEmpty() && QString::compare(legacy, m_hwid, Qt::CaseInsensitive) != 0)
+        json["legacy_hwid"] = legacy;
 
     QJsonDocument doc(json);
     QByteArray data = doc.toJson();
@@ -296,6 +310,9 @@ void NetworkManager::registerStation(const QString &zoneType, const QString &pcN
     json["hwid"] = m_hwid;
     json["zone_type"] = zoneType;
     json["name"] = pcName;
+    const QString mac = primaryMacAddress();
+    if (!mac.isEmpty())
+        json["mac_address"] = mac;
 
     QJsonDocument doc(json);
     QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
@@ -1685,7 +1702,8 @@ void NetworkManager::startPowerHeartbeat()
     }
     if (!m_powerHeartbeatTimer->isActive()) {
         m_powerHeartbeatTimer->start();
-        qWarning() << "[POWER] heartbeat started, terminal" << m_computerId;
+        qWarning() << "[POWER] heartbeat started, terminal" << m_computerId
+                   << "production" << m_production;
     }
     sendPowerHeartbeat();
 }
@@ -1701,6 +1719,10 @@ QString NetworkManager::primaryMacAddress() const
     if (!m_cachedMac.isEmpty())
         return m_cachedMac;
 
+    const QString mac = HwidProvider::onboardMac();
+    if (!mac.isEmpty())
+        return mac;
+
     const auto ifaces = QNetworkInterface::allInterfaces();
     for (const QNetworkInterface &iface : ifaces) {
         const auto flags = iface.flags();
@@ -1710,12 +1732,22 @@ QString NetworkManager::primaryMacAddress() const
             continue;
         if (!(flags & QNetworkInterface::IsRunning))
             continue;
-        const QString mac = iface.hardwareAddress().trimmed().toUpper();
-        if (mac.isEmpty() || mac == QLatin1String("00:00:00:00:00:00"))
+        const QString hw = iface.hardwareAddress().trimmed().toUpper();
+        if (hw.isEmpty() || hw == QLatin1String("00:00:00:00:00:00"))
             continue;
-        return mac;
+        return hw;
     }
     return {};
+}
+
+void NetworkManager::setMaintenance(bool on)
+{
+    if (m_maintenance == on)
+        return;
+    m_maintenance = on;
+    qWarning() << "[POWER] maintenance" << on;
+    emit maintenanceChanged();
+    sendPowerHeartbeat();
 }
 
 bool NetworkManager::isLocalSessionActive() const
@@ -1730,8 +1762,22 @@ bool NetworkManager::isLocalSessionActive() const
             && sessionUser != QLatin1String("");
 }
 
+bool NetworkManager::isSetupScreenOpen() const
+{
+    if (!m_rootQml)
+        return false;
+    if (m_rootQml->property("isHardwareAdmin").toBool())
+        return true;
+    return false;
+}
+
 void NetworkManager::handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive)
 {
+    if (m_maintenance || isSetupScreenOpen()) {
+        m_idleShutdownRequested = false;
+        return;
+    }
+
     if (sessionActive) {
         m_sawActiveSession = true;
         m_idleShutdownRequested = false;
@@ -1750,8 +1796,14 @@ void NetworkManager::handlePowerPolicy(const QString &desired, const QString &ac
         return;
     }
 
-    // Гостевой экран и ПК больше не нужен → выключение (заглушка).
+    // Гостевой экран: гасим только если облако сказало desired=off
+    // (нет брони в warmup и нет мягкого ожидания PIN). Не гасим из‑за
+    // «PIN не ввели N минут» — это late_start_grace на сервере.
     if (!isLocalSessionActive() && desired == QLatin1String("off")) {
+        if (!m_production) {
+            qWarning() << "[POWER] idle + desired=off — пропуск (Security/production=false)";
+            return;
+        }
         if (!m_idleShutdownRequested) {
             m_idleShutdownRequested = true;
             qWarning() << "[POWER] idle + desired=off → shutdown";
@@ -1788,6 +1840,15 @@ void NetworkManager::sendPowerHeartbeat()
     if (!mac.isEmpty()) {
         m_cachedMac = mac;
         json.insert(QStringLiteral("mac_address"), mac);
+    }
+
+    json.insert(QStringLiteral("maintenance"), m_maintenance);
+    if (PathResolver *paths = PathResolver::instance()) {
+        paths->refresh();
+        json.insert(QStringLiteral("cache_ok"), paths->cacheOk());
+        json.insert(QStringLiteral("cache_free_gb"), paths->cacheFreeGb());
+        json.insert(QStringLiteral("data_root"), paths->dataRoot());
+        json.insert(QStringLiteral("volume_letter"), paths->volumeLetter());
     }
 
     m_powerHeartbeatInFlight = true;

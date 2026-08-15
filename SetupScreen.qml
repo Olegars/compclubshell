@@ -33,6 +33,8 @@ Rectangle {
     }
 
     Component.onCompleted: {
+        if (typeof Ccboot !== "undefined")
+            Ccboot.refresh()
         if (pcRegistered)
             NetworkManager.fetchFanDiscover()
     }
@@ -209,6 +211,209 @@ Rectangle {
                             }
                             errorValidationText.visible = false
                             NetworkManager.registerStation(modelData, cleanName)
+                        }
+                    }
+                }
+            }
+
+            // Super Client — правка образа с этого ПК
+            Rectangle {
+                width: parent.width
+                radius: 8
+                color: "#0a0f0b"
+                border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
+                border.width: 1
+                implicitHeight: scInner.implicitHeight + 32
+
+                Column {
+                    id: scInner
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 16
+                    spacing: 10
+
+                    Text {
+                        text: "ОБРАЗ · SUPER CLIENT"
+                        color: Theme.accent
+                        font.pixelSize: 13
+                        font.bold: true
+                        font.letterSpacing: 1.4
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Вход в setup: Win+ПКМ (или Ctrl+клик по имени ПК). Пароль — Admin Password CCBoot, не PIN брони. После Enable ПК уйдёт в reboot; киоск снимется. Сохранение образа — Disable Super Client, не кнопка в шелле."
+                        color: Theme.textMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        visible: typeof Ccboot !== "undefined"
+                        text: typeof Ccboot !== "undefined" ? Ccboot.lastMessage : ""
+                        color: typeof Ccboot !== "undefined" && Ccboot.lastOk ? Theme.success : Theme.danger
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+                    Text {
+                        visible: typeof Ccboot !== "undefined" && Ccboot.superClientActive
+                        text: "СЕЙЧАС: SUPER CLIENT ВКЛЮЧЁН"
+                        color: Theme.warning
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        visible: typeof Ccboot !== "undefined"
+                        text: typeof Ccboot !== "undefined" && Ccboot.clientFound
+                              ? ("Клиент: " + Ccboot.clientPath)
+                              : "CCBootClient.exe не найден — укажите Diskless/client_exe в config.ini"
+                        color: Theme.textSecondary
+                        font.pixelSize: 11
+                        font.family: "Monospace"
+                    }
+
+                    Text {
+                        text: "ПАРОЛЬ CCBOOT"
+                        color: Theme.accent
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                    TextField {
+                        id: scPassword
+                        width: parent.width
+                        height: 44
+                        echoMode: TextInput.Password
+                        font.pixelSize: 16
+                        color: "white"
+                        placeholderText: "Admin Password"
+                        placeholderTextColor: "#334155"
+                        leftPadding: 14
+                        background: Rectangle {
+                            color: scPassword.activeFocus ? Theme.accentSurface : Theme.accentSurfaceIdle
+                            border.color: scPassword.activeFocus ? Theme.accent : Theme.accentBorder
+                            border.width: 1
+                            radius: Theme.radiusSm
+                        }
+                    }
+
+                    Text {
+                        text: "ДИСК"
+                        color: Theme.accent
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                    ComboBox {
+                        id: scDisk
+                        width: parent.width
+                        height: 40
+                        model: ["image", "disk", "both"]
+                        currentIndex: 0
+                    }
+
+                    Row {
+                        spacing: 8
+                        Button {
+                            text: "ВКЛЮЧИТЬ SUPER CLIENT"
+                            height: 36
+                            enabled: typeof Ccboot !== "undefined" && !Ccboot.busy
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.setMaintenance(true)
+                                Ccboot.enableSuperClient(scPassword.text, scDisk.currentText)
+                            }
+                            contentItem: Text {
+                                text: parent.text
+                                color: parent.enabled ? "#111" : Theme.textMuted
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle {
+                                color: parent.enabled ? Theme.accent : "#222"
+                                radius: 4
+                            }
+                        }
+                        Button {
+                            text: "ВЫКЛЮЧИТЬ И СОХРАНИТЬ"
+                            height: 36
+                            enabled: typeof Ccboot !== "undefined" && !Ccboot.busy
+                            onClicked: Ccboot.disableSuperClient(scPassword.text, true)
+                            contentItem: Text {
+                                text: parent.text
+                                color: parent.enabled ? "#111" : Theme.textMuted
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle {
+                                color: parent.enabled ? Theme.warning : "#222"
+                                radius: 4
+                            }
+                        }
+                    }
+                    Row {
+                        spacing: 8
+                        Button {
+                            text: "ТОЛЬКО CCBOOT CLIENT"
+                            height: 34
+                            enabled: typeof Ccboot !== "undefined" && !Ccboot.busy
+                            onClicked: Ccboot.openCcbootClient()
+                            contentItem: Text {
+                                text: parent.text
+                                color: Theme.accent
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle { color: "#111"; border.color: "#333"; radius: 4 }
+                        }
+                        Button {
+                            text: "СНЯТЬ КИОСК"
+                            height: 34
+                            onClicked: {
+                                if (typeof Ccboot !== "undefined")
+                                    Ccboot.unlockForMaintenance()
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.setMaintenance(true)
+                            }
+                            contentItem: Text {
+                                text: parent.text
+                                color: Theme.accent
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle { color: "#111"; border.color: "#333"; radius: 4 }
+                        }
+                        Button {
+                            text: "ВЕРНУТЬ КИОСК"
+                            height: 34
+                            onClicked: {
+                                if (typeof Launcher !== "undefined" && typeof Launcher.exitMaintenance === "function") {
+                                    Launcher.exitMaintenance()
+                                } else {
+                                    if (typeof NetworkManager !== "undefined")
+                                        NetworkManager.setMaintenance(false)
+                                    if (typeof Ccboot !== "undefined")
+                                        Ccboot.lockKiosk()
+                                }
+                            }
+                            contentItem: Text {
+                                text: parent.text
+                                color: Theme.textMuted
+                                font.pixelSize: 11
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle { color: "#111"; border.color: "#333"; radius: 4 }
                         }
                     }
                 }
