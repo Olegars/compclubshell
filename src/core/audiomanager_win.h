@@ -17,6 +17,8 @@ void win32_set_master_volume(int level);
 void win32_duck_master(int duckPercent);
 /** Restore volume saved by win32_duck_master(). Safe to call when not ducked. */
 void win32_restore_master();
+/** Unmute all active capture endpoints and raise near-zero mic volume. */
+void win32_unmute_capture();
 
 /** Continuously force default playback to headphones (Win32). No-op on other platforms. */
 void win32_start_headphones_guard();

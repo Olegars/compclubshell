@@ -59,6 +59,9 @@ QString hrHex(HRESULT hr)
     return QString::number(static_cast<quint32>(hr), 16);
 }
 
+// Undocumented PolicyConfig COM is often missing on diskless / stripped Windows.
+bool g_policyConfigMissing = false;
+
 QString deviceIdOf(IMMDevice *device)
 {
     if (!device)
@@ -204,6 +207,9 @@ struct IPolicyConfig : public IUnknown {
 
 bool setDefaultEndpointAllRoles(const QString &deviceId)
 {
+    if (g_policyConfigMissing)
+        return false;
+
     if (deviceId.isEmpty())
         return false;
 
@@ -240,7 +246,10 @@ bool setDefaultEndpointAllRoles(const QString &deviceId)
         return false;
     }
 
-    qWarning() << "[AUDIO] PolicyConfig CoCreateInstance failed hr=" << hrHex(hr);
+    qWarning() << "[AUDIO] PolicyConfig CoCreateInstance failed hr=" << hrHex(hr)
+               << "(смена устройства недоступна на этой Windows — больше не повторяем)";
+    if (hr == static_cast<HRESULT>(0x80040154)) // CLASS_E_CLASSNOTAVAILABLE
+        g_policyConfigMissing = true;
     return false;
 }
 
@@ -744,6 +753,24 @@ public:
         const bool defaultIsMonitor = nameOrDefaultIsMonitor(m_enumerator, curConsole);
 
         const bool needsForce = (curConsole != hp.id) || (curMulti != hp.id) || (curComm != hp.id);
+
+        // Имя уже то же analog-устройство — не дёргаем PolicyConfig (на бездиске его часто нет).
+        if (!defaultIsMonitor && QString::compare(wasName, hpLabel, Qt::CaseInsensitive) == 0) {
+            m_lastHeadphonesId = hp.id;
+            if (fromStart) {
+                qWarning() << "[AUDIO] default already headphones/analog:" << hpLabel;
+            }
+            return;
+        }
+
+        if (g_policyConfigMissing) {
+            m_lastHeadphonesId = hp.id;
+            if (fromStart) {
+                qWarning() << "[AUDIO] cannot switch default device (PolicyConfig missing), leaving"
+                           << wasName;
+            }
+            return;
+        }
 
         if (fromStart || needsForce || m_lastHeadphonesId != hp.id) {
             qWarning() << "[AUDIO] preferred headphones/analog:" << hpLabel

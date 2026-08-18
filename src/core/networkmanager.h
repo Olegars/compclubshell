@@ -53,10 +53,15 @@ class NetworkManager : public QObject
     Q_PROPERTY(int fanDiscoverSlotsUsed READ fanDiscoverSlotsUsed NOTIFY fanDiscoverChanged)
     Q_PROPERTY(int fanDiscoverSlotsMax READ fanDiscoverSlotsMax NOTIFY fanDiscoverChanged)
     Q_PROPERTY(double cpuTempC READ cpuTempC NOTIFY cpuTempChanged)
+    Q_PROPERTY(double ssdTempC READ ssdTempC NOTIFY ssdTempChanged)
     Q_PROPERTY(QString zoneName READ zoneName NOTIFY zoneInfoChanged)
     Q_PROPERTY(QString zoneSlug READ zoneSlug NOTIFY zoneInfoChanged)
     Q_PROPERTY(QString zoneColor READ zoneColor NOTIFY zoneInfoChanged)
+    Q_PROPERTY(QString clubName READ clubName NOTIFY clubNameChanged)
     Q_PROPERTY(bool maintenance READ maintenance NOTIFY maintenanceChanged)
+    Q_PROPERTY(bool ttsEnabled READ ttsEnabled NOTIFY ttsVoicesChanged)
+    Q_PROPERTY(QString ttsVoice READ ttsVoice NOTIFY ttsVoiceChanged)
+    Q_PROPERTY(QVariantList ttsVoices READ ttsVoices NOTIFY ttsVoicesChanged)
 public:
     explicit NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent = nullptr);
 
@@ -94,9 +99,14 @@ public:
     int fanDiscoverSlotsUsed() const { return m_fanDiscoverSlotsUsed; }
     int fanDiscoverSlotsMax() const { return m_fanDiscoverSlotsMax; }
     double cpuTempC() const { return m_cpuTempC; }
+    double ssdTempC() const { return m_ssdTempC; }
     QString zoneName() const { return m_zoneName; }
     QString zoneSlug() const { return m_zoneSlug; }
     QString zoneColor() const { return m_zoneColor; }
+    QString clubName() const { return m_clubName; }
+    bool ttsEnabled() const { return m_ttsEnabled; }
+    QString ttsVoice() const { return m_ttsVoice; }
+    QVariantList ttsVoices() const { return m_ttsVoices; }
     bool maintenance() const { return m_maintenance; }
     Q_INVOKABLE void setMaintenance(bool on);
 
@@ -147,6 +157,8 @@ public:
     Q_INVOKABLE void fetchFanState();
     Q_INVOKABLE void reportThermalNow();
     Q_INVOKABLE void fetchFanDiscover();
+    Q_INVOKABLE void fetchTtsVoices();
+    Q_INVOKABLE void setTtsVoice(const QString &voice);
     Q_INVOKABLE void bindFanPair(int boardId, int channel, int channel2);
     Q_INVOKABLE void unbindFan(int fanId);
     /** Pulse high ~2.5s then night on LAN W5100 (path-port). */
@@ -206,7 +218,9 @@ signals:
     void fanBindFinished(bool ok, const QString &message);
     void fanTestFinished(bool ok, const QString &message);
     void cpuTempChanged();
+    void ssdTempChanged();
     void zoneInfoChanged();
+    void clubNameChanged();
     void maintenanceChanged();
     /** Backend asks shell to reboot or shutdown after session / idle policy. */
     void powerActionRequested(const QString &action);
@@ -218,6 +232,9 @@ signals:
     void voiceGreetingSucceeded(const QByteArray &audioBytes, const QString &mime,
                                 const QString &replyText, bool isFirstVisit);
     void voiceGreetingFailed(const QString &message);
+    void ttsVoiceChanged();
+    void ttsVoicesChanged();
+    void ttsPreviewSucceeded(const QByteArray &audioBytes, const QString &mime);
 
 private:
     static QString cleanDigits(const QString &value);
@@ -227,7 +244,9 @@ private:
     void applyOrderStatusFromJson(const QJsonObject &rootObj);
     int resolveTerminalId(int terminalId) const;
     void applyFanStateFromJson(const QJsonObject &fanObj);
-    void postThermal(double cpuC);
+    void applyTtsVoicesFromJson(const QJsonObject &root);
+    void startSessionFans(const QJsonObject &fanObj);
+    void postThermal(double cpuC, double ssdC);
     void acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source);
     int computeLocalDesiredPower(const QJsonObject &fanObj) const;
     void applyDesiredToRelay(int desiredPower, const QString &source);
@@ -242,6 +261,8 @@ private:
     void pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt);
     void applyQrLoginSuccess(const QJsonObject &response);
     void pollQrStatusOnce();
+    void applyClubName(const QString &raw);
+    void applyPlayerTtsVoice(const QString &voice);
 
     QNetworkAccessManager *m_networkManager;
     QTimer *m_climateTimer = nullptr;
@@ -290,9 +311,11 @@ private:
     int m_fanDiscoverSlotsUsed = 0;
     int m_fanDiscoverSlotsMax = 2;
     double m_cpuTempC = -1.0;
+    double m_ssdTempC = -1.0;
     QString m_zoneName;
     QString m_zoneSlug;
     QString m_zoneColor;
+    QString m_clubName;
     bool m_climateActive = false;
     bool m_fanRequestInFlight = false;
     bool m_thermalRequestInFlight = false;
@@ -314,6 +337,11 @@ private:
     int m_fanDefaultOnPower = 3;
     QNetworkReply *m_aiAssistantReply = nullptr;
     QNetworkReply *m_voiceGreetingReply = nullptr;
+    QNetworkReply *m_ttsVoicesReply = nullptr;
+    QNetworkReply *m_ttsVoiceSetReply = nullptr;
+    bool m_ttsEnabled = false;
+    QString m_ttsVoice;
+    QVariantList m_ttsVoices;
 
     GameModel* m_gamesModel;
     GameModel* m_featuredGamesModel = nullptr;

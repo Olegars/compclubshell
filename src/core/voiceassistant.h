@@ -23,6 +23,7 @@ class VoiceAssistant : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QString state READ state NOTIFY stateChanged)
+    Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
     Q_PROPERTY(bool active READ isUiActive NOTIFY stateChanged)
     Q_PROPERTY(bool enabled READ isFeatureEnabled NOTIFY enabledChanged)
 
@@ -34,6 +35,7 @@ public:
     ~VoiceAssistant() override;
 
     QString state() const { return m_state; }
+    QString lastError() const { return m_lastError; }
     bool isUiActive() const { return m_state != QLatin1String("idle"); }
     bool isFeatureEnabled() const { return m_featureEnabled; }
 
@@ -41,6 +43,7 @@ public:
 
 signals:
     void stateChanged();
+    void lastErrorChanged();
     void enabledChanged();
     void errorOccurred(const QString &message);
 
@@ -51,6 +54,7 @@ private slots:
                      const QString &transcript, const QString &replyText);
     void onAiFailed(const QString &message);
     void onPlayerStateChanged(QMediaPlayer::PlaybackState state);
+    void onTtsPreview(const QByteArray &audioBytes, const QString &mime);
     void clearErrorState();
 
 private:
@@ -66,6 +70,7 @@ private:
     void restoreAudio();
     void playReply(const QByteArray &mp3Bytes);
     void abortNetwork();
+    void setLastError(const QString &message);
 
     NetworkManager *m_net = nullptr;
     ProcessManager *m_launcher = nullptr;
@@ -78,6 +83,7 @@ private:
     int m_minClipMs = 400;
 
     QString m_state = QStringLiteral("idle");
+    QString m_lastError;
     bool m_ducked = false;
 
     QAudioFormat m_format;

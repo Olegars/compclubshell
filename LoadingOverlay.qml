@@ -224,7 +224,8 @@ Item {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "REACTOR"
+            text: (typeof NetworkManager !== "undefined" && NetworkManager.clubName)
+                  ? NetworkManager.clubName : "Клуб"
             color: Theme.textBody
             font.pixelSize: Theme.fontHeading
             font.bold: true

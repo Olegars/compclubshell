@@ -37,6 +37,7 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
     , m_userId(0)
     , m_featuredLabel(QStringLiteral("Популярно в клубе"))
     , m_featuredMode(QStringLiteral("club"))
+    , m_clubName(QStringLiteral("Клуб"))
     , m_gamesModel(gamesModel)
     , m_featuredGamesModel(nullptr)
     , m_storeModel(storeModel)
@@ -62,6 +63,9 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
     QString apiIp = settings.value("Network/api_ip", "192.168.222.2").toString().trimmed();
     QString apiPort = settings.value("Network/api_port", "22222").toString().trimmed();
     m_serverUrl = buildServerUrl(apiIp, apiPort);
+    m_clubName = settings.value(QStringLiteral("Club/name"), QStringLiteral("Клуб")).toString().trimmed();
+    if (m_clubName.isEmpty())
+        m_clubName = QStringLiteral("Клуб");
 
     const QString prodRaw = settings.value(QStringLiteral("Security/production")).toString().trimmed().toLower();
     m_production = (prodRaw == QLatin1String("1")
@@ -259,6 +263,7 @@ void NetworkManager::checkTerminalStatus() {
                 m_zoneSlug = QStringLiteral("singl");
             m_zoneColor = responseObj.value(QStringLiteral("zone_color")).toString().trimmed();
             emit zoneInfoChanged();
+            applyClubName(responseObj.value(QStringLiteral("club_name")).toString());
 
             m_isPcRegistered = true;
 
@@ -289,6 +294,29 @@ void NetworkManager::checkTerminalStatus() {
 
 QString NetworkManager::getCurrentPcName() {
     return m_pcNameString.isEmpty() ? "PC-UNKNOWN" : m_pcNameString;
+}
+
+void NetworkManager::applyClubName(const QString &raw)
+{
+    const QString name = raw.trimmed();
+    if (name.isEmpty() || name == m_clubName)
+        return;
+
+    m_clubName = name;
+    if (!m_configFilePath.isEmpty()) {
+        QSettings settings(m_configFilePath, QSettings::IniFormat);
+        settings.setValue(QStringLiteral("Club/name"), m_clubName);
+    }
+    emit clubNameChanged();
+}
+
+void NetworkManager::applyPlayerTtsVoice(const QString &voice)
+{
+    const QString id = voice.trimmed().toLower();
+    if (id == m_ttsVoice)
+        return;
+    m_ttsVoice = id;
+    emit ttsVoiceChanged();
 }
 
 int NetworkManager::computerId() const {
@@ -820,6 +848,7 @@ void NetworkManager::clearSessionUser()
     m_lastKnownBalance = -1.0;
     m_balanceRefreshInFlight = false;
     m_userSessionActive = false;
+    applyPlayerTtsVoice(QString());
     stopClimateControl();
     m_featuredLabel = QStringLiteral("Популярно в клубе");
     m_featuredMode = QStringLiteral("club");
@@ -1120,6 +1149,7 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
                 m_userId = uid;
                 emit userIdChanged();
             }
+            applyPlayerTtsVoice(user.value(QStringLiteral("tts_voice")).toString());
             const double balance = userBalanceFromJson(user);
             m_lastKnownBalance = balance;
             qDebug() << "[NET] Login OK user=" << user.value("id").toInt(0)
@@ -1128,13 +1158,9 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             m_postBootCooldown = false;
             m_sawActiveSession = true;
             m_userSessionActive = true;
+            applyClubName(response.value(QStringLiteral("club_name")).toString());
             const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
-            // Sync UI/state without applying stale force_on from previous session.
-            if (!fanObj.isEmpty()) {
-                m_skipRelayApply = true;
-                applyFanStateFromJson(fanObj);
-                m_skipRelayApply = false;
-            }
+            startSessionFans(fanObj);
 
             const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
             const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
@@ -1153,8 +1179,6 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
                 balance,
                 user.value("time_remaining").toString("00:00:00"),
                 cleanPhone);
-            // Marketing: always ramp to 100% after auth; client may lower later.
-            setFan(QStringLiteral("100"));
         } else {
             emit loginFailed(response.value("message").toString(
                 tr("Неверный логин или PIN-код")));
@@ -1177,18 +1201,15 @@ void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
         m_userId = uid;
         emit userIdChanged();
     }
+    applyPlayerTtsVoice(user.value(QStringLiteral("tts_voice")).toString());
     const double balance = userBalanceFromJson(user);
     m_lastKnownBalance = balance;
     m_postBootCooldown = false;
     m_sawActiveSession = true;
     m_userSessionActive = true;
+    applyClubName(response.value(QStringLiteral("club_name")).toString());
 
-    const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
-    if (!fanObj.isEmpty()) {
-        m_skipRelayApply = true;
-        applyFanStateFromJson(fanObj);
-        m_skipRelayApply = false;
-    }
+    startSessionFans(response.value(QStringLiteral("fan")).toObject());
 
     const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
     const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
@@ -1207,7 +1228,6 @@ void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
         balance,
         user.value(QStringLiteral("time_remaining")).toString(QStringLiteral("00:00:00")),
         user.value(QStringLiteral("phone")).toString());
-    setFan(QStringLiteral("100"));
 }
 
 void NetworkManager::stopQrLoginPoll()
@@ -1849,6 +1869,13 @@ void NetworkManager::sendPowerHeartbeat()
         json.insert(QStringLiteral("cache_free_gb"), paths->cacheFreeGb());
         json.insert(QStringLiteral("data_root"), paths->dataRoot());
         json.insert(QStringLiteral("volume_letter"), paths->volumeLetter());
+        const double ssdC = ThermalMonitor::readSsdCelsius(paths->volumeLetter());
+        if (ssdC != m_ssdTempC) {
+            m_ssdTempC = ssdC;
+            emit ssdTempChanged();
+        }
+        if (ssdC > 0.0)
+            json.insert(QStringLiteral("ssd_temp_c"), ssdC);
     }
 
     m_powerHeartbeatInFlight = true;
@@ -1922,8 +1949,6 @@ void NetworkManager::notifyPowerOffline()
 
 bool NetworkManager::hasRelayConfig() const
 {
-    if (!m_fanAvailable)
-        return false;
     if (!m_fanRelays.isEmpty()) {
         for (const FanRelayEndpoint &r : m_fanRelays) {
             if (r.host.isEmpty() || r.port <= 0
@@ -2221,15 +2246,33 @@ void NetworkManager::acknowledgeFanApplied(int appliedPower, const QString &erro
     });
 }
 
+void NetworkManager::startSessionFans(const QJsonObject &fanObj)
+{
+    if (!fanObj.isEmpty()) {
+        m_skipRelayApply = true;
+        applyFanStateFromJson(fanObj);
+        m_skipRelayApply = false;
+    }
+    setFanManualLockSec(0);
+    emit fanStateChanged();
+    if (hasRelayConfig())
+        applyDesiredToRelay(3, QStringLiteral("login"));
+    setFan(QStringLiteral("100"));
+}
+
 void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
 {
     if (fanObj.isEmpty())
         return;
 
-    const bool available = fanObj.value(QStringLiteral("available")).toBool(false);
+    const bool jsonAvailable = fanObj.value(QStringLiteral("available")).toBool(false)
+        || fanObj.value(QStringLiteral("available")).toInt(0) != 0;
     const QString mode = fanObj.value(QStringLiteral("manual_mode")).toString();
-    const int lockSec = fanObj.value(QStringLiteral("manual_lock")).toObject()
+    int lockSec = fanObj.value(QStringLiteral("manual_lock")).toObject()
                             .value(QStringLiteral("remaining_sec")).toInt(0);
+    // Кулдаун 10–20 с; часы — сломанный signed-diff с облака.
+    if (lockSec < 0 || lockSec > 120)
+        lockSec = 0;
 
     const QJsonObject relay = fanObj.value(QStringLiteral("relay")).toObject();
     m_fanRelays.clear();
@@ -2296,6 +2339,7 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
                         .arg(m_fanRelayChannel2));
     }
     const bool uiOn = desired >= 2;
+    const bool available = jsonAvailable || !m_fanRelays.isEmpty() || !m_fanRelayHost.isEmpty();
 
     const bool changed = (available != m_fanAvailable) || (uiOn != m_fanOn)
         || (mode != m_fanMode) || (lockSec != m_fanManualLockSec)
@@ -2312,7 +2356,10 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
         return;
 
     const QJsonObject autoLock = fanObj.value(QStringLiteral("auto_lock")).toObject();
-    const bool autoLocked = autoLock.value(QStringLiteral("locked")).toBool(false);
+    int autoRemain = autoLock.value(QStringLiteral("remaining_sec")).toInt(0);
+    if (autoRemain < 0 || autoRemain > 120)
+        autoRemain = 0;
+    const bool autoLocked = autoLock.value(QStringLiteral("locked")).toBool(false) && autoRemain > 0;
     const bool thermal = facts.value(QStringLiteral("thermal")).toBool(false);
 
     // Lobby / before auth: report thermal only; actuate relays solely when hot.
@@ -2332,7 +2379,7 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
             applyDesiredToRelay(2, QStringLiteral("prelogin_thermal"));
         else
             setFanDebug(QStringLiteral("pre-login thermal auto_lock %1s")
-                            .arg(autoLock.value(QStringLiteral("remaining_sec")).toInt()));
+                            .arg(autoRemain));
         return;
     }
 
@@ -2347,7 +2394,7 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
                         .arg(m_fanRelayHost));
     } else if (autoLocked) {
         setFanDebug(QStringLiteral("auto_lock %1s — skip background apply (want=%2)")
-                        .arg(autoLock.value(QStringLiteral("remaining_sec")).toInt())
+                        .arg(autoRemain)
                         .arg(desired));
     }
 }
@@ -2579,6 +2626,7 @@ void NetworkManager::fetchFanDiscover()
                 pair.insert(QStringLiteral("label"), p.value(QStringLiteral("label")).toString());
                 pair.insert(QStringLiteral("status"), p.value(QStringLiteral("status")).toString());
                 pair.insert(QStringLiteral("space_name"), p.value(QStringLiteral("space_name")).toString());
+                pair.insert(QStringLiteral("fan_id"), p.value(QStringLiteral("fan_id")).toInt());
                 pairs.append(pair);
             }
             board.insert(QStringLiteral("pairs"), pairs);
@@ -2717,7 +2765,7 @@ void NetworkManager::testFanPair(const QString &host, int modulePort, int channe
     });
 }
 
-void NetworkManager::postThermal(double cpuC)
+void NetworkManager::postThermal(double cpuC, double ssdC)
 {
     const int termId = resolveTerminalId(0);
     if (m_serverUrl.isEmpty() || termId <= 0 || cpuC < 0.0)
@@ -2734,10 +2782,12 @@ void NetworkManager::postThermal(double cpuC)
     QJsonObject json;
     json.insert(QStringLiteral("terminal_id"), termId);
     json.insert(QStringLiteral("cpu_c"), cpuC);
+    if (ssdC > 0.0)
+        json.insert(QStringLiteral("ssd_c"), ssdC);
 
     QNetworkReply *reply = m_networkManager->post(
         request, QJsonDocument(json).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, cpuC]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cpuC, ssdC]() {
         reply->deleteLater();
         m_thermalRequestInFlight = false;
 
@@ -2754,6 +2804,10 @@ void NetworkManager::postThermal(double cpuC)
             m_cpuTempC = cpuC;
             emit cpuTempChanged();
         }
+        if (ssdC > 0.0 && m_ssdTempC != ssdC) {
+            m_ssdTempC = ssdC;
+            emit ssdTempChanged();
+        }
         applyFanStateFromJson(root.value(QStringLiteral("fan")).toObject());
     });
 }
@@ -2761,14 +2815,23 @@ void NetworkManager::postThermal(double cpuC)
 void NetworkManager::reportThermalNow()
 {
     const double cpuC = ThermalMonitor::readCpuCelsius();
-    if (cpuC < 0.0)
-        return;
+    QString volume;
+    if (PathResolver *paths = PathResolver::instance())
+        volume = paths->volumeLetter();
+    const double ssdC = ThermalMonitor::readSsdCelsius(volume);
 
     if (m_cpuTempC != cpuC) {
         m_cpuTempC = cpuC;
         emit cpuTempChanged();
     }
-    postThermal(cpuC);
+    if (m_ssdTempC != ssdC) {
+        m_ssdTempC = ssdC;
+        emit ssdTempChanged();
+    }
+    if (cpuC < 0.0)
+        return;
+
+    postThermal(cpuC, ssdC);
 }
 
 void NetworkManager::abortAiAssistant()
@@ -2822,6 +2885,13 @@ void NetworkManager::askAiAssistant(int terminalId, const QString &audioPath,
                             QVariant(QStringLiteral("form-data; name=\"game_title\"")));
         titlePart.setBody(gameTitle.trimmed().toUtf8());
         multiPart->append(titlePart);
+    }
+    if (!m_ttsVoice.trimmed().isEmpty()) {
+        QHttpPart voicePart;
+        voicePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                            QVariant(QStringLiteral("form-data; name=\"tts_voice\"")));
+        voicePart.setBody(m_ttsVoice.trimmed().toUtf8());
+        multiPart->append(voicePart);
     }
 
     auto *file = new QFile(audioPath);
@@ -2889,6 +2959,7 @@ void NetworkManager::askAiAssistant(int terminalId, const QString &audioPath,
         if (root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
             const QString msg = root.value(QStringLiteral("message")).toString(
                 QStringLiteral("Ошибка ассистента"));
+            qWarning() << "[VOICE-NET] assistant error" << httpStatus << msg;
             emit aiAssistantFailed(msg);
             return;
         }
@@ -2939,6 +3010,8 @@ void NetworkManager::requestVoiceGreeting(int terminalId, int bookingId)
     json.insert(QStringLiteral("terminal_id"), terminalId);
     if (bookingId > 0)
         json.insert(QStringLiteral("booking_id"), bookingId);
+    if (!m_ttsVoice.trimmed().isEmpty())
+        json.insert(QStringLiteral("tts_voice"), m_ttsVoice.trimmed());
 
     qWarning() << "[VOICE-NET] POST voice-greeting terminal=" << terminalId
                << "booking=" << bookingId;
@@ -2999,5 +3072,133 @@ void NetworkManager::requestVoiceGreeting(int terminalId, int bookingId)
             root.value(QStringLiteral("audio_mime")).toString(QStringLiteral("audio/mpeg")),
             root.value(QStringLiteral("reply_text")).toString(),
             root.value(QStringLiteral("is_first_visit")).toBool(false));
+    });
+}
+
+void NetworkManager::applyTtsVoicesFromJson(const QJsonObject &root)
+{
+    const bool enabled = root.value(QStringLiteral("enabled")).toBool(false);
+    const QString voice = root.value(QStringLiteral("tts_voice")).toString();
+    QVariantList voices;
+    const QJsonArray arr = root.value(QStringLiteral("voices")).toArray();
+    for (const QJsonValue &v : arr) {
+        const QJsonObject o = v.toObject();
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), o.value(QStringLiteral("id")).toString());
+        row.insert(QStringLiteral("label"), o.value(QStringLiteral("label")).toString());
+        if (row.value(QStringLiteral("id")).toString().isEmpty())
+            continue;
+        voices.append(row);
+    }
+
+    const bool catalogChanged = enabled != m_ttsEnabled || voices != m_ttsVoices;
+    const bool voiceChanged = voice != m_ttsVoice;
+    m_ttsEnabled = enabled;
+    m_ttsVoices = voices;
+    if (!voice.isEmpty())
+        m_ttsVoice = voice;
+    if (catalogChanged)
+        emit ttsVoicesChanged();
+    if (voiceChanged)
+        emit ttsVoiceChanged();
+}
+
+void NetworkManager::fetchTtsVoices()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+
+    if (m_ttsVoicesReply) {
+        m_ttsVoicesReply->disconnect(this);
+        m_ttsVoicesReply->abort();
+        m_ttsVoicesReply->deleteLater();
+        m_ttsVoicesReply = nullptr;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/ai-voices"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("terminal_id"), QString::number(termId));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->get(request);
+    m_ttsVoicesReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (m_ttsVoicesReply != reply)
+            return;
+        m_ttsVoicesReply = nullptr;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (reply->error() != QNetworkReply::NoError
+                || root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            qWarning() << "[VOICE-NET] ai-voices failed" << reply->errorString();
+            return;
+        }
+        applyTtsVoicesFromJson(root);
+    });
+}
+
+void NetworkManager::setTtsVoice(const QString &voice)
+{
+    const int termId = resolveTerminalId(0);
+    const QString id = voice.trimmed().toLower();
+    if (m_serverUrl.isEmpty() || termId <= 0 || id.isEmpty())
+        return;
+
+    if (id != m_ttsVoice) {
+        m_ttsVoice = id;
+        emit ttsVoiceChanged();
+    }
+
+    if (m_ttsVoiceSetReply) {
+        m_ttsVoiceSetReply->disconnect(this);
+        m_ttsVoiceSetReply->abort();
+        m_ttsVoiceSetReply->deleteLater();
+        m_ttsVoiceSetReply = nullptr;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/ai-voice"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(30000);
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("tts_voice"), id);
+    json.insert(QStringLiteral("preview"), true);
+
+    qWarning() << "[VOICE-NET] POST ai-voice" << id;
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    m_ttsVoiceSetReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (m_ttsVoiceSetReply != reply)
+            return;
+        m_ttsVoiceSetReply = nullptr;
+
+        const QByteArray body = reply->readAll();
+        const QJsonObject root = QJsonDocument::fromJson(body).object();
+        if (reply->error() != QNetworkReply::NoError
+                && root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            qWarning() << "[VOICE-NET] set voice failed" << reply->errorString();
+            return;
+        }
+        applyTtsVoicesFromJson(root);
+
+        const QByteArray audioBytes = QByteArray::fromBase64(
+            root.value(QStringLiteral("audio_base64")).toString().toUtf8());
+        if (!audioBytes.isEmpty()) {
+            emit ttsPreviewSucceeded(
+                audioBytes,
+                root.value(QStringLiteral("audio_mime")).toString(QStringLiteral("audio/mpeg")));
+        } else {
+            const QString previewErr = root.value(QStringLiteral("preview_error")).toString();
+            if (!previewErr.isEmpty())
+                qWarning() << "[VOICE-NET] voice preview:" << previewErr;
+        }
     });
 }

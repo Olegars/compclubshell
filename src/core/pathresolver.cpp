@@ -271,8 +271,10 @@ void PathResolver::resolveDataRoot()
         } else {
             m_cacheOk = false;
             tryUsePath(QStringLiteral("C:/ShellVideo"), true);
-            qWarning() << "[STORAGE] persistent SSD недоступен, fallback"
-                       << m_dataRoot << "(cache_ok=false)";
+            if (wasOk || wasRoot != m_dataRoot) {
+                qWarning() << "[STORAGE] persistent SSD недоступен, fallback"
+                           << m_dataRoot << "(cache_ok=false)";
+            }
         }
     }
 

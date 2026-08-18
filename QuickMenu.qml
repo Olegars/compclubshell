@@ -9,7 +9,8 @@ import sector0451
 // WindowDoesNotAcceptFocus + NOACTIVATE: клик/наведение не сворачивают игру.
 Window {
     id: quickMenu
-    title: "REACTOR Quick"
+    title: ((typeof NetworkManager !== "undefined" && NetworkManager.clubName)
+            ? NetworkManager.clubName : "Клуб") + " Quick"
     visible: false
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint

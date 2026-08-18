@@ -14,7 +14,7 @@ Window {
     width: 1920
     height: 1080
     visible: true
-    title: "REACTOR SHELL Sector 0451"
+    title: clubName + " SHELL"
     color: "#020202"
     flags: Qt.Window | Qt.FramelessWindowHint
     visibility: Window.FullScreen
@@ -25,6 +25,8 @@ Window {
     property string sessionTime: "00:00:00"
     property alias authScreen: screenSwitcher
     property string temporaryPausePin: "----"
+    property string clubName: (typeof NetworkManager !== "undefined" && NetworkManager.clubName)
+                              ? NetworkManager.clubName : "Клуб"
     property string pcTypeFromDatabase: (typeof NetworkManager !== "undefined" && NetworkManager.zoneSlug)
                                         ? NetworkManager.zoneSlug : "singl"
     property string zoneNameFromDatabase: (typeof NetworkManager !== "undefined")
@@ -569,6 +571,7 @@ Window {
     }
 
     function closeSetupScreen() {
+        root.isHardwareAdmin = false
         setupScreenLoader.source = ""
         if (!screenSwitcher.sourceComponent)
             screenSwitcher.sourceComponent = loginScreenComponent
@@ -591,6 +594,12 @@ Window {
         id: setupScreenLoader
         anchors.fill: parent
         z: 100
+
+        Connections {
+            target: setupScreenLoader.item
+            ignoreUnknownSignals: true
+            function onRequestClose() { root.closeSetupScreen() }
+        }
     }
 
     Loader {
@@ -727,14 +736,8 @@ Window {
             Rectangle {
                 anchors.fill: parent
                 color: "#020202"
-                Image {
+                AvatarWatermarkBg {
                     anchors.fill: parent
-                    source: Qt.resolvedUrl("images/hex_bg.png")
-                    fillMode: Image.Tile
-                    opacity: 0.35
-                    asynchronous: true
-                    onStatusChanged: if (status === Image.Error)
-                        console.warn("[BG] hex_bg load failed:", source)
                 }
                 // Без MultiEffect/layer: полноэкранный blur на первом кадре логина
                 // стабильно подвешивал ввод телефона на несколько секунд.

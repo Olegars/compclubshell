@@ -4,15 +4,17 @@ import QtQuick.Window
 // Маленький красный индикатор hold-to-talk (отдельный topmost HWND).
 Window {
     id: voiceIndicator
-    title: "REACTOR Voice"
+    title: ((typeof NetworkManager !== "undefined" && NetworkManager.clubName)
+            ? NetworkManager.clubName : "Клуб") + " Voice"
     visible: false
     color: "transparent"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
     transientParent: null
-    width: 22
-    height: 22
+    width: (voiceState === "error" && lastError.length > 0) ? 460 : 22
+    height: (voiceState === "error" && lastError.length > 0) ? 44 : 22
 
     property string voiceState: "idle"
+    property string lastError: ""
 
     readonly property color solidRed: "#e11d48"
     readonly property color dimRed: "#9f1239"
@@ -41,6 +43,7 @@ Window {
         if (typeof VoiceAssistant === "undefined" || !VoiceAssistant)
             return
         voiceState = VoiceAssistant.state || "idle"
+        lastError = VoiceAssistant.lastError || ""
         const show = voiceState === "listening"
                   || voiceState === "thinking"
                   || voiceState === "speaking"
@@ -68,6 +71,7 @@ Window {
     Connections {
         target: typeof VoiceAssistant !== "undefined" ? VoiceAssistant : null
         function onStateChanged() { voiceIndicator.syncFromAssistant() }
+        function onLastErrorChanged() { voiceIndicator.syncFromAssistant() }
     }
 
     Timer {
@@ -78,8 +82,31 @@ Window {
     }
 
     Rectangle {
-        id: dot
+        id: banner
         anchors.fill: parent
+        radius: height / 2
+        color: voiceIndicator.voiceState === "error" ? "#7c2d12" : "transparent"
+        visible: voiceIndicator.voiceState === "error" && voiceIndicator.lastError.length > 0
+
+        Text {
+            anchors.fill: parent
+            anchors.leftMargin: 30
+            anchors.rightMargin: 12
+            verticalAlignment: Text.AlignVCenter
+            color: "#fed7aa"
+            font.pixelSize: 12
+            font.bold: true
+            elide: Text.ElideRight
+            text: voiceIndicator.lastError
+        }
+    }
+
+    Rectangle {
+        id: dot
+        width: 22
+        height: 22
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
         radius: width / 2
         color: voiceIndicator.voiceState === "error" ? "#f59e0b"
              : (voiceIndicator.voiceState === "speaking" ? voiceIndicator.dimRed
@@ -94,6 +121,9 @@ Window {
             NumberAnimation { target: dot; property: "opacity"; to: 1.0; duration: 420 }
         }
     }
+
+    onWidthChanged: if (visible) placeBottomRight()
+    onHeightChanged: if (visible) placeBottomRight()
 
     Component.onCompleted: syncFromAssistant()
 }

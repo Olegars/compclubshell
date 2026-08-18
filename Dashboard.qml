@@ -17,6 +17,8 @@ Item {
     property string lastLogin: ""
     property string lastId: ""
     property string lastPersonaName: ""
+    property string clubName: (typeof NetworkManager !== "undefined" && NetworkManager.clubName)
+                              ? NetworkManager.clubName : "Клуб"
 
     // Данные текущей сессии пользователя
     property string userName: (typeof root !== 'undefined') ? root.sessionUser : "PLAYER_1"
@@ -80,6 +82,18 @@ Item {
     readonly property color accentColor: Theme.accent
     readonly property color darkBg: Theme.bgDeep
     property string currentLanguage: "RU"
+
+    readonly property string ttsVoiceLabel: {
+        if (typeof NetworkManager === "undefined")
+            return "—"
+        var id = String(NetworkManager.ttsVoice || "")
+        var list = NetworkManager.ttsVoices || []
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].id) === id)
+                return String(list[i].label || id)
+        }
+        return id.length ? id : "—"
+    }
 
     // Выбор личного / клубного аккаунта перед запуском любой игры
     property int pendingGameId: 0
@@ -513,6 +527,7 @@ Item {
         if (typeof NetworkManager !== 'undefined') {
             NetworkManager.fetchProducts()
             NetworkManager.startClimateControl()
+            NetworkManager.fetchTtsVoices()
             climateControl.syncFromNetwork()
             // Логин успел положить чек до загрузки Dashboard.
             if (NetworkManager.pendingReceiptUrl && NetworkManager.pendingReceiptUrl.length > 0)
@@ -825,15 +840,8 @@ Item {
         id: bgContainer
         anchors.fill: parent
         color: "#020202"
-        Image {
+        AvatarWatermarkBg {
             anchors.fill: parent
-            source: Qt.resolvedUrl("images/hex_bg.png")
-            fillMode: Image.Tile
-            opacity: 0.35
-            horizontalAlignment: Image.AlignHCenter
-            verticalAlignment: Image.AlignVCenter
-            onStatusChanged: if (status === Image.Error)
-                console.warn("[BG] hex_bg load failed:", source)
         }
         RadialGradient {
             anchors.fill: parent
@@ -1278,6 +1286,14 @@ Item {
                                                 font.family: "Monospace"
                                                 anchors.verticalCenter: parent.verticalCenter
                                             }
+                                            Text {
+                                                visible: typeof NetworkManager !== "undefined" && NetworkManager.ssdTempC > 0
+                                                text: "SSD " + NetworkManager.ssdTempC.toFixed(0) + "°"
+                                                color: NetworkManager.ssdTempC >= 70 ? Theme.warning : Theme.textMuted
+                                                font.pixelSize: 11
+                                                font.family: "Monospace"
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
                                         }
                                     }
 
@@ -1446,6 +1462,41 @@ Item {
                                 text: ok ? (t.toFixed(0) + "°C") : "—"
                                 color: !ok ? Theme.textMuted
                                      : (t >= 85 ? Theme.danger
+                                        : (t >= 70 ? Theme.warning : accentColor))
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                font.family: "Monospace"
+                                opacity: ok ? 0.9 : 0.5
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+
+                        Rectangle {
+                            width: 1
+                            height: 12
+                            color: accentColor
+                            opacity: 0.35
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Row {
+                            spacing: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                                text: "SSD"
+                                color: accentColor
+                                font.pixelSize: Theme.fontCaption
+                                font.bold: true
+                                opacity: 0.55
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                readonly property real t: (typeof NetworkManager !== "undefined")
+                                                          ? NetworkManager.ssdTempC : -1
+                                readonly property bool ok: t > 0
+                                text: ok ? (t.toFixed(0) + "°C") : "—"
+                                color: !ok ? Theme.textMuted
+                                     : (t >= 80 ? Theme.danger
                                         : (t >= 70 ? Theme.warning : accentColor))
                                 font.pixelSize: Theme.fontCaption
                                 font.bold: true
@@ -1904,6 +1955,49 @@ Item {
                     }
 
                     Item { height: 10; width: 1 }
+
+                    Rectangle {
+                        id: voicePickBox
+                        visible: typeof NetworkManager !== "undefined"
+                                 && NetworkManager.ttsEnabled
+                                 && NetworkManager.ttsVoices.length > 0
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: visible ? 40 : 0
+                        color: "#0a0f0b"
+                        border.color: voicePickMouse.containsMouse ? accentColor : "#162e1a"
+                        radius: 4
+                        Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 8
+                            Text { text: "🎙"; font.pixelSize: 13 }
+                            Text {
+                                text: "Голос ИИ"
+                                color: "#6b7280"
+                                font.pixelSize: 10
+                                font.bold: true
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: dashboardRoot.ttsVoiceLabel
+                                color: "white"
+                                font.pixelSize: 13
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                            Text { text: "▾"; color: "#9ca3af"; font.pixelSize: 12 }
+                        }
+                        MouseArea {
+                            id: voicePickMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: voicePickerPopup.open()
+                        }
+                    }
 
                     Rectangle {
                         id: volumeLangBox
@@ -2432,6 +2526,78 @@ Item {
     }
 
     Popup {
+        id: voicePickerPopup
+        width: 420
+        height: 360
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            color: Theme.bgPanel
+            radius: Theme.radiusSm
+            border.width: 1
+            border.color: dashboardRoot.accentColor
+        }
+        contentItem: Column {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 14
+
+            Text {
+                text: "Голос ИИ"
+                color: "white"
+                font.pixelSize: 16
+                font.bold: true
+            }
+            Text {
+                text: "Слышно в наушниках. Запоминается в вашем профиле."
+                color: "#9ca3af"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                width: parent.width
+            }
+
+            Flow {
+                width: parent.width
+                spacing: 8
+                Repeater {
+                    model: (typeof NetworkManager !== "undefined") ? NetworkManager.ttsVoices : []
+                    delegate: Rectangle {
+                        width: 124
+                        height: 36
+                        radius: 4
+                        color: String(modelData.id) === String(typeof NetworkManager !== "undefined" ? NetworkManager.ttsVoice : "")
+                               ? Qt.rgba(dashboardRoot.accentColor.r, dashboardRoot.accentColor.g, dashboardRoot.accentColor.b, 0.25)
+                               : "#111"
+                        border.width: 1
+                        border.color: String(modelData.id) === String(typeof NetworkManager !== "undefined" ? NetworkManager.ttsVoice : "")
+                                      ? dashboardRoot.accentColor
+                                      : "#333"
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.label
+                            color: "white"
+                            font.pixelSize: 13
+                            font.bold: true
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.setTtsVoice(modelData.id)
+                                voicePickerPopup.close()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Popup {
         id: storePopup
         width: 1500
         height: 880
@@ -2456,7 +2622,7 @@ Item {
 
                 Column {
                     Text {
-                        text: "REACTOR MARKET"
+                        text: clubName + " MARKET"
                         color: Theme.shop
                         font.pixelSize: 36
                         font.bold: true
@@ -4328,7 +4494,7 @@ Item {
                     spacing: 3
 
                     Text {
-                        text: "REACTOR PAY"
+                        text: clubName + " PAY"
                         color: accentColor
                         font.pixelSize: 10
                         font.bold: true

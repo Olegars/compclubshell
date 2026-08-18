@@ -47,8 +47,19 @@ qt_add_qml_module(appsector0451
         LoadingOverlay.qml
         QuickMenu.qml
         VoiceIndicator.qml
+        AvatarWatermarkBg.qml
     RESOURCES
         images/hex_bg.png
+        images/avatars/avatar_1.png
+        images/avatars/avatar_2.png
+        images/avatars/avatar_3.png
+        images/avatars/avatar_4.png
+        images/avatars/avatar_5.png
+        images/avatars/avatar_6.png
+        images/avatars/avatar_7.png
+        images/avatars/avatar_8.png
+        images/avatars/avatar_9.png
+        images/avatars/avatar_10.png
         fonts/bomber.otf
         images/launchers/steam.png
         images/launchers/epic.png

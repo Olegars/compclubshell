@@ -25,11 +25,33 @@ Rectangle {
     property int selectedPort: 30000
     property string selectedLabel: ""
 
-    Image {
+    readonly property var occupiedFans: {
+        var seen = ({})
+        var out = []
+        var boards = (typeof NetworkManager !== "undefined") ? NetworkManager.fanDiscoverBoards : []
+        for (var i = 0; i < boards.length; ++i) {
+            var board = boards[i]
+            var pairs = board.pairs || []
+            for (var j = 0; j < pairs.length; ++j) {
+                var p = pairs[j]
+                var id = Number(p.fan_id || 0)
+                if (id <= 0 || seen[id])
+                    continue
+                seen[id] = true
+                out.push({
+                    fan_id: id,
+                    label: p.label || "",
+                    host: board.host || "",
+                    status: p.status || "",
+                    space_name: p.space_name || ""
+                })
+            }
+        }
+        return out
+    }
+
+    AvatarWatermarkBg {
         anchors.fill: parent
-        source: Qt.resolvedUrl("images/hex_bg.png")
-        fillMode: Image.Tile
-        opacity: 0.3
     }
 
     Component.onCompleted: {
@@ -55,9 +77,12 @@ Rectangle {
         }
     }
 
+    signal requestClose()
+
     function closeSetup() {
+        requestClose()
         var win = Window.window
-        if (win && typeof win.closeSetupScreen === "function")
+        if (win)
             win.closeSetupScreen()
     }
 
@@ -106,26 +131,30 @@ Rectangle {
                 width: parent.width
                 Text {
                     Layout.fillWidth: true
-                    text: "REACTOR CONTROL"
+                    text: ((typeof NetworkManager !== "undefined" && NetworkManager.clubName)
+                           ? NetworkManager.clubName : "Клуб") + " CONTROL"
                     color: Theme.accent
                     font.pixelSize: 28
                     font.bold: true
                     font.letterSpacing: 2
                 }
                 Button {
-                    text: "НАЗАД"
+                    text: "ВЫХОД"
+                    implicitWidth: 120
+                    implicitHeight: 40
                     onClicked: setupRoot.closeSetup()
                     contentItem: Text {
                         text: parent.text
-                        color: Theme.textMuted
-                        font.pixelSize: 12
+                        color: Theme.accent
+                        font.pixelSize: 13
                         font.bold: true
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                     }
                     background: Rectangle {
-                        color: "#111"
-                        border.color: "#333"
+                        color: Theme.accentPanel
+                        border.color: Theme.accent
+                        border.width: 1
                         radius: 4
                     }
                 }
@@ -447,7 +476,7 @@ Rectangle {
                     Text {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: "ТЕСТ пульсирует 100% ~2.5с. Услышали свой — ПРИВЯЗАТЬ. В комнате до "
+                        text: "ТЕСТ пульсирует 100% ~2.5с. Услышали свой — ПРИВЯЗАТЬ. Комната берётся из зоны регистрации. В комнате до "
                               + NetworkManager.fanDiscoverSlotsMax + " вентиляторов."
                         color: Theme.textMuted
                         font.pixelSize: 11
@@ -538,16 +567,16 @@ Rectangle {
                     Column {
                         width: parent.width
                         spacing: 6
-                        visible: NetworkManager.fanDiscoverBound.length > 0
+                        visible: setupRoot.occupiedFans.length > 0
                         Text {
-                            text: "ПРИВЯЗАНО (" + NetworkManager.fanDiscoverSlotsUsed
+                            text: "ПРИВЯЗАНО (" + setupRoot.occupiedFans.length
                                   + "/" + NetworkManager.fanDiscoverSlotsMax + ")"
                             color: Theme.success
                             font.pixelSize: 11
                             font.bold: true
                         }
                         Repeater {
-                            model: NetworkManager.fanDiscoverBound
+                            model: setupRoot.occupiedFans
                             delegate: RowLayout {
                                 width: parent.width
                                 required property var modelData
@@ -555,6 +584,8 @@ Rectangle {
                                     Layout.fillWidth: true
                                     text: "#" + modelData.fan_id + " · " + modelData.label
                                           + " · " + modelData.host
+                                          + (modelData.status === "taken" && modelData.space_name
+                                             ? (" · " + modelData.space_name) : "")
                                     color: Theme.textPrimary
                                     font.pixelSize: 11
                                     font.family: "Monospace"
@@ -668,6 +699,28 @@ Rectangle {
                         width: parent.width
                         wrapMode: Text.WordWrap
                     }
+                }
+            }
+
+            Button {
+                width: parent.width
+                height: 52
+                text: "ВЫХОД ИЗ SETUP"
+                onClicked: setupRoot.closeSetup()
+                contentItem: Text {
+                    text: parent.text
+                    color: Theme.accent
+                    font.pixelSize: 15
+                    font.bold: true
+                    font.letterSpacing: 1.2
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    color: Theme.accentPanel
+                    border.color: Theme.accent
+                    border.width: 1
+                    radius: 6
                 }
             }
 
