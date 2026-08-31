@@ -3,6 +3,7 @@
 #include "pathresolver.h"
 #include "thermalmonitor.h"
 #include "fanrelaycontroller.h"
+#include "dmxcontroller.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
 #include <QCoreApplication>
@@ -44,6 +45,7 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
     , m_rootQml(nullptr)
 {
     m_networkManager = new QNetworkAccessManager(this);
+    m_dmx = new DmxController(this);
 
     QString pathCurrent = QCoreApplication::applicationDirPath() + "/config.ini";
     QString pathUp = QCoreApplication::applicationDirPath() + "/../config.ini";
@@ -414,10 +416,12 @@ void NetworkManager::logoutTerminal(int terminalId) {
 
                 const QJsonObject fanObj = responseJson.value(QStringLiteral("fan")).toObject();
                 applyFanStateFromJson(fanObj);
+                applyLightStateFromJson(responseJson.value(QStringLiteral("light")).toObject());
                 const QJsonObject facts = fanObj.value(QStringLiteral("facts")).toObject();
                 const int sessionsLeft = facts.value(QStringLiteral("sessions_in_space")).toInt(
                     facts.value(QStringLiteral("session")).toBool(false) ? 1 : 0);
                 // Last session in room → night + clear force_on on cloud via auto.
+                // Lights stay on (lobby white) while PCs are still powered.
                 if (sessionsLeft <= 0) {
                     m_postBootCooldown = false;
                     m_userSessionActive = false;
@@ -915,6 +919,12 @@ void NetworkManager::applyOrderStatusFromJson(const QJsonObject &rootObj)
     if (!statusText.isEmpty())
         m_rootQml->setProperty("orderStatusText", statusText.toUpper());
 
+    const bool hasScheduledOrder = rootObj.value(QStringLiteral("has_scheduled_order")).toBool();
+    m_rootQml->setProperty("hasScheduledOrder", hasScheduledOrder);
+    const QString scheduledSummary = rootObj.value(QStringLiteral("scheduled_summary")).toString();
+    if (!scheduledSummary.isEmpty() || !hasScheduledOrder)
+        m_rootQml->setProperty("scheduledOrderSummary", scheduledSummary);
+
     const int orderId = rootObj.value(QStringLiteral("order_id")).toInt(
         rootObj.value(QStringLiteral("order_id")).toVariant().toInt());
     if (orderId > 0)
@@ -1091,6 +1101,43 @@ void NetworkManager::checkOrderStatus(int terminalId, int orderId)
     });
 }
 
+void NetworkManager::releaseScheduledOrder(int terminalId)
+{
+    if (m_serverUrl.isEmpty()) {
+        qWarning() << "[SHOP] releaseScheduledOrder skipped: empty serverUrl";
+        return;
+    }
+
+    const int tid = resolveTerminalId(terminalId);
+    if (tid <= 0) {
+        qWarning() << "[SHOP] releaseScheduledOrder skipped: no terminalId";
+        return;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/store/release-scheduled"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), tid);
+
+    qDebug() << "[SHOP] release scheduled →" << url.toString() << "pc" << tid;
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[SHOP] release scheduled error:" << reply->errorString()
+                       << reply->readAll();
+            return;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (!doc.isObject())
+            return;
+        applyOrderStatusFromJson(doc.object());
+    });
+}
+
 void NetworkManager::login(const QString &phone, const QString &pin, int terminalId)
 {
     if (m_serverUrl.isEmpty()) {
@@ -1161,6 +1208,7 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             applyClubName(response.value(QStringLiteral("club_name")).toString());
             const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
             startSessionFans(fanObj);
+            startSessionLights(response.value(QStringLiteral("light")).toObject());
 
             const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
             const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
@@ -1210,6 +1258,7 @@ void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
     applyClubName(response.value(QStringLiteral("club_name")).toString());
 
     startSessionFans(response.value(QStringLiteral("fan")).toObject());
+    startSessionLights(response.value(QStringLiteral("light")).toObject());
 
     const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
     const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
@@ -1897,6 +1946,7 @@ void NetworkManager::sendPowerHeartbeat()
             root.value(QStringLiteral("power_desired")).toString(),
             root.value(QStringLiteral("power_action")).toString(),
             root.value(QStringLiteral("session_active")).toBool());
+        applyLightStateFromJson(root.value(QStringLiteral("light")).toObject());
     });
 }
 
@@ -1905,18 +1955,21 @@ void NetworkManager::notifyPowerOffline()
     ensureFanOffBeforeExit();
     stopPowerHeartbeat();
 
-    if (m_serverUrl.isEmpty())
+    if (m_serverUrl.isEmpty()) {
+        ensureLightOffBeforeExit();
         return;
+    }
 
     const int termId = resolveTerminalId(0);
-    if (termId <= 0 && m_hwid.isEmpty())
+    if (termId <= 0 && m_hwid.isEmpty()) {
+        ensureLightOffBeforeExit();
         return;
+    }
 
     QUrl url(m_serverUrl + QStringLiteral("/api/shell/power/offline"));
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
-    // Не зависать надолго при выходе
     request.setTransferTimeout(2000);
 
     QJsonObject json;
@@ -1939,10 +1992,18 @@ void NetworkManager::notifyPowerOffline()
     loop.exec();
 
     if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
-        qWarning() << "[POWER] offline ack:" << reply->readAll();
+        const QByteArray raw = reply->readAll();
+        qWarning() << "[POWER] offline ack:" << raw;
+        const QJsonObject root = QJsonDocument::fromJson(raw).object();
+        const QJsonObject lightObj = root.value(QStringLiteral("light")).toObject();
+        if (!lightObj.isEmpty())
+            applyLightStateFromJson(lightObj);
+        else
+            ensureLightOffBeforeExit();
     } else {
         qWarning() << "[POWER] offline notify failed:"
                    << (reply->isFinished() ? reply->errorString() : QStringLiteral("timeout"));
+        ensureLightOffBeforeExit();
     }
     reply->deleteLater();
 }
@@ -2411,10 +2472,12 @@ void NetworkManager::startClimateControl()
         connect(m_climateTimer, &QTimer::timeout, this, [this]() {
             reportThermalNow();
             fetchFanState();
+            fetchLightState();
         });
     }
 
     fetchFanState();
+    fetchLightState();
     reportThermalNow();
     m_climateTimer->start();
 }
@@ -2424,6 +2487,8 @@ void NetworkManager::stopClimateControl()
     m_climateActive = false;
     if (m_climateTimer)
         m_climateTimer->stop();
+    if (m_dmx)
+        m_dmx->stopRefresh();
 }
 
 void NetworkManager::fetchFanState()
@@ -2531,6 +2596,319 @@ void NetworkManager::setFan(const QString &action)
         applyFanStateFromJson(fanObj);
         m_forceRelayApply = false;
     });
+}
+
+void NetworkManager::startSessionLights(const QJsonObject &lightObj)
+{
+    if (!lightObj.isEmpty())
+        applyLightStateFromJson(lightObj);
+}
+
+void NetworkManager::setLightManualLockSec(int sec)
+{
+    if (sec < 0)
+        sec = 0;
+    if (m_lightManualLockSec == sec)
+        return;
+    m_lightManualLockSec = sec;
+    emit lightStateChanged();
+
+    if (!m_lightLockTimer) {
+        m_lightLockTimer = new QTimer(this);
+        m_lightLockTimer->setInterval(1000);
+        connect(m_lightLockTimer, &QTimer::timeout, this, [this]() {
+            if (m_lightManualLockSec <= 0) {
+                m_lightLockTimer->stop();
+                return;
+            }
+            --m_lightManualLockSec;
+            emit lightStateChanged();
+            if (m_lightManualLockSec <= 0)
+                m_lightLockTimer->stop();
+        });
+    }
+    if (m_lightManualLockSec > 0) {
+        if (!m_lightLockTimer->isActive())
+            m_lightLockTimer->start();
+    } else {
+        m_lightLockTimer->stop();
+    }
+}
+
+void NetworkManager::applyLightStateFromJson(const QJsonObject &lightObj)
+{
+    if (lightObj.isEmpty())
+        return;
+
+    const bool available = lightObj.value(QStringLiteral("available")).toBool(false);
+    const QString color = lightObj.value(QStringLiteral("color")).toString(m_lightColor);
+    const int brightness = lightObj.value(QStringLiteral("brightness")).toInt(m_lightBrightness);
+    const QString effect = lightObj.value(QStringLiteral("effect")).toString(m_lightEffect);
+    int lockSec = lightObj.value(QStringLiteral("manual_lock")).toObject()
+                            .value(QStringLiteral("remaining_sec")).toInt(0);
+    if (lockSec < 0 || lockSec > 120)
+        lockSec = 0;
+    m_lightRainbowPeriodMs = lightObj.value(QStringLiteral("rainbow_period_ms")).toInt(8000);
+    if (m_dmx)
+        m_dmx->setRainbowPeriodMs(m_lightRainbowPeriodMs);
+
+    QVector<DmxController::Node> nodes;
+    const QJsonArray nodesArr = lightObj.value(QStringLiteral("nodes")).toArray();
+    auto parseNode = [](const QJsonObject &nObj) {
+        DmxController::Node node;
+        node.host = nObj.value(QStringLiteral("host")).toString();
+        node.port = nObj.value(QStringLiteral("port")).toInt(6454);
+        node.universe = nObj.value(QStringLiteral("universe")).toInt(0);
+        const QJsonArray fxArr = nObj.value(QStringLiteral("fixtures")).toArray();
+        for (const QJsonValue &fv : fxArr) {
+            const QJsonObject f = fv.toObject();
+            DmxController::Fixture fx;
+            fx.start = f.value(QStringLiteral("start")).toInt(1);
+            fx.count = f.value(QStringLiteral("count")).toInt(1);
+            fx.layout = f.value(QStringLiteral("layout")).toString(QStringLiteral("rgb"));
+            fx.color = f.value(QStringLiteral("color")).toString(QStringLiteral("white"));
+            fx.brightness = f.value(QStringLiteral("brightness")).toInt(0);
+            fx.effect = f.value(QStringLiteral("effect")).toString(QStringLiteral("none"));
+            fx.r = f.value(QStringLiteral("r")).toInt(255);
+            fx.g = f.value(QStringLiteral("g")).toInt(255);
+            fx.b = f.value(QStringLiteral("b")).toInt(255);
+            if (fx.start >= 1)
+                node.fixtures.append(fx);
+        }
+        return node;
+    };
+
+    if (!nodesArr.isEmpty()) {
+        for (const QJsonValue &nv : nodesArr) {
+            DmxController::Node node = parseNode(nv.toObject());
+            if (!node.host.isEmpty())
+                nodes.append(node);
+        }
+    } else {
+        const QJsonObject nodeObj = lightObj.value(QStringLiteral("node")).toObject();
+        if (!nodeObj.isEmpty()) {
+            DmxController::Node node;
+            node.host = nodeObj.value(QStringLiteral("host")).toString();
+            node.port = nodeObj.value(QStringLiteral("port")).toInt(6454);
+            node.universe = nodeObj.value(QStringLiteral("universe")).toInt(0);
+            DmxController::Fixture fx;
+            fx.start = lightObj.value(QStringLiteral("start_channel")).toInt(1);
+            fx.count = lightObj.value(QStringLiteral("fixture_count")).toInt(1);
+            fx.layout = lightObj.value(QStringLiteral("layout")).toString(QStringLiteral("rgb"));
+            fx.color = color;
+            fx.brightness = brightness;
+            fx.effect = effect;
+            const QJsonObject rgb = lightObj.value(QStringLiteral("rgb")).toObject();
+            fx.r = rgb.value(QStringLiteral("r")).toInt(255);
+            fx.g = rgb.value(QStringLiteral("g")).toInt(255);
+            fx.b = rgb.value(QStringLiteral("b")).toInt(255);
+            node.fixtures.append(fx);
+            if (!node.host.isEmpty())
+                nodes.append(node);
+        }
+    }
+
+    if (m_dmx) {
+        const int fadeMs = lightObj.value(QStringLiteral("fade_ms")).toInt(0);
+        m_dmx->setNodes(nodes, fadeMs);
+    }
+
+    const bool changed = m_lightAvailable != available
+        || m_lightColor != color
+        || m_lightBrightness != brightness
+        || m_lightEffect != effect;
+    m_lightAvailable = available;
+    m_lightColor = color;
+    m_lightBrightness = std::clamp(brightness, 0, 100);
+    m_lightEffect = effect;
+    setLightManualLockSec(lockSec);
+    if (changed)
+        emit lightStateChanged();
+
+    if (!m_skipLightApply)
+        applyDesiredToDmx(false);
+}
+
+void NetworkManager::applyDesiredToDmx(bool force)
+{
+    if (!m_dmx || !m_dmx->hasNodes()) {
+        if (m_dmx)
+            m_dmx->stopRefresh();
+        return;
+    }
+    if (!m_lightAvailable && !force) {
+        m_dmx->stopRefresh();
+        return;
+    }
+
+    QString err;
+    const bool ok = m_dmx->sendOnce(&err);
+    if (ok)
+        m_dmx->startRefresh();
+    else
+        m_dmx->stopRefresh();
+
+    acknowledgeLightApplied(m_lightColor, m_lightBrightness,
+                             m_lightEffect.isEmpty() ? QStringLiteral("none") : m_lightEffect,
+                             ok ? QString() : err);
+}
+
+void NetworkManager::acknowledgeLightApplied(const QString &color, int brightness,
+                                              const QString &effect, const QString &error)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/light/applied"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(2000);
+
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("applied_color"), color);
+    json.insert(QStringLiteral("applied_brightness"), brightness);
+    json.insert(QStringLiteral("applied_effect"), effect);
+    if (!error.isEmpty())
+        json.insert(QStringLiteral("last_error"), error);
+
+    const bool sync = !m_climateActive;
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+
+    if (sync) {
+        QEventLoop loop;
+        QTimer killer;
+        killer.setSingleShot(true);
+        QObject::connect(&killer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        killer.start(2000);
+        loop.exec();
+        if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+            const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+            m_skipLightApply = true;
+            applyLightStateFromJson(root.value(QStringLiteral("light")).toObject());
+            m_skipLightApply = false;
+        }
+        reply->deleteLater();
+        return;
+    }
+
+    if (m_lightAckInFlight) {
+        reply->abort();
+        reply->deleteLater();
+        return;
+    }
+    m_lightAckInFlight = true;
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_lightAckInFlight = false;
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        m_skipLightApply = true;
+        applyLightStateFromJson(root.value(QStringLiteral("light")).toObject());
+        m_skipLightApply = false;
+    });
+}
+
+void NetworkManager::fetchLightState()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/light"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("terminal_id"), QString::number(termId));
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success"))
+            return;
+        applyLightStateFromJson(root.value(QStringLiteral("light")).toObject());
+    });
+}
+
+void NetworkManager::postLightScene(const QJsonObject &body)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || m_lightRequestInFlight)
+        return;
+
+    m_lightRequestInFlight = true;
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/light"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject json = body;
+    json.insert(QStringLiteral("terminal_id"), termId);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_lightRequestInFlight = false;
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonObject lightObj = root.value(QStringLiteral("light")).toObject();
+        const bool locked = root.value(QStringLiteral("status")).toString() == QLatin1String("locked")
+            || httpStatus == 423;
+        if (locked)
+            m_skipLightApply = true;
+        applyLightStateFromJson(lightObj);
+        m_skipLightApply = false;
+        if (!locked)
+            applyDesiredToDmx(true);
+    });
+}
+
+void NetworkManager::setLightColor(const QString &color)
+{
+    const QString c = color.trimmed().toLower();
+    if (c.isEmpty())
+        return;
+    QJsonObject body;
+    body.insert(QStringLiteral("color"), c);
+    if (c == QLatin1String("rainbow"))
+        body.insert(QStringLiteral("effect"), QStringLiteral("rainbow"));
+    else
+        body.insert(QStringLiteral("effect"), QStringLiteral("none"));
+    if (m_lightBrightness <= 0)
+        body.insert(QStringLiteral("brightness"), 80);
+    postLightScene(body);
+}
+
+void NetworkManager::setLightBrightness(int brightness)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("brightness"), std::clamp(brightness, 0, 100));
+    postLightScene(body);
+}
+
+void NetworkManager::ensureLightOffBeforeExit()
+{
+    if (!m_dmx || !m_dmx->hasNodes())
+        return;
+
+    m_lightBrightness = 0;
+    m_lightEffect = QStringLiteral("none");
+    emit lightStateChanged();
+    m_dmx->stopRefresh();
+    QString err;
+    m_dmx->sendOnce(&err);
+    acknowledgeLightApplied(m_lightColor, 0, QStringLiteral("none"), err);
 }
 
 void NetworkManager::fetchFanDiscover()

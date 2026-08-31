@@ -23,6 +23,7 @@ qt_add_executable(appsector0451
     src/core/networkmanager.h src/core/networkmanager.cpp
     src/core/thermalmonitor.h src/core/thermalmonitor.cpp
     src/core/fanrelaycontroller.h src/core/fanrelaycontroller.cpp
+    src/core/dmxcontroller.h src/core/dmxcontroller.cpp
     src/core/sessionalertmanager.h src/core/sessionalertmanager.cpp
     src/core/hidinputmonitor.h src/core/hidinputmonitor.cpp
     src/core/voicehotkeymonitor.h src/core/voicehotkeymonitor.cpp

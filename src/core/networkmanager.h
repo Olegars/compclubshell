@@ -16,6 +16,7 @@
 
 class GameModel;
 class StoreModel;
+class DmxController;
 
 struct FanRelayEndpoint {
     QString host;
@@ -52,6 +53,11 @@ class NetworkManager : public QObject
     Q_PROPERTY(bool fanDiscoverBusy READ fanDiscoverBusy NOTIFY fanDiscoverChanged)
     Q_PROPERTY(int fanDiscoverSlotsUsed READ fanDiscoverSlotsUsed NOTIFY fanDiscoverChanged)
     Q_PROPERTY(int fanDiscoverSlotsMax READ fanDiscoverSlotsMax NOTIFY fanDiscoverChanged)
+    Q_PROPERTY(bool lightAvailable READ lightAvailable NOTIFY lightStateChanged)
+    Q_PROPERTY(QString lightColor READ lightColor NOTIFY lightStateChanged)
+    Q_PROPERTY(int lightBrightness READ lightBrightness NOTIFY lightStateChanged)
+    Q_PROPERTY(QString lightEffect READ lightEffect NOTIFY lightStateChanged)
+    Q_PROPERTY(int lightManualLockSec READ lightManualLockSec NOTIFY lightStateChanged)
     Q_PROPERTY(double cpuTempC READ cpuTempC NOTIFY cpuTempChanged)
     Q_PROPERTY(double ssdTempC READ ssdTempC NOTIFY ssdTempChanged)
     Q_PROPERTY(QString zoneName READ zoneName NOTIFY zoneInfoChanged)
@@ -98,6 +104,11 @@ public:
     bool fanDiscoverBusy() const { return m_fanDiscoverBusy || m_fanTestInFlight; }
     int fanDiscoverSlotsUsed() const { return m_fanDiscoverSlotsUsed; }
     int fanDiscoverSlotsMax() const { return m_fanDiscoverSlotsMax; }
+    bool lightAvailable() const { return m_lightAvailable; }
+    QString lightColor() const { return m_lightColor; }
+    int lightBrightness() const { return m_lightBrightness; }
+    QString lightEffect() const { return m_lightEffect; }
+    int lightManualLockSec() const { return m_lightManualLockSec; }
     double cpuTempC() const { return m_cpuTempC; }
     double ssdTempC() const { return m_ssdTempC; }
     QString zoneName() const { return m_zoneName; }
@@ -133,6 +144,8 @@ public:
     Q_INVOKABLE void fetchProducts();
     /** Poll shell order status for terminal (and optional order_id). Updates hasActiveOrder on Main.qml. */
     Q_INVOKABLE void checkOrderStatus(int terminalId = 0, int orderId = 0);
+    /** Guest arrived early: release pre-session shop order into the admin queue. */
+    Q_INVOKABLE void releaseScheduledOrder(int terminalId = 0);
     Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
     /** QR login challenge for the login screen (poll until consumed). */
     Q_INVOKABLE void requestQrChallenge(int terminalId = 0);
@@ -163,6 +176,9 @@ public:
     Q_INVOKABLE void unbindFan(int fanId);
     /** Pulse high ~2.5s then night on LAN W5100 (path-port). */
     Q_INVOKABLE void testFanPair(const QString &host, int modulePort, int channel, int channel2);
+    Q_INVOKABLE void fetchLightState();
+    Q_INVOKABLE void setLightColor(const QString &color);
+    Q_INVOKABLE void setLightBrightness(int brightness);
     /** Heartbeat питания: last_seen + MAC → power_desired / session_active. */
     Q_INVOKABLE void startPowerHeartbeat();
     Q_INVOKABLE void stopPowerHeartbeat();
@@ -172,6 +188,8 @@ public:
     Q_INVOKABLE void notifyPowerOffline();
     /** Синхронно погасить вентилятор и заактить состояние (logout / shutdown). */
     Q_INVOKABLE void ensureFanOffBeforeExit();
+    /** Погасить свет комнаты, если это последняя сессия. */
+    Q_INVOKABLE void ensureLightOffBeforeExit();
     /** Clear games catalog search filter (TextField cleared via Launcher signal). */
     void clearGamesSearch();
 
@@ -217,6 +235,7 @@ signals:
     void fanDiscoverChanged();
     void fanBindFinished(bool ok, const QString &message);
     void fanTestFinished(bool ok, const QString &message);
+    void lightStateChanged();
     void cpuTempChanged();
     void ssdTempChanged();
     void zoneInfoChanged();
@@ -246,6 +265,13 @@ private:
     void applyFanStateFromJson(const QJsonObject &fanObj);
     void applyTtsVoicesFromJson(const QJsonObject &root);
     void startSessionFans(const QJsonObject &fanObj);
+    void startSessionLights(const QJsonObject &lightObj);
+    void applyLightStateFromJson(const QJsonObject &lightObj);
+    void applyDesiredToDmx(bool force);
+    void acknowledgeLightApplied(const QString &color, int brightness, const QString &effect,
+                                  const QString &error);
+    void postLightScene(const QJsonObject &body);
+    void setLightManualLockSec(int sec);
     void postThermal(double cpuC, double ssdC);
     void acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source);
     int computeLocalDesiredPower(const QJsonObject &fanObj) const;
@@ -310,6 +336,17 @@ private:
     bool m_fanTestInFlight = false;
     int m_fanDiscoverSlotsUsed = 0;
     int m_fanDiscoverSlotsMax = 2;
+    bool m_lightAvailable = false;
+    QString m_lightColor = QStringLiteral("white");
+    int m_lightBrightness = 0;
+    QString m_lightEffect = QStringLiteral("none");
+    int m_lightManualLockSec = 0;
+    int m_lightRainbowPeriodMs = 8000;
+    bool m_lightRequestInFlight = false;
+    bool m_lightAckInFlight = false;
+    bool m_skipLightApply = false;
+    QTimer *m_lightLockTimer = nullptr;
+    DmxController *m_dmx = nullptr;
     double m_cpuTempC = -1.0;
     double m_ssdTempC = -1.0;
     QString m_zoneName;

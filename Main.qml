@@ -35,6 +35,8 @@ Window {
     property bool isHardwareAdmin: false
 
     property bool hasActiveOrder: false
+    property bool hasScheduledOrder: false
+    property string scheduledOrderSummary: ""
     property string orderStatusText: "В РАБОТЕ"
     property string orderStatusCode: ""
     property var orderItems: []
@@ -232,6 +234,8 @@ Window {
                     SessionAlert.reset()
                 root.sessionTime = "00:00:00"
                 root.hasActiveOrder = false
+                root.hasScheduledOrder = false
+                root.scheduledOrderSummary = ""
                 root.trackedOrderId = 0
                 root.orderStatusText = "В РАБОТЕ"
                 root.orderStatusCode = ""
@@ -410,7 +414,7 @@ Window {
     // Poll shop order status while session is active (faster while order is open)
     Timer {
         id: orderStatusPollTimer
-        interval: root.hasActiveOrder ? 5000 : 25000
+        interval: root.hasActiveOrder ? 5000 : (root.hasScheduledOrder ? 8000 : 25000)
         running: root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.sessionUser !== "PAUSE"
                  && root.terminalId > 0
         repeat: true
@@ -418,7 +422,7 @@ Window {
         onTriggered: {
             if (typeof NetworkManager === "undefined")
                 return
-            if (root.hasActiveOrder || root.trackedOrderId > 0)
+            if (root.hasActiveOrder || root.trackedOrderId > 0 || root.hasScheduledOrder)
                 NetworkManager.checkOrderStatus(root.terminalId, root.trackedOrderId)
             else
                 NetworkManager.fetchProducts()

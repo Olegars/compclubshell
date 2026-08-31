@@ -860,6 +860,16 @@ Item {
         && !Launcher.shellHiddenForGame
         && !(typeof root !== "undefined" && root !== null && root.gameLoadingVisible)
 
+    readonly property bool showScheduledOrderBanner: typeof root !== "undefined" && root !== null
+        && root.hasScheduledOrder
+
+    readonly property int topBannerOffset: {
+        var n = 0
+        if (dashboardRoot.showReturnToGame)
+            n += 44
+        return n
+    }
+
     Rectangle {
         id: returnToGameBanner
         anchors.top: parent.top
@@ -937,6 +947,78 @@ Item {
         }
     }
 
+    Rectangle {
+        id: scheduledOrderBanner
+        width: 280
+        height: scheduledBannerCol.implicitHeight + 24
+        x: parent.width - width - 16
+        radius: 6
+        z: 248
+        y: dashboardRoot.showScheduledOrderBanner
+           ? (dashboardRoot.showReturnToGame ? 84 : 16)
+           : -(height + 24)
+        visible: y > -(height + 8)
+        color: "#120a05"
+        border.color: Theme.shop
+        border.width: 1
+
+        Behavior on y { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+
+        Column {
+            id: scheduledBannerCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 12
+            spacing: 10
+
+            Text {
+                text: "ЗАКАЗ К СЕССИИ"
+                color: Theme.shop
+                font.pixelSize: Theme.fontCaption
+                font.bold: true
+                font.letterSpacing: 1.5
+                opacity: 0.8
+            }
+            Text {
+                width: parent.width
+                text: (typeof root !== "undefined" && root.scheduledOrderSummary)
+                      ? root.scheduledOrderSummary
+                      : "Доставка к вашему ПК"
+                color: Theme.textBody
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+            Rectangle {
+                width: parent.width
+                height: 36
+                radius: 4
+                color: bringOrderMouse.containsMouse ? Theme.shop : "#1a1408"
+                border.color: Theme.shop
+                border.width: 1
+                Text {
+                    id: bringOrderLabel
+                    anchors.centerIn: parent
+                    text: "Я НА МЕСТЕ — НЕСИТЕ ЗАКАЗ"
+                    color: bringOrderMouse.containsMouse ? "#030704" : Theme.shop
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.letterSpacing: 0.4
+                }
+                MouseArea {
+                    id: bringOrderMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (typeof NetworkManager !== "undefined")
+                            NetworkManager.releaseScheduledOrder(parseInt(dashboardRoot.termId) || 0)
+                    }
+                }
+            }
+        }
+    }
+
     // Active shop order contents — compact neon panel, top-right
     readonly property bool showOrderContents: typeof root !== "undefined" && root !== null
         && root.hasActiveOrder
@@ -950,7 +1032,8 @@ Item {
         id: orderContentsPanel
         anchors.top: parent.top
         anchors.right: parent.right
-        anchors.topMargin: dashboardRoot.showReturnToGame ? 84 : 20
+        anchors.topMargin: 20 + dashboardRoot.topBannerOffset
+                           + (dashboardRoot.showScheduledOrderBanner ? scheduledOrderBanner.height + 12 : 0)
         anchors.rightMargin: 20
         z: 240
         width: Math.min(280, parent.width * 0.22)
@@ -1054,7 +1137,7 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.margins: 40
-        anchors.topMargin: dashboardRoot.showReturnToGame ? 84 : 40
+        anchors.topMargin: 40 + dashboardRoot.topBannerOffset
         spacing: 40
 
         Rectangle {
@@ -1407,6 +1490,192 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: sosReasonPopup.open()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        id: lightBox
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 76
+                        color: "#0a0f0b"
+                        border.color: (typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable)
+                                      ? Qt.rgba(0.13, 0.77, 0.36, 0.4)
+                                      : Qt.rgba(0.13, 0.77, 0.36, 0.18)
+                        border.width: 1
+                        radius: 4
+                        opacity: (typeof NetworkManager !== "undefined"
+                                  && NetworkManager.lightAvailable
+                                  && NetworkManager.lightManualLockSec <= 0) ? 1 : 0.45
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            anchors.topMargin: 5
+                            anchors.bottomMargin: 5
+                            spacing: 4
+
+                            Text {
+                                text: "ОСВЕЩЕНИЕ"
+                                color: accentColor
+                                font.pixelSize: 9
+                                font.bold: true
+                                font.letterSpacing: 1.4
+                                opacity: 0.7
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Repeater {
+                                    model: [
+                                        { key: "white", color: "#f8fafc" },
+                                        { key: "red", color: "#ef4444" },
+                                        { key: "blue", color: "#3b82f6" },
+                                        { key: "green", color: "#22c55e" },
+                                        { key: "yellow", color: "#eab308" },
+                                        { key: "purple", color: "#a855f7" },
+                                        { key: "rainbow", color: "" }
+                                    ]
+                                    delegate: Item {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 22
+                                        readonly property bool selected: {
+                                            if (typeof NetworkManager === "undefined")
+                                                return false
+                                            if (modelData.key === "rainbow")
+                                                return NetworkManager.lightColor === "rainbow"
+                                                       || NetworkManager.lightEffect === "rainbow"
+                                            return NetworkManager.lightEffect !== "rainbow"
+                                                   && NetworkManager.lightColor === modelData.key
+                                        }
+
+                                        Rectangle {
+                                            visible: modelData.key !== "rainbow"
+                                            anchors.centerIn: parent
+                                            width: 20
+                                            height: 20
+                                            radius: 10
+                                            color: modelData.color
+                                            border.color: parent.selected ? "white" : Qt.rgba(1, 1, 1, 0.25)
+                                            border.width: parent.selected ? 2 : 1
+                                            scale: lightDotMouse.containsMouse ? 1.12 : 1.0
+                                            Behavior on scale { NumberAnimation { duration: 80 } }
+                                        }
+
+                                        Canvas {
+                                            visible: modelData.key === "rainbow"
+                                            anchors.centerIn: parent
+                                            width: 20
+                                            height: 20
+                                            antialiasing: true
+                                            onPaint: {
+                                                var ctx = getContext("2d")
+                                                ctx.reset()
+                                                var cx = width / 2
+                                                var cy = height / 2
+                                                var n = 12
+                                                for (var i = 0; i < n; i++) {
+                                                    ctx.beginPath()
+                                                    ctx.moveTo(cx, cy)
+                                                    ctx.arc(cx, cy, 9.5, i * Math.PI * 2 / n, (i + 1) * Math.PI * 2 / n)
+                                                    ctx.closePath()
+                                                    ctx.fillStyle = "hsl(" + (i * 30) + ", 100%, 50%)"
+                                                    ctx.fill()
+                                                }
+                                            }
+                                            Component.onCompleted: requestPaint()
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: width / 2
+                                                color: "transparent"
+                                                border.color: parent.parent.selected ? "white" : Qt.rgba(1, 1, 1, 0.25)
+                                                border.width: parent.parent.selected ? 2 : 1
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: lightDotMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (typeof NetworkManager === "undefined")
+                                                    return
+                                                if (!NetworkManager.lightAvailable || NetworkManager.lightManualLockSec > 0)
+                                                    return
+                                                NetworkManager.setLightColor(modelData.key)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Item {
+                                id: lightSlider
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 16
+                                property int value: (typeof NetworkManager !== "undefined")
+                                                     ? NetworkManager.lightBrightness : 80
+
+                                Connections {
+                                    target: (typeof NetworkManager !== "undefined") ? NetworkManager : null
+                                    function onLightStateChanged() {
+                                        if (!lightBrightArea.isDragging)
+                                            lightSlider.value = NetworkManager.lightBrightness
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: 4
+                                    radius: 2
+                                    color: "#222"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Rectangle {
+                                        width: (lightSlider.value / 100) * parent.width
+                                        height: parent.height
+                                        color: accentColor
+                                        radius: 2
+                                    }
+                                }
+                                Rectangle {
+                                    x: (lightSlider.value / 100) * (parent.width - width)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 12
+                                    height: 12
+                                    radius: 6
+                                    color: "white"
+                                    border.width: lightBrightArea.containsMouse || lightBrightArea.isDragging ? 2 : 0
+                                    border.color: accentColor
+                                }
+                                MouseArea {
+                                    id: lightBrightArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    property bool isDragging: false
+                                    function updateBright(mx) {
+                                        var pct = Math.max(0, Math.min(1, mx / width))
+                                        lightSlider.value = Math.round(pct * 100)
+                                    }
+                                    onPressed: function(mouse) {
+                                        isDragging = true
+                                        updateBright(mouse.x)
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (isDragging)
+                                            updateBright(mouse.x)
+                                    }
+                                    onReleased: function(mouse) {
+                                        isDragging = false
+                                        if (typeof NetworkManager !== "undefined"
+                                                && NetworkManager.lightAvailable
+                                                && NetworkManager.lightManualLockSec <= 0)
+                                            NetworkManager.setLightBrightness(lightSlider.value)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1954,7 +2223,11 @@ Item {
                         }
                     }
 
-                    Item { height: 10; width: 1 }
+                    Item { height: 4; width: 1 }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
 
                     Rectangle {
                         id: voicePickBox
@@ -2089,17 +2362,26 @@ Item {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
                     ActionBtn {
+                        compact: true
+                        shortRow: true
                         text: "ОБСЛУЖИВАНИЕ"
                         icon: "⚙"
                         baseColor: "#b45309"
                         onClicked: maintenanceConfirmPopup.requestPinAndOpen()
                     }
                     ActionBtn {
+                        compact: true
+                        shortRow: true
                         text: "ПЕРЕЗАГРУЗКА"
                         icon: "↻"
                         baseColor: "#b91c1c"
                         onClicked: rebootConfirmPopup.requestPinAndOpen()
+                    }
+                    }
                     }
                 }
             }
@@ -2986,6 +3268,7 @@ Item {
                                     var lastOrderId = 0
                                     var lastStatusLabel = ""
                                     var lastFiscalReceipt = null
+                                    var lastScheduled = false
 
                                     function finishCheckout() {
                                         console.log("[SHOP] checkout done remaining=", pending, "failed=", failed,
@@ -2996,9 +3279,16 @@ Item {
                                             storePopup.close()
                                             if (typeof root !== 'undefined' && root !== null) {
                                                 root.sessionBalance = lastBalance
-                                                if (lastOrderId > 0) {
+                                                if (lastScheduled) {
+                                                    root.hasScheduledOrder = true
+                                                    root.hasActiveOrder = false
+                                                    if (lastOrderId > 0)
+                                                        root.trackedOrderId = lastOrderId
+                                                    storeToast.show("Заказ принят. Доставим за 5 минут до начала.")
+                                                } else if (lastOrderId > 0) {
                                                     root.trackedOrderId = lastOrderId
                                                     root.hasActiveOrder = true
+                                                    root.hasScheduledOrder = false
                                                     root.orderStatusCode = "pending"
                                                     root.orderStatusText = lastStatusLabel.length > 0
                                                             ? String(lastStatusLabel).toUpperCase()
@@ -3082,6 +3372,8 @@ Item {
                                                     lastOrderId = parseInt(res.order_id) || lastOrderId
                                                 if (res.status_label)
                                                     lastStatusLabel = res.status_label
+                                                if (res.scheduled)
+                                                    lastScheduled = true
                                                 if (res.fiscal_receipt
                                                         && res.fiscal_receipt.fiscal_receipt_url)
                                                     lastFiscalReceipt = res.fiscal_receipt
@@ -5407,6 +5699,7 @@ Item {
         property string statusText: ""
         // Половинная кнопка: контент по центру, статус второй строкой.
         property bool compact: false
+        property bool shortRow: false
         readonly property color statusAccent: orderIsFinished ? Theme.success
                                               : (orderIsCooking ? Theme.warning : Theme.danger)
         signal clicked()
@@ -5417,7 +5710,7 @@ Item {
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         Layout.minimumWidth: 0
-        Layout.preferredHeight: compact ? 44 : 50
+        Layout.preferredHeight: shortRow ? 36 : (compact ? 44 : 50)
         // Hover scale искажает «размер» соседних кнопок — только opacity/border.
         scale: 1.0
         radius: 4
