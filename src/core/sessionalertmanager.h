@@ -33,6 +33,11 @@ public:
     void setSpeechBlocked(bool blocked);
     bool speechBlocked() const { return m_speechBlocked; }
 
+    /** Don't logout at 0 while GSI says the player is in a live match (party energy siphon). */
+    Q_INVOKABLE void setHoldLogout(bool hold);
+    /** Speak a short line (Ghost Coach) if TTS isn't blocked. */
+    Q_INVOKABLE void announce(const QString &text);
+
 signals:
     void timeRemainingChanged();
     void sessionActiveChanged();
@@ -40,6 +45,8 @@ signals:
     void extendTimeRequested();
     /** Local countdown hit zero — shell should logout. */
     void sessionExpired();
+    /** Clock at zero but match is live — poll server instead of kicking. */
+    void sessionGraceRequested();
 
 private slots:
     void onTick();
@@ -67,6 +74,8 @@ private:
     int m_remainingSeconds = 0;
     bool m_sessionActive = false;
     bool m_speechBlocked = false;
+    bool m_holdLogout = false;
+    int m_graceTicks = 0;
     bool m_warned15 = false;
     bool m_warned10 = false;
     bool m_warned5 = false;

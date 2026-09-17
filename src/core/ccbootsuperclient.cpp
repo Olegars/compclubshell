@@ -1,4 +1,5 @@
 #include "ccbootsuperclient.h"
+#include "pathresolver.h"
 #include "securitymanager.h"
 
 #include <QCoreApplication>
@@ -152,6 +153,34 @@ void CcbootSuperClient::enableSuperClient(const QString &password, const QString
 void CcbootSuperClient::disableSuperClient(const QString &password, bool saveImage)
 {
     startAutomation(false, password, QStringLiteral("image"), saveImage);
+}
+
+bool CcbootSuperClient::hasConfiguredPassword() const
+{
+    return !configuredPassword().isEmpty();
+}
+
+QString CcbootSuperClient::configuredPassword() const
+{
+    QSettings settings(PathResolver::findConfigIni(), QSettings::IniFormat);
+    return settings.value(QStringLiteral("Diskless/admin_password")).toString().trimmed();
+}
+
+void CcbootSuperClient::applyCloudAction(const QString &action, const QString &diskMode)
+{
+    const QString password = configuredPassword();
+    if (password.isEmpty()) {
+        finish(false, QStringLiteral("Нет Diskless/admin_password в config.ini — удалённая команда отклонена."));
+        return;
+    }
+    if (action == QLatin1String("enable_sc"))
+        enableSuperClient(password, diskMode);
+    else if (action == QLatin1String("disable_sc_save"))
+        disableSuperClient(password, true);
+    else if (action == QLatin1String("disable_sc_discard"))
+        disableSuperClient(password, false);
+    else
+        finish(false, QStringLiteral("Неизвестная diskless-команда."));
 }
 
 void CcbootSuperClient::openCcbootClient()
@@ -359,6 +388,7 @@ void CcbootSuperClient::finish(bool ok, const QString &message)
     m_lastMessage = message;
     detectSuperClientFlag();
     emit statusChanged();
+    emit superClientFinished(m_enable, m_saveImage, ok, m_diskMode);
 }
 
 void CcbootSuperClient::detectClientPath()

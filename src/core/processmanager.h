@@ -90,6 +90,8 @@ signals:
     void gameStarted();
     void gameStartedSuccessfully();
     void gameFinished();
+    /** Launcher/game ended (includes failed start). Used by integrity watchdog. */
+    void gameSessionFinished(const QString &reason);
     void heavyDownloadDetected(const QString &source);
     void hasActiveGameChanged();
     void gameTitleChanged();

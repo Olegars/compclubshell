@@ -9,11 +9,37 @@
 #include <QtGlobal>
 #include <QUrl>
 
-QString FanRelayController::commandUrl(const QString &host, int modulePort, const QString &cmd)
+bool FanRelayController::usesPathPort(const QString &driver)
 {
-    // W5100 web UI: http://192.168.1.4/30000/6 — port is a path segment, TCP is :80
-    return QStringLiteral("http://%1/%2/%3")
-        .arg(host.trimmed(), QString::number(modulePort), cmd);
+    return driver.compare(QStringLiteral("w5100_http"), Qt::CaseInsensitive) == 0;
+}
+
+QString FanRelayController::commandUrl(const QString &rawHost, int port, const QString &cmd,
+                                       const QString &driver)
+{
+    QString host = rawHost.trimmed();
+    if (host.startsWith(QLatin1String("http://"), Qt::CaseInsensitive))
+        host = host.mid(7);
+    else if (host.startsWith(QLatin1String("https://"), Qt::CaseInsensitive))
+        host = host.mid(8);
+    while (host.endsWith(QLatin1Char('/')))
+        host.chop(1);
+    const int slash = host.indexOf(QLatin1Char('/'));
+    if (slash >= 0)
+        host = host.left(slash);
+
+    if (host.isEmpty() || cmd.isEmpty())
+        return {};
+
+    if (usesPathPort(driver)) {
+        return QStringLiteral("http://%1/%2/%3")
+            .arg(host, QString::number(port > 0 ? port : 30000), cmd);
+    }
+
+    const int tcp = port > 0 ? port : DefaultTcpPort;
+    if (tcp == 80)
+        return QStringLiteral("http://%1/%2").arg(host, cmd);
+    return QStringLiteral("http://%1:%2/%3").arg(host, QString::number(tcp), cmd);
 }
 
 QString FanRelayController::commandForChannel(int channel, bool on)
@@ -24,17 +50,15 @@ QString FanRelayController::commandForChannel(int channel, bool on)
     return QStringLiteral("%1").arg(cmd, 2, 10, QLatin1Char('0'));
 }
 
-FanRelayController::Result FanRelayController::setChannel(
-    const QString &host, int modulePort, int channel, bool on, int timeoutMs)
+static FanRelayController::Result httpGet(const QString &url, int timeoutMs)
 {
-    const QString cmd = commandForChannel(channel, on);
-    if (cmd.isEmpty() || host.trimmed().isEmpty() || modulePort <= 0) {
-        return {false, QStringLiteral("invalid relay target"), {}};
+    FanRelayController::Result out;
+    if (url.isEmpty()) {
+        out.error = QStringLiteral("invalid relay url");
+        return out;
     }
 
-    const QString url = commandUrl(host, modulePort, cmd);
-
-    qWarning().noquote() << "[FAN-W5100] GET" << url;
+    qWarning().noquote() << "[FAN] GET" << url;
 
     QNetworkAccessManager nam;
     QNetworkRequest req{QUrl(url)};
@@ -50,7 +74,6 @@ FanRelayController::Result FanRelayController::setChannel(
     killer.start(timeoutMs);
     loop.exec();
 
-    Result out;
     if (!reply->isFinished()) {
         reply->abort();
         out.ok = false;
@@ -67,46 +90,25 @@ FanRelayController::Result FanRelayController::setChannel(
     return out;
 }
 
-FanRelayController::Result FanRelayController::readStatus(
-    const QString &host, int modulePort, int timeoutMs)
+FanRelayController::Result FanRelayController::setChannel(
+    const QString &host, int port, int channel, bool on, int timeoutMs, const QString &driver)
 {
-    if (host.trimmed().isEmpty() || modulePort <= 0) {
+    const QString cmd = commandForChannel(channel, on);
+    if (cmd.isEmpty() || host.trimmed().isEmpty()) {
         return {false, QStringLiteral("invalid relay target"), {}};
     }
 
-    const QString url = commandUrl(host, modulePort, QStringLiteral("99"));
+    return httpGet(commandUrl(host, port, cmd, driver), timeoutMs);
+}
 
-    qWarning().noquote() << "[FAN-W5100] GET" << url;
-
-    QNetworkAccessManager nam;
-    QNetworkRequest req{QUrl(url)};
-    req.setTransferTimeout(timeoutMs);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
-
-    QNetworkReply *reply = nam.get(req);
-    QEventLoop loop;
-    QTimer killer;
-    killer.setSingleShot(true);
-    QObject::connect(&killer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    killer.start(timeoutMs);
-    loop.exec();
-
-    Result out;
-    if (!reply->isFinished()) {
-        reply->abort();
-        out.ok = false;
-        out.error = QStringLiteral("timeout");
-    } else if (reply->error() != QNetworkReply::NoError) {
-        out.ok = false;
-        out.error = reply->errorString();
-        out.body = QString::fromUtf8(reply->readAll());
-    } else {
-        out.ok = true;
-        out.body = QString::fromUtf8(reply->readAll()).trimmed();
+FanRelayController::Result FanRelayController::readStatus(
+    const QString &host, int port, int timeoutMs, const QString &driver)
+{
+    if (host.trimmed().isEmpty()) {
+        return {false, QStringLiteral("invalid relay target"), {}};
     }
-    reply->deleteLater();
-    return out;
+
+    return httpGet(commandUrl(host, port, QStringLiteral("99"), driver), timeoutMs);
 }
 
 int FanRelayController::channelStateFromStatus(const QString &statusBody, int channel)
@@ -115,19 +117,19 @@ int FanRelayController::channelStateFromStatus(const QString &statusBody, int ch
         return -1;
 
     QString bits;
-    // Ответ платы часто HTML: <center><p>ASCII:   0100000000000000
     const int asciiIdx = statusBody.indexOf(QStringLiteral("ASCII:"), 0, Qt::CaseInsensitive);
     const QString scan = asciiIdx >= 0 ? statusBody.mid(asciiIdx) : statusBody;
-    for (QChar c : scan) {
+    for (const QChar c : scan) {
         if (c == QLatin1Char('0') || c == QLatin1Char('1'))
             bits.append(c);
+        else if (c == QLatin1Char('-'))
+            bits.append(QLatin1Char('0'));
         if (bits.size() >= 16)
             break;
     }
     if (bits.size() < 16)
         return -1;
 
-    // MSB = relay 1
     const QChar bit = bits.at(channel - 1);
     if (bit == QLatin1Char('1'))
         return 1;
@@ -149,8 +151,9 @@ int FanRelayController::speedFromStatus(const QString &statusBody, int channelK1
     return 1;
 }
 
-int FanRelayController::setSpeed(const QString &host, int modulePort, int channelK1, int channelK2,
-                                 int speed, QString *errorOut, int timeoutMs, int softStepMs)
+int FanRelayController::setSpeed(const QString &host, int port, int channelK1, int channelK2,
+                                 int speed, QString *errorOut, int timeoutMs, int softStepMs,
+                                 const QString &driver)
 {
     if (channelK1 < 1 || channelK1 > 16 || channelK2 < 1 || channelK2 > 16
         || channelK1 == channelK2) {
@@ -165,16 +168,16 @@ int FanRelayController::setSpeed(const QString &host, int modulePort, int channe
     if (s > 3)
         s = 3;
 
-    // Safe order: drop K2 before raising K1 when leaving high; drop K1 before raising K2 for high.
     auto applyLevel = [&](int level) -> bool {
         auto applyOne = [&](int ch, bool on) -> bool {
             const QString cmd = commandForChannel(ch, on);
+            const QString url = commandUrl(host, port, cmd, driver);
             qWarning().noquote()
-                << "[FAN-W5100] setSpeed" << level
+                << "[FAN] setSpeed" << level
                 << "K" << ch << (on ? "ON" : "OFF")
                 << "cmd" << cmd
-                << "url" << commandUrl(host, modulePort, cmd);
-            const Result r = setChannel(host, modulePort, ch, on, timeoutMs);
+                << "url" << url;
+            const Result r = setChannel(host, port, ch, on, timeoutMs, driver);
             if (!r.ok) {
                 const QString err = QStringLiteral("ch%1 %2: %3")
                                         .arg(ch)
@@ -182,10 +185,10 @@ int FanRelayController::setSpeed(const QString &host, int modulePort, int channe
                                         .arg(r.error);
                 if (errorOut)
                     *errorOut = err;
-                qWarning().noquote() << "[FAN-W5100] FAIL" << err;
+                qWarning().noquote() << "[FAN] FAIL" << err;
                 return false;
             }
-            qWarning().noquote() << "[FAN-W5100] OK body=" << r.body.left(40);
+            qWarning().noquote() << "[FAN] OK body=" << r.body.left(40);
             return true;
         };
 
@@ -210,15 +213,14 @@ int FanRelayController::setSpeed(const QString &host, int modulePort, int channe
 
     int current = -1;
     {
-        const Result st0 = readStatus(host, modulePort, timeoutMs);
+        const Result st0 = readStatus(host, port, timeoutMs, driver);
         if (st0.ok)
             current = speedFromStatus(st0.body, channelK1, channelK2);
     }
 
-    // 50%↔100% (1↔3): короткий заход через 75%, чтобы смягчить каскад.
     if (current > 0 && qAbs(current - s) >= 2 && softStepMs > 0) {
         qWarning().noquote()
-            << "[FAN-W5100] soft-step" << current << "→ 2 →" << s
+            << "[FAN] soft-step" << current << "→ 2 →" << s
             << "dwell" << softStepMs << "ms";
         if (!applyLevel(2))
             return -1;
@@ -230,11 +232,11 @@ int FanRelayController::setSpeed(const QString &host, int modulePort, int channe
     if (!applyLevel(s))
         return -1;
 
-    const Result st = readStatus(host, modulePort, timeoutMs);
+    const Result st = readStatus(host, port, timeoutMs, driver);
     if (!st.ok) {
         if (errorOut && errorOut->isEmpty())
             *errorOut = st.error;
-        return s; // command likely applied
+        return s;
     }
     const int decoded = speedFromStatus(st.body, channelK1, channelK2);
     return decoded > 0 ? decoded : s;

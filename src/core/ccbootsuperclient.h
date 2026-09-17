@@ -23,6 +23,7 @@ class CcbootSuperClient : public QObject
     Q_PROPERTY(QString lastMessage READ lastMessage NOTIFY statusChanged)
     Q_PROPERTY(bool lastOk READ lastOk NOTIFY statusChanged)
     Q_PROPERTY(bool kioskUnlocked READ kioskUnlocked NOTIFY statusChanged)
+    Q_PROPERTY(bool hasConfiguredPassword READ hasConfiguredPassword NOTIFY statusChanged)
 
 public:
     explicit CcbootSuperClient(SecurityManager *security, QObject *parent = nullptr);
@@ -36,6 +37,7 @@ public:
     QString lastMessage() const { return m_lastMessage; }
     bool lastOk() const { return m_lastOk; }
     bool kioskUnlocked() const { return m_kioskUnlocked; }
+    bool hasConfiguredPassword() const;
 
     Q_INVOKABLE void refresh();
     /** Снять киоск и показать explorer — правки образа после Super Client. */
@@ -45,10 +47,14 @@ public:
     Q_INVOKABLE void enableSuperClient(const QString &password, const QString &diskMode);
     Q_INVOKABLE void disableSuperClient(const QString &password, bool saveImage);
     Q_INVOKABLE void openCcbootClient();
+    /** Пароль из config.ini [Diskless] admin_password — для команды из админки. */
+    QString configuredPassword() const;
+    void applyCloudAction(const QString &action, const QString &diskMode);
 
 signals:
     void statusChanged();
     void busyChanged();
+    void superClientFinished(bool enable, bool saved, bool ok, const QString &diskMode);
 
 private:
     enum class Phase {

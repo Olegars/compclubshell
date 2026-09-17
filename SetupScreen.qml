@@ -22,7 +22,8 @@ Rectangle {
     property int selectedK1: 0
     property int selectedK2: 0
     property string selectedHost: ""
-    property int selectedPort: 30000
+    property int selectedPort: 8080
+    property string selectedDriver: ""
     property string selectedLabel: ""
 
     readonly property var occupiedFans: {
@@ -86,12 +87,26 @@ Rectangle {
             win.closeSetupScreen()
     }
 
+    function boardHttpUrl(board) {
+        if (!board)
+            return ""
+        var host = board.host || ""
+        var port = Number(board.port || 8080)
+        var d = String(board.driver || "").toLowerCase()
+        if (d === "w5100_http")
+            return "http://" + host + "/" + port + "/"
+        if (port === 80)
+            return "http://" + host + "/"
+        return "http://" + host + ":" + port + "/"
+    }
+
     function selectPair(board, pair) {
         if (!board || !pair || pair.status === "taken")
             return
         selectedBoardId = board.id
         selectedHost = board.host
         selectedPort = board.port
+        selectedDriver = board.driver || ""
         selectedK1 = pair.channel
         selectedK2 = pair.channel2
         selectedLabel = (board.name || "") + " · " + pair.label
@@ -104,7 +119,7 @@ Rectangle {
             return
         fanMsg = "Тест 100% ~2.5с…"
         fanMsgOk = true
-        NetworkManager.testFanPair(selectedHost, selectedPort, selectedK1, selectedK2)
+        NetworkManager.testFanPair(selectedHost, selectedPort, selectedK1, selectedK2, selectedDriver)
     }
 
     function runBind() {
@@ -272,7 +287,7 @@ Rectangle {
                     Text {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: "Вход в setup: Win+ПКМ (или Ctrl+клик по имени ПК). Пароль — Admin Password CCBoot, не PIN брони. После Enable ПК уйдёт в reboot; киоск снимется. Сохранение образа — Disable Super Client, не кнопка в шелле."
+                        text: "Вход в setup: Win+ПКМ (или Ctrl+клик по имени ПК). Пароль — Admin Password CCBoot, не PIN брони. После Enable ПК уйдёт в reboot; киоск снимется. Сохранение образа — Disable Super Client, не кнопка в шелле. Удалённо из админки — если в config.ini задан Diskless/admin_password."
                         color: Theme.textMuted
                         font.pixelSize: 11
                     }
@@ -291,6 +306,14 @@ Rectangle {
                         color: Theme.warning
                         font.pixelSize: 12
                         font.bold: true
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        visible: typeof Ccboot !== "undefined" && !Ccboot.hasConfiguredPassword
+                        text: "Удалённый Super Client выключен: нет Diskless/admin_password."
+                        color: Theme.textMuted
+                        font.pixelSize: 11
                     }
                     Text {
                         width: parent.width
@@ -625,7 +648,7 @@ Rectangle {
 
                             Text {
                                 text: (boardCol.modelData.name || "BOARD")
-                                      + "  http://" + boardCol.modelData.host + "/" + boardCol.modelData.port + "/"
+                                      + "  " + setupRoot.boardHttpUrl(boardCol.modelData)
                                 color: Theme.textPrimary
                                 font.pixelSize: 12
                                 font.bold: true
@@ -693,7 +716,7 @@ Rectangle {
                     Text {
                         visible: NetworkManager.fanDiscoverBoards.length === 0
                                  && !NetworkManager.fanDiscoverBusy
-                        text: "Нет активных плат W5100 в клубе — добавьте плату в /admin/fans"
+                        text: "Нет активных плат реле в клубе — добавьте HW-584 / NetMod в /admin/fans"
                         color: Theme.textMuted
                         font.pixelSize: 11
                         width: parent.width

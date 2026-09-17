@@ -1,5 +1,6 @@
 #include "dmxcontroller.h"
 
+#include <QColor>
 #include <QDateTime>
 #include <QHostAddress>
 #include <algorithm>
@@ -43,6 +44,60 @@ void DmxController::setAllBrightness(int brightness)
     }
 }
 
+void DmxController::setOverride(const QString &color, int brightness, const QString &effect, bool strobe)
+{
+    OverrideSpec spec;
+    spec.color = color;
+    spec.brightness = brightness;
+    spec.effect = effect;
+    spec.strobe = strobe;
+    spec.fadeMs = strobe ? 0 : 280;
+    setOverride(spec);
+}
+
+void DmxController::setOverride(const OverrideSpec &spec)
+{
+    const QString c = spec.color.isEmpty() ? QStringLiteral("red") : spec.color;
+    const int br = std::clamp(spec.brightness, 0, 100);
+    const QString fx = spec.effect.isEmpty() ? QStringLiteral("none") : spec.effect;
+    const int onMs = std::max(0, spec.strobeOnMs);
+    const int offMs = std::max(0, spec.strobeOffMs);
+    const int holdMs = std::max(50, spec.cycleHoldMs);
+    const int fadeMs = spec.strobe ? 0 : std::max(0, spec.fadeMs);
+    if (m_overrideActive && m_overrideColor == c && m_overrideBrightness == br
+        && m_overrideEffect == fx && m_overrideStrobe == spec.strobe
+        && m_overrideStrobeOnMs == onMs && m_overrideStrobeOffMs == offMs
+        && m_overrideCycle == spec.cycleColors && m_overrideCycleHoldMs == holdMs) {
+        startRefresh();
+        return;
+    }
+    m_fadeFrom = m_liveColors;
+    m_fadeMs = fadeMs;
+    m_fadeStartMs = QDateTime::currentMSecsSinceEpoch();
+    m_overrideActive = true;
+    m_overrideStrobe = spec.strobe;
+    m_overrideStrobeOnMs = onMs;
+    m_overrideStrobeOffMs = offMs;
+    m_overrideColor = c;
+    m_overrideBrightness = br;
+    m_overrideEffect = fx;
+    m_overrideCycle = spec.cycleColors;
+    m_overrideCycleHoldMs = holdMs;
+    startRefresh();
+}
+
+void DmxController::clearOverride(int fadeMs)
+{
+    if (!m_overrideActive)
+        return;
+    m_fadeFrom = m_liveColors;
+    m_fadeMs = std::max(0, fadeMs);
+    m_fadeStartMs = QDateTime::currentMSecsSinceEpoch();
+    m_overrideActive = false;
+    m_overrideStrobe = false;
+    startRefresh();
+}
+
 bool DmxController::refreshRunning() const
 {
     return m_timer.isActive();
@@ -51,6 +106,9 @@ bool DmxController::refreshRunning() const
 void DmxController::startRefresh()
 {
     bool rainbow = false;
+    bool strobe = m_overrideActive && m_overrideStrobe;
+    const bool cycling = m_overrideActive && m_overrideEffect == QLatin1String("cycle")
+        && m_overrideCycle.size() >= 2;
     for (const Node &n : m_nodes) {
         for (const Fixture &fx : n.fixtures) {
             if (fx.effect == QLatin1String("rainbow") && fx.brightness > 0) {
@@ -59,7 +117,7 @@ void DmxController::startRefresh()
             }
         }
     }
-    const int interval = (rainbow || fading()) ? 40 : 1000;
+    const int interval = (rainbow || fading() || strobe || cycling || m_overrideActive) ? 40 : 1000;
     if (m_timer.isActive() && m_timer.interval() == interval)
         return;
     m_timer.start(interval);
@@ -84,9 +142,26 @@ QColor DmxController::scaledRgb(const QString &color, int brightness, int r, int
         return QColor::fromHsv(hue, 255, int(br * 255 / 100));
     }
 
-    const int rr = std::clamp(r, 0, 255) * br / 100;
-    const int gg = std::clamp(g, 0, 255) * br / 100;
-    const int bb = std::clamp(b, 0, 255) * br / 100;
+    int rr = r, gg = g, bb = b;
+    if (color.startsWith(QLatin1Char('#'))) {
+        const QColor named(color);
+        if (named.isValid()) {
+            rr = named.red();
+            gg = named.green();
+            bb = named.blue();
+        }
+    } else if (color == QLatin1String("red")) { rr = 255; gg = 32; bb = 32; }
+    else if (color == QLatin1String("blue")) { rr = 40; gg = 90; bb = 255; }
+    else if (color == QLatin1String("green")) { rr = 34; gg = 197; bb = 94; }
+    else if (color == QLatin1String("yellow")) { rr = 234; gg = 179; bb = 8; }
+    else if (color == QLatin1String("purple")) { rr = 168; gg = 85; bb = 247; }
+    else if (color == QLatin1String("white")) { rr = 255; gg = 255; bb = 255; }
+    else if (color == QLatin1String("orange")) { rr = 255; gg = 138; bb = 60; }
+    else if (color == QLatin1String("cold_white")) { rr = 200; gg = 220; bb = 255; }
+
+    rr = std::clamp(rr, 0, 255) * br / 100;
+    gg = std::clamp(gg, 0, 255) * br / 100;
+    bb = std::clamp(bb, 0, 255) * br / 100;
     return QColor(rr, gg, bb);
 }
 
@@ -182,8 +257,56 @@ void DmxController::paintUniverse(QByteArray &dmx, const Node &node)
     }
 
     for (const Fixture &fx : node.fixtures) {
-        const QColor target = scaledRgb(fx.color, fx.brightness, fx.r, fx.g, fx.b,
-                                          fx.effect, m_rainbowPeriodMs);
+        QString color = fx.color;
+        int brightness = fx.brightness;
+        QString effect = fx.effect;
+        if (m_overrideActive) {
+            color = m_overrideColor;
+            brightness = m_overrideBrightness;
+            effect = m_overrideEffect;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const QStringList &cycle = m_overrideCycle;
+            if (effect == QLatin1String("cycle") && cycle.size() >= 2) {
+                const int hold = std::max(50, m_overrideCycleHoldMs);
+                const int n = cycle.size();
+                const qint64 slot = now / hold;
+                const int idx = int(slot % n);
+                const int prev = (idx + n - 1) % n;
+                const qint64 phase = now % hold;
+                color = cycle.at(idx);
+                effect = QStringLiteral("none");
+                if (m_fadeMs > 0 && phase < m_fadeMs) {
+                    int fadeBr = brightness;
+                    if (m_overrideStrobe) {
+                        const int onMs = std::max(1, m_overrideStrobeOnMs);
+                        const int offMs = std::max(0, m_overrideStrobeOffMs);
+                        const int period = onMs + offMs;
+                        if (offMs > 0 && (now % period) >= onMs)
+                            fadeBr = 0;
+                    }
+                    const QColor from = scaledRgb(cycle.at(prev), fadeBr, fx.r, fx.g, fx.b,
+                                                  QStringLiteral("none"), m_rainbowPeriodMs);
+                    const QColor to = scaledRgb(color, fadeBr, fx.r, fx.g, fx.b,
+                                                QStringLiteral("none"), m_rainbowPeriodMs);
+                    const float t = std::clamp(float(phase) / float(m_fadeMs), 0.f, 1.f);
+                    const QColor mixed = lerpColor(from, to, t);
+                    const QString key = fixtureKey(node, fx);
+                    QColor out = mixed;
+                    m_liveColors.insert(key, out);
+                    writeFixture(dmx, fx, out);
+                    continue;
+                }
+            }
+            if (m_overrideStrobe) {
+                const int onMs = std::max(1, m_overrideStrobeOnMs);
+                const int offMs = std::max(0, m_overrideStrobeOffMs);
+                const int period = onMs + offMs;
+                if (offMs > 0 && (now % period) >= onMs)
+                    brightness = 0;
+            }
+        }
+        const QColor target = scaledRgb(color, brightness, fx.r, fx.g, fx.b,
+                                          effect, m_rainbowPeriodMs);
         const QString key = fixtureKey(node, fx);
         QColor out = target;
         if (m_fadeMs > 0 && m_fadeFrom.contains(key))

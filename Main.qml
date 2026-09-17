@@ -47,12 +47,16 @@ Window {
 
     property string authErrorMessage: ""
     property bool authErrorVisible: false
+    property bool seatChangePromptVisible: false
+    property string seatChangePromptMessage: ""
+    property bool seatChangeCanSwitch: false
 
     property string sessionPhone: ""
     property string sessionUserBeforePause: ""
     property bool isLoggingIn: false
     property bool gameLoadingVisible: false
     property var pendingOverlaysData: null
+    property int lastClanWarId: 0
     property string loadingPlatform: ""
     property string loadingGameTitle: ""
     property bool quickMenuIntroduced: false
@@ -80,6 +84,26 @@ Window {
     function requestOverlays(terminalId) {
         overlaysFetchDebounce.pendingTerminalId = terminalId > 0 ? terminalId : 1
         overlaysFetchDebounce.restart()
+    }
+
+    Timer {
+        id: clanWarPoll
+        interval: (typeof NetworkManager !== "undefined" && NetworkManager.clanWar && NetworkManager.clanWar.id) ? 3000 : 20000
+        running: root.overlayPlaybackAllowed
+        repeat: true
+        onTriggered: {
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.fetchClanWar(root.terminalId > 0 ? root.terminalId : 1)
+        }
+    }
+
+    // Админка шлёт overlay.changed, но шелл сокет не слушает — поллим idle TV.
+    Timer {
+        id: overlaysPoll
+        interval: (typeof NetworkManager !== "undefined" && NetworkManager.clanWar && NetworkManager.clanWar.id) ? 4000 : 8000
+        running: root.overlayPlaybackAllowed
+        repeat: true
+        onTriggered: root.requestOverlays(root.terminalId > 0 ? root.terminalId : 1)
     }
 
     function clearGameSearchField() {
@@ -169,6 +193,8 @@ Window {
         }
         root.authErrorVisible = false
         root.authErrorMessage = ""
+        root.seatChangePromptVisible = false
+        root.seatChangePromptMessage = ""
         root.isLoggingIn = false
         root.sessionPhone = ""
 
@@ -259,6 +285,10 @@ Window {
             if (typeof SessionAlert !== "undefined")
                 root.sessionTime = SessionAlert.timeRemaining
         }
+        function onSessionGraceRequested() {
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.refreshBalance()
+        }
         function onSessionExpired() {
             console.log("[SESSION] Локальный таймер истёк — выход")
             if (typeof HidMonitor !== "undefined")
@@ -267,8 +297,12 @@ Window {
                 NetworkManager.stopClimateControl()
                 NetworkManager.setFan("auto")
                 var tid = NetworkManager.computerId > 0 ? NetworkManager.computerId : root.terminalId
-                if (tid > 0)
-                    NetworkManager.logoutTerminal(tid)
+                if (tid > 0) {
+                    if (typeof InstantReplay !== "undefined")
+                        InstantReplay.flushAndLogout(tid)
+                    else
+                        NetworkManager.logoutTerminal(tid)
+                }
             }
             root.sessionUser = ""
         }
@@ -293,7 +327,7 @@ Window {
             console.log("[DEBUG-MAIN] Конец onAuthRequired. Итоговый terminalId =", root.terminalId)
             // LobbyAudio после фокуса телефона — COM/MediaPlayer не бьёт в тот же кадр, что оверлеи.
             lobbyStartTimer.restart()
-            if (typeof NetworkManager !== "undefined")
+            if (typeof NetworkManager !== "undefined" && NetworkManager.featureEnabled("qr_login"))
                 NetworkManager.requestQrChallenge(root.terminalId)
         }
 
@@ -318,6 +352,7 @@ Window {
         }
 
         function onLoginSucceeded(userName, balance, timeRemaining, phone) {
+            root.seatChangePromptVisible = false
             lobbyStartTimer.stop()
             if (typeof NetworkManager !== "undefined")
                 NetworkManager.stopQrLoginPoll()
@@ -337,6 +372,7 @@ Window {
             NetworkManager.fetchGames()
             NetworkManager.fetchQuickApps()
             NetworkManager.fetchProducts()
+            NetworkManager.fetchLanLive()
             NetworkManager.refreshBalance()
             NetworkManager.startClimateControl()
             if (typeof HidMonitor !== "undefined") {
@@ -352,9 +388,47 @@ Window {
                 root.sessionBalance = balance
         }
 
+        function onBountySettled(message) {
+            if (typeof SessionAlert !== "undefined" && message)
+                SessionAlert.announce(message)
+        }
+
+        function onGhostWhisper(text) {
+            if (typeof SessionAlert !== "undefined" && text)
+                SessionAlert.announce(text)
+        }
+
+        function onLootboxDropped(box) {
+            if (typeof Launcher !== "undefined" && typeof Launcher.showShellKeepGame === "function")
+                Launcher.showShellKeepGame()
+            if (typeof SessionAlert !== "undefined")
+                SessionAlert.announce("Lucky Seat. Кейс на месте.")
+        }
+
+        function onRageSmashAlert(payload) {
+            if (typeof Launcher !== "undefined" && typeof Launcher.showShellKeepGame === "function")
+                Launcher.showShellKeepGame()
+            var msg = (payload && payload.message) ? String(payload.message)
+                      : "Сделайте паузу — можем принести напиток."
+            if (typeof SessionAlert !== "undefined")
+                SessionAlert.announce(msg)
+        }
+
+        function onInMatchChanged() {
+            if (typeof SessionAlert !== "undefined" && typeof NetworkManager !== "undefined")
+                SessionAlert.setHoldLogout(NetworkManager.inMatch)
+        }
+
         function onLoginFailed(message) {
             root.authErrorMessage = message
             root.authErrorVisible = true
+        }
+
+        function onSeatChangeRequired(message, canSwitch) {
+            root.seatChangePromptMessage = message
+            root.seatChangeCanSwitch = canSwitch
+            root.seatChangePromptVisible = true
+            root.authErrorVisible = false
         }
 
         function onLoginRequestFinished() {
@@ -364,6 +438,16 @@ Window {
         function onOverlaysReady(data) {
             console.log("[OVERLAYS] overlaysReady получен, контейнер status=", overlaysContainer.status)
             updateOverlaysToScreen(data)
+        }
+
+        function onClanWarChanged() {
+            var id = (NetworkManager.clanWar && NetworkManager.clanWar.id)
+                     ? Number(NetworkManager.clanWar.id) : 0
+            if (id === root.lastClanWarId)
+                return
+            root.lastClanWarId = id
+            if (root.overlayPlaybackAllowed)
+                root.requestOverlays(root.terminalId > 0 ? root.terminalId : 1)
         }
     }
 
@@ -709,6 +793,25 @@ Window {
                         playbackAllowed: root.overlayPlaybackAllowed && blockBottomRight.isActive
                     }
                 }
+
+                ClanWarBanner {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.top
+                    anchors.topMargin: 18
+                    width: Math.min(720, parent.width * 0.38)
+                    height: 88
+                    z: 80
+                    war: (typeof NetworkManager !== "undefined") ? NetworkManager.clanWar : null
+                }
+                ArenaDuelBanner {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.top
+                    anchors.topMargin: 114
+                    width: Math.min(720, parent.width * 0.38)
+                    z: 81
+                    duel: (typeof NetworkManager !== "undefined" && NetworkManager.arena)
+                          ? NetworkManager.arena.ticker : null
+                }
             }
         }
     }
@@ -826,10 +929,64 @@ Window {
                     }
                 }
 
+                Rectangle {
+                    id: thronePanel
+                    visible: typeof NetworkManager !== "undefined"
+                             && NetworkManager.throne
+                             && NetworkManager.throne.has_king === true
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: visible ? 86 : 0
+                    color: "#120800"
+                    border.color: "#f59e0b"
+                    border.width: 2
+                    radius: 4
+                    opacity: 0.95
+                    Row {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 12
+                        Image {
+                            width: 62
+                            height: 62
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                            source: (NetworkManager.throne && NetworkManager.throne.avatar_url)
+                                    ? NetworkManager.throne.avatar_url : ""
+                        }
+                        Column {
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 4
+                            width: parent.width - 86
+                            Text {
+                                text: "KING OF THIS PC"
+                                color: "#f59e0b"
+                                font.pixelSize: 10
+                                font.bold: true
+                                font.letterSpacing: 2
+                            }
+                            Text {
+                                text: (NetworkManager.throne && NetworkManager.throne.line)
+                                      ? NetworkManager.throne.line : ""
+                                color: "white"
+                                font.pixelSize: 14
+                                font.bold: true
+                                elide: Text.ElideRight
+                                width: parent.width
+                            }
+                            Text {
+                                text: "Сможешь превзойти рекорд King?"
+                                color: "#d4d4d4"
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+                }
+
                 // Блок: вход по QR
                 Rectangle {
                     id: qrLoginPanel
                     visible: root.sessionUser !== "PAUSE"
+                             && (typeof NetworkManager === "undefined" || NetworkManager.featureEnabled("qr_login"))
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumHeight: 220
@@ -1100,11 +1257,14 @@ Window {
 
                             Text {
                                 id: authErrorText
+                                width: parent.width
                                 text: root.authErrorMessage
                                 visible: root.authErrorVisible
                                 color: Theme.danger
                                 font.bold: true
                                 font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                horizontalAlignment: Text.AlignHCenter
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 Connections { target: pinInput; function onTextChanged() { root.authErrorVisible = false } }
                                 Connections { target: phoneInput; function onTextChanged() { root.authErrorVisible = false } }
@@ -1341,6 +1501,127 @@ Window {
                     }
                 }
             } // authColumn
+
+            Rectangle {
+                id: seatChangeOverlay
+                anchors.fill: parent
+                z: 40
+                visible: root.seatChangePromptVisible
+                color: "#e0020202"
+
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {}
+                }
+
+                Rectangle {
+                    width: Math.min(480, parent.width - 48)
+                    height: seatChangeColumn.height + 48
+                    anchors.centerIn: parent
+                    color: Theme.accentPanel
+                    border.color: Theme.accentBorder
+                    border.width: 2
+                    radius: 6
+
+                    Column {
+                        id: seatChangeColumn
+                        x: 24
+                        y: 24
+                        width: parent.width - 48
+                        spacing: 18
+
+                        Text {
+                            width: parent.width
+                            text: root.seatChangePromptMessage
+                            color: "white"
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                            font.pixelSize: 15
+                            font.bold: true
+                        }
+
+                        Row {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: 12
+                            visible: root.seatChangeCanSwitch
+
+                            Rectangle {
+                                width: 140
+                                height: 40
+                                radius: 4
+                                color: seatNoMouse.containsMouse ? Theme.accentSurface : Theme.accentSurfaceIdle
+                                border.color: Theme.accentBorder
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "НЕТ"
+                                    color: "white"
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    font.pixelSize: 13
+                                }
+                                MouseArea {
+                                    id: seatNoMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.seatChangePromptVisible = false
+                                }
+                            }
+
+                            Rectangle {
+                                width: 140
+                                height: 40
+                                radius: 4
+                                color: seatYesMouse.containsMouse ? Theme.accentDeep : Theme.accent
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "ДА"
+                                    color: "#020202"
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                    font.pixelSize: 13
+                                }
+                                MouseArea {
+                                    id: seatYesMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    enabled: !root.isLoggingIn
+                                    onClicked: {
+                                        root.seatChangePromptVisible = false
+                                        root.isLoggingIn = true
+                                        NetworkManager.login(phoneInput.text, pinInput.text, parseInt(root.terminalId), true)
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 200
+                            height: 40
+                            radius: 4
+                            visible: !root.seatChangeCanSwitch
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            color: seatOkMouse.containsMouse ? Theme.accentDeep : Theme.accent
+                            Text {
+                                anchors.centerIn: parent
+                                text: "ПОНЯТНО"
+                                color: "#020202"
+                                font.bold: true
+                                font.letterSpacing: 2
+                                font.pixelSize: 13
+                            }
+                            MouseArea {
+                                id: seatOkMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.seatChangePromptVisible = false
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1464,6 +1745,68 @@ Window {
     onGameLoadingVisibleChanged: root.syncQuickMenu()
     // ^ конец uiRoot
 
+    function overlayAsJs(value) {
+        if (value === undefined || value === null)
+            return null
+        if (typeof value === "string") {
+            try { return JSON.parse(value) } catch (e) { return null }
+        }
+        try {
+            return JSON.parse(JSON.stringify(value))
+        } catch (e) {
+            return value
+        }
+    }
+
+    function overlayLayerList(content) {
+        if (!content)
+            return []
+        if (typeof content === "string") {
+            try { content = JSON.parse(content) } catch (e) { return [] }
+        }
+        var layers = content.layers
+        if (typeof layers === "string") {
+            try { layers = JSON.parse(layers) } catch (e) { return [] }
+        }
+        if (!layers)
+            return []
+        if (layers.length !== undefined) {
+            var list = []
+            for (var i = 0; i < layers.length; i++)
+                list.push(layers[i])
+            return list
+        }
+        var keys = Object.keys(layers)
+        var out = []
+        for (var k = 0; k < keys.length; k++)
+            out.push(layers[keys[k]])
+        return out
+    }
+
+    function overlayVideoUrl(blockData) {
+        if (!blockData)
+            return ""
+        var block = overlayAsJs(blockData) || blockData
+        var layers = overlayLayerList(block.content)
+        for (var i = 0; i < layers.length; i++) {
+            var layer = layers[i]
+            if (layer && (layer.type === "video" || layer.type === "video_url") && layer.value)
+                return String(layer.value)
+        }
+        if (block.video_url)
+            return String(block.video_url)
+        return ""
+    }
+
+    function overlayIsActive(blockData) {
+        if (!blockData || blockData.is_active === undefined || blockData.is_active === null)
+            return true
+        var v = blockData.is_active
+        if (v === false || v === 0 || v === "0" || v === "false")
+            return false
+        return !!v
+    }
+
     function updateOverlaysToScreen(response) {
         root.pendingOverlaysData = response
         if (overlaysContainer.status !== Loader.Ready || !overlaysContainer.item) {
@@ -1471,7 +1814,8 @@ Window {
             return
         }
 
-        var actualData = response.data ? response.data : response
+        var raw = overlayAsJs(response) || response
+        var actualData = (raw && raw.data) ? raw.data : raw
         var item = overlaysContainer.item
         var map = {
             "top_left": item.b1, "top_right": item.b2,
@@ -1481,32 +1825,22 @@ Window {
 
         for (var key in map) {
             if (actualData[key] && map[key]) {
-                var vUrl = ""
-                var blockData = actualData[key]
-                var layers = null
-                if (blockData.content && blockData.content.layers)
-                    layers = blockData.content.layers
-
-                if (layers && layers.length !== undefined) {
-                    for (var i = 0; i < layers.length; i++) {
-                        var layer = layers[i]
-                        if (layer && (layer.type === "video" || layer.type === "video_url")) {
-                            vUrl = layer.value || ""
-                            break
-                        }
-                    }
-                }
-                if (vUrl === "" && blockData.video_url)
-                    vUrl = blockData.video_url
-
-                var nextActive = (blockData.is_active === undefined) ? true : !!blockData.is_active
+                var blockData = overlayAsJs(actualData[key]) || actualData[key]
+                var vUrl = overlayVideoUrl(blockData)
+                var nextActive = overlayIsActive(blockData)
+                map[key].content = blockData.content
                 if (map[key].videoSourceUrl === vUrl && map[key].isActive === nextActive)
                     continue
 
                 console.log("[OVERLAYS] Слот", key, "-> video:", vUrl, "| active:", nextActive)
                 map[key].videoSourceUrl = vUrl
-                map[key].content = blockData.content
                 map[key].isActive = nextActive
+            } else if (map[key] && map[key].videoSourceUrl !== "") {
+                // Слота нет в активных — останавливаем ролик, рамку DAT оставляем.
+                console.log("[OVERLAYS] Слот", key, "выключен на сервере")
+                map[key].videoSourceUrl = ""
+                map[key].content = null
+                map[key].isActive = true
             }
         }
     }

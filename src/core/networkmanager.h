@@ -9,18 +9,25 @@
 #include <QDebug>
 #include <QUrl>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QVariantMap>
 #include <QVariantList>
 #include <QTimer>
 #include <QVector>
+#include <QStringList>
 
 class GameModel;
 class StoreModel;
 class DmxController;
+class ReactiveLighting;
+class CcbootSuperClient;
+class LinkFlapWatchdog;
+class PatchCacheCoordinator;
 
 struct FanRelayEndpoint {
     QString host;
-    int port = 30000;
+    QString driver;
+    int port = 8080;
     int channel = 0;
     int channel2 = 0;
     int fanId = 0;
@@ -58,6 +65,8 @@ class NetworkManager : public QObject
     Q_PROPERTY(int lightBrightness READ lightBrightness NOTIFY lightStateChanged)
     Q_PROPERTY(QString lightEffect READ lightEffect NOTIFY lightStateChanged)
     Q_PROPERTY(int lightManualLockSec READ lightManualLockSec NOTIFY lightStateChanged)
+    Q_PROPERTY(bool lightInteractive READ lightInteractive NOTIFY lightStateChanged)
+    Q_PROPERTY(QString lightInteractiveHint READ lightInteractiveHint NOTIFY lightStateChanged)
     Q_PROPERTY(double cpuTempC READ cpuTempC NOTIFY cpuTempChanged)
     Q_PROPERTY(double ssdTempC READ ssdTempC NOTIFY ssdTempChanged)
     Q_PROPERTY(QString zoneName READ zoneName NOTIFY zoneInfoChanged)
@@ -68,11 +77,31 @@ class NetworkManager : public QObject
     Q_PROPERTY(bool ttsEnabled READ ttsEnabled NOTIFY ttsVoicesChanged)
     Q_PROPERTY(QString ttsVoice READ ttsVoice NOTIFY ttsVoiceChanged)
     Q_PROPERTY(QVariantList ttsVoices READ ttsVoices NOTIFY ttsVoicesChanged)
+    Q_PROPERTY(QStringList partySeatNames READ partySeatNames NOTIFY partyChanged)
+    Q_PROPERTY(bool partyOrderAvailable READ partyOrderAvailable NOTIFY partyChanged)
+    Q_PROPERTY(bool inMatch READ inMatch NOTIFY inMatchChanged)
+    Q_PROPERTY(bool ghostCoachEnabled READ ghostCoachEnabled NOTIFY lanLiveChanged)
+    Q_PROPERTY(bool partyEnergyAvailable READ partyEnergyAvailable NOTIFY lanLiveChanged)
+    Q_PROPERTY(bool partyEnergyAutoFuel READ partyEnergyAutoFuel NOTIFY lanLiveChanged)
+    Q_PROPERTY(bool partyEnergyIsCaptain READ partyEnergyIsCaptain NOTIFY lanLiveChanged)
+    Q_PROPERTY(int partyEnergyMinutes READ partyEnergyMinutes NOTIFY lanLiveChanged)
+    Q_PROPERTY(QVariantList bounties READ bounties NOTIFY lanLiveChanged)
+    Q_PROPERTY(QVariantList bountyTargets READ bountyTargets NOTIFY lanLiveChanged)
+    Q_PROPERTY(QVariantList bountyProducts READ bountyProducts NOTIFY lanLiveChanged)
+    Q_PROPERTY(QString lanLiveToast READ lanLiveToast NOTIFY lanLiveChanged)
+    Q_PROPERTY(QString playerName READ playerName NOTIFY playerNameChanged)
+    Q_PROPERTY(QVariantMap throne READ throne NOTIFY throneChanged)
+    Q_PROPERTY(QVariantMap lfg READ lfg NOTIFY lanLiveChanged)
+    Q_PROPERTY(QVariantMap lootbox READ lootbox NOTIFY lootboxChanged)
+    Q_PROPERTY(QVariantMap clanWar READ clanWar NOTIFY clanWarChanged)
+    Q_PROPERTY(QVariantMap arena READ arena NOTIFY arenaChanged)
+    Q_PROPERTY(QVariantMap clubFeatures READ clubFeatures NOTIFY clubFeaturesChanged)
 public:
     explicit NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QObject *parent = nullptr);
 
     bool isPcRegistered() const;
     QString serverUrl() const;
+    ReactiveLighting *reactiveLighting() const { return m_gsi; }
 
     /**
      * Собирает базовый адрес бэкенда из Network/api_ip и Network/api_port.
@@ -109,6 +138,8 @@ public:
     int lightBrightness() const { return m_lightBrightness; }
     QString lightEffect() const { return m_lightEffect; }
     int lightManualLockSec() const { return m_lightManualLockSec; }
+    bool lightInteractive() const { return m_lightInteractive; }
+    QString lightInteractiveHint() const { return m_lightInteractiveHint; }
     double cpuTempC() const { return m_cpuTempC; }
     double ssdTempC() const { return m_ssdTempC; }
     QString zoneName() const { return m_zoneName; }
@@ -118,8 +149,50 @@ public:
     bool ttsEnabled() const { return m_ttsEnabled; }
     QString ttsVoice() const { return m_ttsVoice; }
     QVariantList ttsVoices() const { return m_ttsVoices; }
+    QStringList partySeatNames() const { return m_partySeatNames; }
+    bool partyOrderAvailable() const { return m_partySeatNames.size() > 1; }
+    bool inMatch() const { return m_inMatch; }
+    bool ghostCoachEnabled() const { return m_ghostCoachEnabled; }
+    bool partyEnergyAvailable() const { return m_partyEnergyAvailable; }
+    bool partyEnergyAutoFuel() const { return m_partyEnergyAutoFuel; }
+    bool partyEnergyIsCaptain() const { return m_partyEnergyIsCaptain; }
+    int partyEnergyMinutes() const { return m_partyEnergyMinutes; }
+    QVariantList bounties() const { return m_bounties; }
+    QVariantList bountyTargets() const { return m_bountyTargets; }
+    QVariantList bountyProducts() const { return m_bountyProducts; }
+    QString lanLiveToast() const { return m_lanLiveToast; }
+    QString playerName() const { return m_playerName; }
+    QVariantMap throne() const { return m_throne; }
+    QVariantMap lfg() const { return m_lfg; }
+    QVariantMap lootbox() const { return m_lootbox; }
+    QVariantMap clanWar() const { return m_clanWar; }
+    QVariantMap arena() const { return m_arena; }
+    QVariantMap clubFeatures() const { return m_clubFeatures; }
+    Q_INVOKABLE bool featureEnabled(const QString &key) const;
     bool maintenance() const { return m_maintenance; }
     Q_INVOKABLE void setMaintenance(bool on);
+    /** Guest logged in (UI or backend user id). */
+    bool isGuestSessionActive() const;
+    /** ПК включён по расписанию (warmup), гостя нет. */
+    bool isWarmupIdle() const;
+    bool hasPersonalFanRelay() const;
+    void setPersonalFanSpeedDirect(int speed);
+    void setFanProbeLock(bool on);
+    void reportShellIncident(const QString &type, const QString &severity,
+                             const QString &description, const QJsonObject &payload = QJsonObject());
+    void setIntegrityTelemetry(const QString &status, const QString &hash,
+                               const QString &message, const QStringList &driftPaths);
+    void setGpuTelemetry(int limitW, const QString &mode);
+    void ackResyncCommand(qint64 commandId, const QString &result, const QString &message);
+    void ackRollbackCommand(qint64 commandId, const QString &result, const QString &message);
+    void postGoldenRevision(const QJsonObject &payload);
+    void fetchGoldenRevision(qint64 revisionId);
+    void setCrashTelemetry(bool detected, const QString &reason, const QString &detail);
+    void setLinkFlapWatchdog(LinkFlapWatchdog *watchdog);
+    void setPatchCache(PatchCacheCoordinator *cache);
+    void noteLinkFlap(const QJsonObject &payload);
+    void ackPatchPull(qint64 commandId, const QString &result, const QString &message);
+    QString primaryLanIp() const;
 
     QNetworkAccessManager* networkAccessManager() const { return m_networkManager; }
     void setRootQmlObject(QObject* rootObj) { m_rootQml = rootObj; }
@@ -134,6 +207,8 @@ public:
     Q_INVOKABLE void registerStation(const QString &zoneType, const QString &pcName);
     Q_INVOKABLE void logoutTerminal(int terminalId);
     Q_INVOKABLE QString getLocalPath(const QString &remotePath, const QString &target);
+    /** Абсолютный URL ролика относительно api_ip — для стрима, пока кэш качается. */
+    Q_INVOKABLE QString resolveOverlayUrl(const QString &remotePath) const;
     /** true если локальный mp4 достаточно лёгкий для UI-потока (~логин/телефон). */
     Q_INVOKABLE bool isLocalMediaLight(const QString &qmlOrLocalPath,
                                        qint64 maxBytes = 8 * 1024 * 1024) const;
@@ -146,7 +221,7 @@ public:
     Q_INVOKABLE void checkOrderStatus(int terminalId = 0, int orderId = 0);
     /** Guest arrived early: release pre-session shop order into the admin queue. */
     Q_INVOKABLE void releaseScheduledOrder(int terminalId = 0);
-    Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId);
+    Q_INVOKABLE void login(const QString &phone, const QString &pin, int terminalId, bool acceptSeatChange = false);
     /** QR login challenge for the login screen (poll until consumed). */
     Q_INVOKABLE void requestQrChallenge(int terminalId = 0);
     Q_INVOKABLE void stopQrLoginPoll();
@@ -157,8 +232,13 @@ public:
     /** Pull payment status from YooKassa and credit wallet if paid (same as «Вернуться»). */
     Q_INVOKABLE void syncTopUpPayment(const QString &paymentId);
     Q_INVOKABLE void fetchOverlays(int terminalId);
+    Q_INVOKABLE void fetchClanWar(int terminalId = 0);
     Q_INVOKABLE void freeGameAccount(int terminalId, int gameId);
     Q_INVOKABLE void recordGameLaunch(int gameId);
+    Q_INVOKABLE void uploadClip(const QString &filePath, int durationSec,
+                                const QString &shareToken = QString(),
+                                const QString &aspect = QString(),
+                                const QString &source = QString());
     Q_INVOKABLE void sendSos(const QString &reasonCode, const QString &reasonLabel);
     Q_INVOKABLE void clearSessionUser();
     /** Старт опроса температуры + состояния вентилятора (после логина). */
@@ -172,17 +252,42 @@ public:
     Q_INVOKABLE void fetchFanDiscover();
     Q_INVOKABLE void fetchTtsVoices();
     Q_INVOKABLE void setTtsVoice(const QString &voice);
+    Q_INVOKABLE void fetchLanLive();
+    Q_INVOKABLE void createBounty(int targetComputerId, const QString &kind, const QString &game,
+                                 const QString &weapon, const QString &stakeType,
+                                 double stakeAmount, int productId, const QString &title);
+    Q_INVOKABLE void cancelBounty(int bountyId);
+    Q_INVOKABLE void setPartyAutoFuel(bool on);
+    Q_INVOKABLE void contributePartyEnergy(int minutes, const QString &source);
+    Q_INVOKABLE void setGhostCoachEnabled(bool on);
+    Q_INVOKABLE void enqueueLfg(const QString &game, const QString &rank);
+    Q_INVOKABLE void cancelLfg();
+    Q_INVOKABLE void sitLfg();
+    Q_INVOKABLE void openLootbox(int dropId);
+    Q_INVOKABLE void createArenaChallenge(const QString &game, const QString &mode,
+                                          double entryFee, const QString &scope,
+                                          int targetComputerId, const QString &kind = QString(),
+                                          int maxPlayers = 0);
+    Q_INVOKABLE void acceptArena(const QString &uuid);
+    Q_INVOKABLE void declineArena(const QString &uuid);
+    Q_INVOKABLE void cancelArena(const QString &uuid);
+    Q_INVOKABLE void proposeArenaRaise(const QString &uuid, double entryFee);
+    Q_INVOKABLE void voteArenaRaise(const QString &uuid, bool agree);
+    Q_INVOKABLE void startArena(const QString &uuid);
     Q_INVOKABLE void bindFanPair(int boardId, int channel, int channel2);
     Q_INVOKABLE void unbindFan(int fanId);
-    /** Pulse high ~2.5s then night on LAN W5100 (path-port). */
-    Q_INVOKABLE void testFanPair(const QString &host, int modulePort, int channel, int channel2);
+    /** Pulse high ~2.5s then night on LAN relay (NetMod TCP port or W5100 path-port). */
+    Q_INVOKABLE void testFanPair(const QString &host, int modulePort, int channel, int channel2,
+                                 const QString &driver = QString());
     Q_INVOKABLE void fetchLightState();
     Q_INVOKABLE void setLightColor(const QString &color);
     Q_INVOKABLE void setLightBrightness(int brightness);
+    Q_INVOKABLE void setLightInteractive(bool on);
     /** Heartbeat питания: last_seen + MAC → power_desired / session_active. */
     Q_INVOKABLE void startPowerHeartbeat();
     Q_INVOKABLE void stopPowerHeartbeat();
     Q_INVOKABLE void sendPowerHeartbeat();
+    void setDisklessController(CcbootSuperClient *controller);
     bool isProduction() const { return m_production; }
     /** aboutToQuit: fan OFF+/99 ack, затем power_state=off. */
     Q_INVOKABLE void notifyPowerOffline();
@@ -209,6 +314,8 @@ signals:
     void fileDownloaded(const QString &remotePath, const QString &localPath, const QString &target);
     void loginSucceeded(const QString &userName, double balance, const QString &timeRemaining, const QString &phone);
     void loginFailed(const QString &message);
+    /** PIN на чужом ПК: canSwitch=true → Да/Нет, иначе только «понятно». */
+    void seatChangeRequired(const QString &message, bool canSwitch);
     void loginRequestFinished();
     void qrChallengeReady(const QString &token, const QString &qrPayload, const QString &expiresAt);
     void qrChallengeFailed(const QString &message);
@@ -228,6 +335,8 @@ signals:
     void userIdChanged();
     void featuredChanged();
     void gamesLoaded();
+    void clipUploadSucceeded(const QString &shareUrl);
+    void clipUploadFailed(const QString &message);
     void quickAppsChanged();
     void sosSent(bool success);
     void fanStateChanged();
@@ -245,6 +354,14 @@ signals:
     void powerActionRequested(const QString &action);
     /** Scheduler closed the booking while shell still showed a logged-in user. */
     void sessionForceEnded();
+    /** Admin queued silent D: re-sync (heartbeat). */
+    void resyncCommandReceived(qint64 commandId, const QString &action);
+    /** Admin queued rollback to a verified golden-image revision. */
+    void rollbackCommandReceived(qint64 commandId, qint64 revisionId, const QString &action);
+    void goldenRevisionFetched(qint64 revisionId, const QJsonObject &payload);
+    void goldenRevisionFetchFailed(qint64 revisionId, const QString &message);
+    /** Cloud asks shell to pull game patch over LAN from seed peer. */
+    void patchPullReceived(qint64 commandId, const QJsonObject &pull);
     void aiAssistantSucceeded(const QByteArray &audioBytes, const QString &mime,
                               const QString &transcript, const QString &replyText);
     void aiAssistantFailed(const QString &message);
@@ -253,6 +370,25 @@ signals:
     void voiceGreetingFailed(const QString &message);
     void ttsVoiceChanged();
     void ttsVoicesChanged();
+    void partyChanged();
+    void inMatchChanged();
+    void lanLiveChanged();
+    void clanWarChanged();
+    void arenaChanged();
+    void arenaIncoming(const QVariantMap &challenge);
+    void arenaVictory(const QVariantMap &result);
+    void bountySettled(const QString &message);
+    void ghostWhisper(const QString &text);
+    void killHighlight();
+    void throneChanged();
+    void playerNameChanged();
+    void throneCrowned(const QString &line);
+    void lootboxChanged();
+    void lootboxDropped(const QVariantMap &box);
+    void lootboxOpened(const QVariantMap &box);
+    void clubFeaturesChanged();
+    void rageSmashAlert(const QVariantMap &payload);
+    void lfgSitSucceeded(const QString &pin, const QString &pcName, const QString &message);
     void ttsPreviewSucceeded(const QByteArray &audioBytes, const QString &mime);
 
 private:
@@ -283,12 +419,28 @@ private:
     bool isLocalSessionActive() const;
     bool isSetupScreenOpen() const;
     void handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive);
+    void attachStationHealth(QJsonObject &json);
+    void handleDisklessCommand(const QJsonObject &obj);
+    void handleResyncCommand(const QJsonObject &obj);
+    void handleRollbackCommand(const QJsonObject &obj);
+    void handlePatchCommands(const QJsonObject &root);
     void publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description);
     void pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt);
     void applyQrLoginSuccess(const QJsonObject &response);
     void pollQrStatusOnce();
     void applyClubName(const QString &raw);
     void applyPlayerTtsVoice(const QString &voice);
+    void applyPartyFromJson(const QJsonObject &root);
+    void applyLanLiveFromJson(const QJsonObject &root);
+    void applyThroneFromJson(const QJsonObject &root);
+    void applyLootboxFromJson(const QJsonObject &root);
+    void applyClanWarFromJson(const QJsonObject &root);
+    void applyArenaFromJson(const QJsonObject &root);
+    void postArenaAction(const QString &path, const QJsonObject &extra = QJsonObject());
+    void applyClubFeaturesFromJson(const QJsonObject &root);
+    void postGsiEvent(const QJsonObject &payload);
+    void setInMatch(bool on);
+    void syncGsiListen();
 
     QNetworkAccessManager *m_networkManager;
     QTimer *m_climateTimer = nullptr;
@@ -345,6 +497,10 @@ private:
     bool m_lightRequestInFlight = false;
     bool m_lightAckInFlight = false;
     bool m_skipLightApply = false;
+    bool m_lightInteractive = false;
+    QString m_lightInteractiveHint;
+    qint64 m_lastPlayEventAt = 0;
+    ReactiveLighting *m_gsi = nullptr;
     QTimer *m_lightLockTimer = nullptr;
     DmxController *m_dmx = nullptr;
     double m_cpuTempC = -1.0;
@@ -365,7 +521,8 @@ private:
     bool m_forceRelayApply = false;
     qint64 m_fanRelayUnreachableUntilMs = 0;
     QString m_fanRelayHost;
-    int m_fanRelayPort = 30000;
+    QString m_fanRelayDriver;
+    int m_fanRelayPort = 8080;
     int m_fanRelayChannel = 0;
     int m_fanRelayChannel2 = 0;
     QVector<FanRelayEndpoint> m_fanRelays;
@@ -379,11 +536,67 @@ private:
     bool m_ttsEnabled = false;
     QString m_ttsVoice;
     QVariantList m_ttsVoices;
+    QStringList m_partySeatNames;
+    bool m_inMatch = false;
+    bool m_ghostCoachEnabled = true;
+    bool m_partyEnergyAvailable = false;
+    bool m_partyEnergyAutoFuel = false;
+    bool m_partyEnergyIsCaptain = false;
+    int m_partyEnergyMinutes = 0;
+    QVariantList m_bounties;
+    QVariantList m_bountyTargets;
+    QVariantList m_bountyProducts;
+    QString m_lanLiveToast;
+    QString m_playerName;
+    QVariantMap m_throne;
+    QVariantMap m_lfg;
+    QVariantMap m_lootbox;
+    int m_lootboxAnnouncedId = 0;
+    QVariantMap m_clanWar;
+    QVariantMap m_arena;
+    QString m_arenaIncomingUuid;
+    QVariantMap m_clubFeatures;
+    bool m_gsiPostInFlight = false;
+    QJsonObject m_pendingGsi;
 
     GameModel* m_gamesModel;
     GameModel* m_featuredGamesModel = nullptr;
     StoreModel* m_storeModel;
     QObject* m_rootQml;
+    CcbootSuperClient *m_diskless = nullptr;
+    qint64 m_lastDisklessAckId = 0;
+    QString m_lastDisklessResult;
+    QString m_lastDisklessMessage;
+    int m_healthTick = 0;
+    QString m_cachedGamesHash;
+    QJsonArray m_cachedGamesJson;
+    int m_cachedSteamCount = 0;
+    int m_cachedEpicCount = 0;
+    bool m_fanProbeLock = false;
+    QString m_lastPowerDesired;
+    bool m_lastSessionActiveFromHeartbeat = false;
+    QString m_integrityStatus;
+    QString m_integrityHash;
+    QString m_integrityMessage;
+    QStringList m_integrityDrift;
+    int m_gpuPowerLimitW = 0;
+    QString m_gpuMode;
+    qint64 m_lastResyncAckId = 0;
+    QString m_lastResyncResult;
+    QString m_lastResyncMessage;
+    qint64 m_lastRollbackAckId = 0;
+    QString m_lastRollbackResult;
+    QString m_lastRollbackMessage;
+    bool m_crashDetected = false;
+    QString m_crashReason;
+    QString m_crashDetail;
+    LinkFlapWatchdog *m_linkFlap = nullptr;
+    PatchCacheCoordinator *m_patchCache = nullptr;
+    int m_pendingLinkFlaps = 0;
+    QJsonObject m_lastLinkFlapPayload;
+    qint64 m_lastPatchPullAckId = 0;
+    QString m_lastPatchPullResult;
+    QString m_lastPatchPullMessage;
 };
 
 #endif // NETWORKMANAGER_H

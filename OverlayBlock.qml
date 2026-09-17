@@ -55,6 +55,9 @@ Rectangle {
                 color: modelData.color || "white"
                 font.pixelSize: modelData.size || 16
                 font.bold: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                width: parent.width - 16
                 anchors.centerIn: parent
             }
 
@@ -89,6 +92,11 @@ Rectangle {
         }
     }
 
+    onVideoSourceUrlChanged: {
+        if (wantPlayer && !playerLoader.active)
+            activatePlayerTimer.restart()
+    }
+
     Component.onCompleted: {
         if (wantPlayer)
             activatePlayerTimer.restart()
@@ -105,6 +113,16 @@ Rectangle {
                 id: videoInner
                 anchors.fill: parent
                 property string resolvedPath: ""
+                property bool triedHttp: false
+
+                function httpUrl() {
+                    if (overlayBlockRoot.videoSourceUrl === "")
+                        return ""
+                    if (typeof NetworkManager !== "undefined"
+                            && typeof NetworkManager.resolveOverlayUrl === "function")
+                        return NetworkManager.resolveOverlayUrl(overlayBlockRoot.videoSourceUrl)
+                    return overlayBlockRoot.videoSourceUrl
+                }
 
                 function resolvePath() {
                     if (typeof NetworkManager === "undefined")
@@ -114,28 +132,50 @@ Rectangle {
                                 overlayBlockRoot.blockUniqueId)
                 }
 
+                function setSourceAndPlay(src) {
+                    if (src === "")
+                        return false
+                    if (player.source.toString() === src) {
+                        if (player.playbackState !== MediaPlayer.PlayingState)
+                            player.play()
+                        return true
+                    }
+                    console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "open:", src)
+                    player.stop()
+                    player.source = src
+                    return true
+                }
+
                 function openWhenReady() {
                     var path = resolvedPath !== "" ? resolvedPath : resolvePath()
                     resolvedPath = path
-                    if (path === "") {
-                        console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "wait download")
+                    if (path !== "") {
+                        setSourceAndPlay(path)
                         return
                     }
-                    if (player.source.toString() === path) {
-                        if (player.playbackState !== MediaPlayer.PlayingState)
-                            player.play()
+                    // Не ждём 100+ МБ кэша: стримим с облака, кэш докачается в фоне.
+                    var remote = httpUrl()
+                    if (remote !== "") {
+                        triedHttp = true
+                        setSourceAndPlay(remote)
                         return
                     }
-                    console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "open:", path)
-                    player.stop()
-                    player.source = path
-                    // play после LoadedMedia
+                    console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "wait download")
                 }
 
                 Component.onCompleted: {
                     resolvedPath = resolvePath()
                     // Ещё один yield после создания плеера.
                     Qt.callLater(openWhenReady)
+                }
+
+                Connections {
+                    target: overlayBlockRoot
+                    function onVideoSourceUrlChanged() {
+                        videoInner.resolvedPath = ""
+                        videoInner.triedHttp = false
+                        Qt.callLater(videoInner.openWhenReady)
+                    }
                 }
 
                 Connections {
@@ -155,6 +195,7 @@ Rectangle {
                     videoOutput: vout
                     audioOutput: AudioOutput { muted: true }
                     loops: MediaPlayer.Infinite
+                    autoPlay: overlayBlockRoot.wantPlayer
 
                     onMediaStatusChanged: {
                         if (mediaStatus === MediaPlayer.LoadedMedia
@@ -165,6 +206,9 @@ Rectangle {
                             console.log("[PLAYER-ERROR]", overlayBlockRoot.blockUniqueId,
                                         "invalid", source)
                             stop()
+                            // HTTP без moov в начале — ждём локальный файл.
+                            if (videoInner.triedHttp && videoInner.resolvedPath === "")
+                                return
                         }
                     }
                 }

@@ -223,6 +223,7 @@ void SessionAlertManager::startSession(const QString &timeRemaining)
     m_warned15 = false;
     m_warned10 = false;
     m_warned5 = false;
+    m_graceTicks = 0;
     setTimeRemaining(formatSeconds(m_remainingSeconds));
     setSessionActive(m_remainingSeconds > 0);
 
@@ -254,6 +255,10 @@ void SessionAlertManager::syncTimeRemaining(const QString &timeRemaining)
     setTimeRemaining(formatSeconds(m_remainingSeconds));
 
     if (m_remainingSeconds <= 0) {
+        if (m_holdLogout) {
+            emit sessionGraceRequested();
+            return;
+        }
         m_tickTimer.stop();
         setSessionActive(false);
         qWarning() << "[SESSION-ALERT] synced to zero — expire";
@@ -261,6 +266,7 @@ void SessionAlertManager::syncTimeRemaining(const QString &timeRemaining)
         return;
     }
 
+    m_graceTicks = 0;
     setSessionActive(true);
     checkThresholdCrossings(previous > 0 ? previous : (m_remainingSeconds + 1));
 
@@ -276,12 +282,32 @@ void SessionAlertManager::reset()
     m_warned10 = false;
     m_warned5 = false;
     m_speechBlocked = false;
+    m_holdLogout = false;
+    m_graceTicks = 0;
     setTimeRemaining(QStringLiteral("00:00:00"));
     setSessionActive(false);
     if (m_toast)
         m_toast->dismiss();
     m_toastTopmostTimer.stop();
     qWarning() << "[SESSION-ALERT] reset";
+}
+
+void SessionAlertManager::setHoldLogout(bool hold)
+{
+    if (m_holdLogout == hold)
+        return;
+    m_holdLogout = hold;
+    if (!hold)
+        m_graceTicks = 0;
+}
+
+void SessionAlertManager::announce(const QString &text)
+{
+    const QString t = text.trimmed();
+    if (t.isEmpty())
+        return;
+    showToast(t);
+    speakRussian(t);
 }
 
 void SessionAlertManager::requestExtendTime()
@@ -305,6 +331,12 @@ void SessionAlertManager::onTick()
     checkThresholdCrossings(previous);
 
     if (m_remainingSeconds <= 0) {
+        if (m_holdLogout && m_graceTicks < 45) {
+            ++m_graceTicks;
+            if (m_graceTicks == 1 || (m_graceTicks % 8) == 0)
+                emit sessionGraceRequested();
+            return;
+        }
         m_tickTimer.stop();
         setSessionActive(false);
         qWarning() << "[SESSION-ALERT] countdown reached zero";

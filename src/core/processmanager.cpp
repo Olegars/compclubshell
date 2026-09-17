@@ -1658,6 +1658,8 @@ void ProcessManager::finishGameSession(const QString &reason)
     qWarning() << "[SESSION] Сессия завершена:" << reason
                << "| platform:" << m_currentPlatform;
 
+    emit gameSessionFinished(reason);
+
     // Сначала шелл на экран, потом taskkill; Epic ini часто дописывается при выходе лаунчера
     // (showShellAfterGame ends the *visual* session return — not the mid-session toggle path)
     showShellAfterGame();

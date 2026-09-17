@@ -22,15 +22,30 @@ qt_add_executable(appsector0451
     src/core/directlaunchauth.h src/core/directlaunchauth.cpp
     src/core/networkmanager.h src/core/networkmanager.cpp
     src/core/thermalmonitor.h src/core/thermalmonitor.cpp
+    src/core/stationhealth.h src/core/stationhealth.cpp
     src/core/fanrelaycontroller.h src/core/fanrelaycontroller.cpp
     src/core/dmxcontroller.h src/core/dmxcontroller.cpp
+    src/core/localhttpserver.h src/core/localhttpserver.cpp
+    src/core/reactivelighting.h src/core/reactivelighting.cpp
+    src/core/valvegsi.h src/core/valvegsi.cpp
+    src/core/chromaemulator.h src/core/chromaemulator.cpp
+    src/core/gamesenseemulator.h src/core/gamesenseemulator.cpp
     src/core/sessionalertmanager.h src/core/sessionalertmanager.cpp
     src/core/hidinputmonitor.h src/core/hidinputmonitor.cpp
+    src/core/hardwarehealthwatchdog.h src/core/hardwarehealthwatchdog.cpp
+    src/core/ragesmashwatchdog.h src/core/ragesmashwatchdog.cpp
     src/core/voicehotkeymonitor.h src/core/voicehotkeymonitor.cpp
     src/core/voiceassistant.h src/core/voiceassistant.cpp
+    src/core/instantreplay.h src/core/instantreplay.cpp
     src/core/lobbyaudiomanager.h src/core/lobbyaudiomanager.cpp
     src/core/ccbootsuperclient.h src/core/ccbootsuperclient.cpp
     src/core/pathresolver.h src/core/pathresolver.cpp
+    src/core/bearingwearprobe.h src/core/bearingwearprobe.cpp
+    src/core/goldenimagedriftwatchdog.h src/core/goldenimagedriftwatchdog.cpp
+    src/core/rollbackmarker.h src/core/rollbackmarker.cpp
+    src/core/gpupowerlimiter.h src/core/gpupowerlimiter.cpp
+    src/core/linkflapwatchdog.h src/core/linkflapwatchdog.cpp
+    src/core/patchcachecoordinator.h src/core/patchcachecoordinator.cpp
     config.ini
 )
 
@@ -45,7 +60,13 @@ qt_add_qml_module(appsector0451
         Dashboard.qml
         SetupScreen.qml
         OverlayBlock.qml
+        ClanWarBanner.qml
+        ArenaDuelBanner.qml
+        ArenaDuelOverlay.qml
+        ArenaChallengePopup.qml
         LoadingOverlay.qml
+        LootboxOverlay.qml
+        RageCalmOverlay.qml
         QuickMenu.qml
         VoiceIndicator.qml
         AvatarWatermarkBg.qml

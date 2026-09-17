@@ -7,6 +7,7 @@
 #include <QHostAddress>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QUdpSocket>
 #include <QVector>
@@ -47,9 +48,25 @@ public:
 
     explicit DmxController(QObject *parent = nullptr);
 
+    struct OverrideSpec {
+        QString color = QStringLiteral("red");
+        int brightness = 100;
+        QString effect = QStringLiteral("none");
+        bool strobe = false;
+        int strobeOnMs = 90;
+        int strobeOffMs = 90;
+        QStringList cycleColors;
+        int cycleHoldMs = 400;
+        int fadeMs = 280;
+    };
+
     void setNodes(const QVector<Node> &nodes, int fadeMs = 0);
     void setRainbowPeriodMs(int ms);
     void setAllBrightness(int brightness);
+    void setOverride(const QString &color, int brightness, const QString &effect, bool strobe);
+    void setOverride(const OverrideSpec &spec);
+    void clearOverride(int fadeMs = 400);
+    bool hasOverride() const { return m_overrideActive; }
     bool hasNodes() const { return !m_nodes.isEmpty(); }
     bool sendOnce(QString *errorOut = nullptr);
     void startRefresh();
@@ -72,6 +89,15 @@ private:
     QTimer m_timer;
     QVector<Node> m_nodes;
     int m_rainbowPeriodMs = 8000;
+    bool m_overrideActive = false;
+    bool m_overrideStrobe = false;
+    int m_overrideStrobeOnMs = 90;
+    int m_overrideStrobeOffMs = 90;
+    QString m_overrideColor = QStringLiteral("red");
+    int m_overrideBrightness = 100;
+    QString m_overrideEffect = QStringLiteral("none");
+    QStringList m_overrideCycle;
+    int m_overrideCycleHoldMs = 400;
     quint8 m_sequence = 1;
     QHash<QString, QColor> m_liveColors;
     QHash<QString, QColor> m_fadeFrom;

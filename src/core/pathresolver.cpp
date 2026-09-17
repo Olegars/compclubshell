@@ -294,6 +294,7 @@ void PathResolver::ensureLayout()
     QDir().mkpath(m_dataRoot + QStringLiteral("/cache/ea"));
     QDir().mkpath(m_dataRoot + QStringLiteral("/cache/riot"));
     QDir().mkpath(m_dataRoot + QStringLiteral("/logs"));
+    QDir().mkpath(m_dataRoot + QStringLiteral("/replay/buf"));
 }
 
 void PathResolver::updateFreeSpace()

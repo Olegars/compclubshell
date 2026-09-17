@@ -1,9 +1,15 @@
 #include "networkmanager.h"
+#include "ccbootsuperclient.h"
 #include "hwidprovider.h"
 #include "pathresolver.h"
+#include "stationhealth.h"
 #include "thermalmonitor.h"
 #include "fanrelaycontroller.h"
 #include "dmxcontroller.h"
+#include "reactivelighting.h"
+#include "valvegsi.h"
+#include "linkflapwatchdog.h"
+#include "patchcachecoordinator.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
 #include <QCoreApplication>
@@ -16,6 +22,7 @@
 #include <QJsonValue>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QUrl>
 #include <QUrlQuery>
 #include <QHash>
 #include <QPair>
@@ -25,6 +32,9 @@
 #include <QHttpMultiPart>
 #include <QHttpPart>
 #include <QNetworkInterface>
+#include <QHostAddress>
+#include <QGuiApplication>
+#include <QClipboard>
 #include <QEventLoop>
 #include <QtGlobal>
 #include <algorithm>
@@ -46,6 +56,19 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
 {
     m_networkManager = new QNetworkAccessManager(this);
     m_dmx = new DmxController(this);
+    m_gsi = new ReactiveLighting(m_dmx, this);
+    connect(m_gsi, &ReactiveLighting::lastEventChanged, this, [this]() {
+        m_lightInteractiveHint = m_gsi->lastEvent();
+        emit lightStateChanged();
+    });
+    if (m_gsi->valveGsi()) {
+        connect(m_gsi->valveGsi(), &ValveGsi::gameEvent, this, [this](const QJsonObject &payload) {
+            postGsiEvent(payload);
+        });
+        connect(m_gsi->valveGsi(), &ValveGsi::matchStateChanged, this, [this](bool on) {
+            setInMatch(on);
+        });
+    }
 
     QString pathCurrent = QCoreApplication::applicationDirPath() + "/config.ini";
     QString pathUp = QCoreApplication::applicationDirPath() + "/../config.ini";
@@ -321,6 +344,210 @@ void NetworkManager::applyPlayerTtsVoice(const QString &voice)
     emit ttsVoiceChanged();
 }
 
+void NetworkManager::applyPartyFromJson(const QJsonObject &root)
+{
+    const QJsonObject party = root.value(QStringLiteral("party")).toObject();
+    const QJsonArray namesJson = party.value(QStringLiteral("names")).toArray();
+    QStringList names;
+    names.reserve(namesJson.size());
+    for (const QJsonValue &v : namesJson) {
+        const QString n = v.toString().trimmed();
+        if (!n.isEmpty())
+            names.append(n);
+    }
+    if (names == m_partySeatNames)
+        return;
+    m_partySeatNames = names;
+    emit partyChanged();
+}
+
+void NetworkManager::applyLanLiveFromJson(const QJsonObject &root)
+{
+    bool changed = false;
+    if (root.contains(QStringLiteral("ghost_coach"))) {
+        const bool on = root.value(QStringLiteral("ghost_coach")).toBool(true);
+        if (on != m_ghostCoachEnabled) {
+            m_ghostCoachEnabled = on;
+            changed = true;
+        }
+    }
+    const QJsonObject energy = root.value(QStringLiteral("party_energy")).toObject();
+    if (!energy.isEmpty()) {
+        const bool avail = energy.value(QStringLiteral("available")).toBool(false);
+        const bool autoFuel = energy.value(QStringLiteral("auto_fuel")).toBool(false);
+        const bool captain = energy.value(QStringLiteral("is_captain")).toBool(false);
+        const int minutes = energy.value(QStringLiteral("minutes")).toInt(0);
+        if (avail != m_partyEnergyAvailable || autoFuel != m_partyEnergyAutoFuel
+                || captain != m_partyEnergyIsCaptain || minutes != m_partyEnergyMinutes) {
+            m_partyEnergyAvailable = avail;
+            m_partyEnergyAutoFuel = autoFuel;
+            m_partyEnergyIsCaptain = captain;
+            m_partyEnergyMinutes = minutes;
+            changed = true;
+        }
+    }
+    if (root.contains(QStringLiteral("bounties"))) {
+        m_bounties = root.value(QStringLiteral("bounties")).toArray().toVariantList();
+        changed = true;
+    }
+    if (root.contains(QStringLiteral("bounty_targets")))
+        m_bountyTargets = root.value(QStringLiteral("bounty_targets")).toArray().toVariantList();
+    if (root.contains(QStringLiteral("bounty_products")))
+        m_bountyProducts = root.value(QStringLiteral("bounty_products")).toArray().toVariantList();
+    if (root.contains(QStringLiteral("lfg"))) {
+        m_lfg = root.value(QStringLiteral("lfg")).toObject().toVariantMap();
+        changed = true;
+    }
+    applyThroneFromJson(root);
+    applyLootboxFromJson(root);
+    applyClanWarFromJson(root);
+    applyArenaFromJson(root);
+    applyClubFeaturesFromJson(root);
+    if (changed)
+        emit lanLiveChanged();
+}
+
+void NetworkManager::applyThroneFromJson(const QJsonObject &root)
+{
+    if (!root.contains(QStringLiteral("throne")))
+        return;
+    const QJsonValue v = root.value(QStringLiteral("throne"));
+    QVariantMap next;
+    if (v.isObject())
+        next = v.toObject().toVariantMap();
+    if (next == m_throne)
+        return;
+    m_throne = next;
+    emit throneChanged();
+}
+
+void NetworkManager::applyLootboxFromJson(const QJsonObject &root)
+{
+    QJsonObject box = root.value(QStringLiteral("lootbox")).toObject();
+    if (box.isEmpty())
+        box = root.value(QStringLiteral("lootbox_dropped")).toObject();
+    if (box.isEmpty()) {
+        if (m_lootbox.value(QStringLiteral("status")).toString() == QLatin1String("pending")) {
+            m_lootbox.clear();
+            emit lootboxChanged();
+        }
+        return;
+    }
+    QVariantMap next = box.toVariantMap();
+    const int newId = next.value(QStringLiteral("id")).toInt();
+    const QString status = next.value(QStringLiteral("status")).toString();
+    const QString prevStatus = m_lootbox.value(QStringLiteral("status")).toString();
+    if (next != m_lootbox) {
+        m_lootbox = next;
+        emit lootboxChanged();
+    }
+    if (status == QLatin1String("pending") && newId > 0 && newId != m_lootboxAnnouncedId) {
+        m_lootboxAnnouncedId = newId;
+        emit lootboxDropped(next);
+    }
+    if (status == QLatin1String("opened") && prevStatus != QLatin1String("opened") && newId > 0)
+        emit lootboxOpened(next);
+}
+
+void NetworkManager::applyClanWarFromJson(const QJsonObject &root)
+{
+    if (!root.contains(QStringLiteral("clan_war")))
+        return;
+    const QJsonValue v = root.value(QStringLiteral("clan_war"));
+    QVariantMap next;
+    if (v.isObject())
+        next = v.toObject().toVariantMap();
+    if (next == m_clanWar)
+        return;
+    m_clanWar = next;
+    emit clanWarChanged();
+}
+
+void NetworkManager::applyArenaFromJson(const QJsonObject &root)
+{
+    QJsonObject obj = root.value(QStringLiteral("arena")).toObject();
+    if (obj.isEmpty() && root.contains(QStringLiteral("arena_duel")) && root.value(QStringLiteral("arena_duel")).isObject()) {
+        QVariantMap ticker = root.value(QStringLiteral("arena_duel")).toObject().toVariantMap();
+        if (ticker != m_arena.value(QStringLiteral("ticker")).toMap()) {
+            m_arena.insert(QStringLiteral("ticker"), ticker);
+            emit arenaChanged();
+        }
+        return;
+    }
+    if (obj.isEmpty() && !root.contains(QStringLiteral("arena")))
+        return;
+    const QVariantMap next = obj.toVariantMap();
+    const QVariantMap prevIncoming = m_arena.value(QStringLiteral("incoming")).toMap();
+    const QString prevUuid = prevIncoming.value(QStringLiteral("uuid")).toString();
+    if (next != m_arena) {
+        m_arena = next;
+        emit arenaChanged();
+    }
+    const QVariantMap incoming = next.value(QStringLiteral("incoming")).toMap();
+    const QString uuid = incoming.value(QStringLiteral("uuid")).toString();
+    const bool personal = incoming.value(QStringLiteral("incoming")).toBool()
+            || incoming.value(QStringLiteral("can_decline")).toBool();
+    if (personal && !uuid.isEmpty() && uuid != m_arenaIncomingUuid) {
+        m_arenaIncomingUuid = uuid;
+        emit arenaIncoming(incoming);
+        const QString whisper = next.value(QStringLiteral("whisper")).toString();
+        if (!whisper.isEmpty())
+            emit ghostWhisper(whisper);
+    }
+    if (uuid.isEmpty())
+        m_arenaIncomingUuid.clear();
+
+    const QVariantMap mine = next.value(QStringLiteral("mine")).toMap();
+    const QString connect = mine.value(QStringLiteral("connect")).toString();
+    const QString st = mine.value(QStringLiteral("status")).toString();
+    if ((st == QLatin1String("accepted") || st == QLatin1String("in_progress")) && !connect.isEmpty()) {
+        if (QClipboard *clip = QGuiApplication::clipboard())
+            clip->setText(connect);
+    }
+    Q_UNUSED(prevUuid);
+}
+
+bool NetworkManager::featureEnabled(const QString &key) const
+{
+    if (key.isEmpty() || !m_clubFeatures.contains(key))
+        return true;
+    const QVariant v = m_clubFeatures.value(key);
+    if (v.canConvert<QVariantMap>()) {
+        const QVariantMap m = v.toMap();
+        if (m.contains(QStringLiteral("enabled")))
+            return m.value(QStringLiteral("enabled")).toBool();
+    }
+    return true;
+}
+
+void NetworkManager::applyClubFeaturesFromJson(const QJsonObject &root)
+{
+    if (!root.contains(QStringLiteral("features")))
+        return;
+    const QJsonValue v = root.value(QStringLiteral("features"));
+    QVariantMap next;
+    if (v.isObject())
+        next = v.toObject().toVariantMap();
+    if (next == m_clubFeatures)
+        return;
+    m_clubFeatures = next;
+    emit clubFeaturesChanged();
+}
+
+void NetworkManager::setInMatch(bool on)
+{
+    if (m_inMatch == on)
+        return;
+    m_inMatch = on;
+    emit inMatchChanged();
+}
+
+void NetworkManager::syncGsiListen()
+{
+    if (m_gsi)
+        m_gsi->setListen(m_userSessionActive);
+}
+
 int NetworkManager::computerId() const {
     return m_computerId;
 }
@@ -450,6 +677,33 @@ void NetworkManager::logoutTerminal(int terminalId) {
     });
 }
 
+QString NetworkManager::resolveOverlayUrl(const QString &remotePath) const
+{
+    if (remotePath.isEmpty())
+        return {};
+
+    const QUrl remoteUrl(remotePath);
+    if (remoteUrl.isValid() && !remoteUrl.scheme().isEmpty()) {
+        const QString path = remoteUrl.path();
+        // Overlay URLs in DB often keep an old absolute host (LAN IP).
+        if (path.contains(QStringLiteral("/storage/"), Qt::CaseInsensitive)
+            && !m_serverUrl.isEmpty()) {
+            QString fullUrl = m_serverUrl + path;
+            if (remoteUrl.hasQuery())
+                fullUrl += QLatin1Char('?') + remoteUrl.query();
+            return fullUrl;
+        }
+        return remotePath;
+    }
+
+    QString cleanRemote = remotePath;
+    if (cleanRemote.startsWith(QLatin1Char('/')))
+        cleanRemote.remove(0, 1);
+    if (m_serverUrl.isEmpty())
+        return cleanRemote;
+    return m_serverUrl + QLatin1Char('/') + cleanRemote;
+}
+
 QString NetworkManager::getLocalPath(const QString &remotePath, const QString &target) {
     if (remotePath.isEmpty()) return "";
 
@@ -467,23 +721,7 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
 
     m_activeDownloads.append(target);
 
-    // Overlay URLs in DB often keep an old absolute host (e.g. LAN IP).
-    // Always download /storage/... from the configured shell server.
-    QString fullUrl = remotePath;
-    const QUrl remoteUrl(remotePath);
-    if (remoteUrl.isValid() && !remoteUrl.scheme().isEmpty()) {
-        const QString path = remoteUrl.path();
-        if (path.contains(QStringLiteral("/storage/"), Qt::CaseInsensitive)
-            && !m_serverUrl.isEmpty()) {
-            fullUrl = m_serverUrl + path;
-            if (remoteUrl.hasQuery())
-                fullUrl += QLatin1Char('?') + remoteUrl.query();
-        }
-    } else if (!remotePath.startsWith("http")) {
-        QString cleanRemote = remotePath;
-        if (cleanRemote.startsWith("/")) cleanRemote.remove(0, 1);
-        fullUrl = m_serverUrl + "/" + cleanRemote;
-    }
+    const QString fullUrl = resolveOverlayUrl(remotePath);
 
     qDebug() << "[CACHE-OPTIMIZED] Запуск одиночного скачивания файла для зоны:" << target
              << "URL:" << fullUrl
@@ -491,6 +729,8 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
 
     QNetworkRequest request((QUrl(fullUrl)));
     request.setHeader(QNetworkRequest::UserAgentHeader, "Mozilla/5.0 ReactorShell/1.0");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
 
     const QString tmpPath = localFilePath + QStringLiteral(".part");
     QFile::remove(tmpPath);
@@ -522,7 +762,12 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
         }
         outFile->deleteLater();
 
-        if (reply->error() == QNetworkReply::NoError) {
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool httpOk = reply->error() == QNetworkReply::NoError
+                && (httpStatus == 0 || (httpStatus >= 200 && httpStatus < 300));
+        const qint64 saved = QFileInfo(tmpPath).size();
+
+        if (httpOk && saved > 0) {
             QFile::remove(localFilePath);
             if (!QFile::rename(tmpPath, localFilePath)) {
                 QFile::remove(localFilePath);
@@ -533,7 +778,10 @@ QString NetworkManager::getLocalPath(const QString &remotePath, const QString &t
             emit fileDownloaded(remotePath, QUrl::fromLocalFile(localFilePath).toString(), target);
         } else {
             QFile::remove(tmpPath);
-            qWarning() << "[CACHE] Ошибка скачивания оверлея для" << target << ":" << reply->errorString();
+            qWarning() << "[CACHE] Ошибка скачивания оверлея для" << target
+                       << ":" << reply->errorString()
+                       << "HTTP" << httpStatus
+                       << "bytes" << saved;
         }
     });
 
@@ -642,11 +890,14 @@ void NetworkManager::fetchGames() {
     if (m_serverUrl.isEmpty()) return;
 
     QUrl url(m_serverUrl + "/api/shell/games");
-    if (m_userId > 0) {
-        QUrlQuery q;
+    QUrlQuery q;
+    if (m_userId > 0)
         q.addQueryItem(QStringLiteral("user_id"), QString::number(m_userId));
+    const int tid = resolveTerminalId(0);
+    if (tid > 0)
+        q.addQueryItem(QStringLiteral("terminal_id"), QString::number(tid));
+    if (!q.isEmpty())
         url.setQuery(q);
-    }
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
@@ -788,6 +1039,93 @@ void NetworkManager::recordGameLaunch(int gameId)
     });
 }
 
+void NetworkManager::uploadClip(const QString &filePath, int durationSec,
+                                const QString &shareToken, const QString &aspect,
+                                const QString &source)
+{
+    if (m_serverUrl.isEmpty()) {
+        emit clipUploadFailed(QStringLiteral("Нет сервера"));
+        return;
+    }
+    auto *file = new QFile(filePath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        delete file;
+        emit clipUploadFailed(QStringLiteral("Не открыть клип"));
+        return;
+    }
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/clips"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(120000);
+
+    auto *multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
+    QHttpPart terminalPart;
+    terminalPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                           QVariant(QStringLiteral("form-data; name=\"terminal_id\"")));
+    terminalPart.setBody(QByteArray::number(resolveTerminalId(0)));
+    multiPart->append(terminalPart);
+
+    QHttpPart durPart;
+    durPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                      QVariant(QStringLiteral("form-data; name=\"duration_sec\"")));
+    durPart.setBody(QByteArray::number(qBound(5, durationSec, 180)));
+    multiPart->append(durPart);
+
+    if (!shareToken.trimmed().isEmpty()) {
+        QHttpPart tokPart;
+        tokPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                          QVariant(QStringLiteral("form-data; name=\"share_token\"")));
+        tokPart.setBody(shareToken.trimmed().toUtf8());
+        multiPart->append(tokPart);
+    }
+    if (!aspect.trimmed().isEmpty()) {
+        QHttpPart aspPart;
+        aspPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                          QVariant(QStringLiteral("form-data; name=\"aspect\"")));
+        aspPart.setBody(aspect.trimmed().toUtf8());
+        multiPart->append(aspPart);
+    }
+    if (!source.trimmed().isEmpty()) {
+        QHttpPart srcPart;
+        srcPart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                          QVariant(QStringLiteral("form-data; name=\"source\"")));
+        srcPart.setBody(source.trimmed().toUtf8());
+        multiPart->append(srcPart);
+    }
+
+    QHttpPart filePart;
+    filePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QVariant(QStringLiteral("form-data; name=\"clip\"; filename=\"highlight.mp4\"")));
+    filePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant(QStringLiteral("video/mp4")));
+    filePart.setBodyDevice(file);
+    file->setParent(multiPart);
+    multiPart->append(filePart);
+
+    QNetworkReply *reply = m_networkManager->post(request, multiPart);
+    multiPart->setParent(reply);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QByteArray body = reply->readAll();
+        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[REPLAY] upload fail" << http << reply->errorString() << body;
+            emit clipUploadFailed(QStringLiteral("Не удалось загрузить клип"));
+            return;
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(body).object();
+        if (obj.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            emit clipUploadFailed(obj.value(QStringLiteral("message")).toString(QStringLiteral("Отказ сервера")));
+            return;
+        }
+        const QString share = obj.value(QStringLiteral("clip")).toObject()
+                                  .value(QStringLiteral("share_url")).toString();
+        qWarning() << "[REPLAY] uploaded" << share;
+        emit clipUploadSucceeded(share);
+    });
+}
+
 void NetworkManager::clearGamesSearch()
 {
     if (m_gamesModel)
@@ -853,6 +1191,37 @@ void NetworkManager::clearSessionUser()
     m_balanceRefreshInFlight = false;
     m_userSessionActive = false;
     applyPlayerTtsVoice(QString());
+    if (m_gsi) {
+        m_gsi->setListen(false);
+        m_gsi->setEnabled(false);
+    }
+    setInMatch(false);
+    m_bounties.clear();
+    m_bountyTargets.clear();
+    m_bountyProducts.clear();
+    m_arena.clear();
+    m_arenaIncomingUuid.clear();
+    emit arenaChanged();
+    m_partyEnergyAvailable = false;
+    m_partyEnergyAutoFuel = false;
+    m_partyEnergyIsCaptain = false;
+    m_partyEnergyMinutes = 0;
+    m_lfg.clear();
+    if (!m_lootbox.isEmpty()) {
+        m_lootbox.clear();
+        m_lootboxAnnouncedId = 0;
+        emit lootboxChanged();
+    }
+    if (!m_playerName.isEmpty()) {
+        m_playerName.clear();
+        emit playerNameChanged();
+    }
+    emit lanLiveChanged();
+    if (m_lightInteractive || !m_lightInteractiveHint.isEmpty()) {
+        m_lightInteractive = false;
+        m_lightInteractiveHint.clear();
+        emit lightStateChanged();
+    }
     stopClimateControl();
     m_featuredLabel = QStringLiteral("Популярно в клубе");
     m_featuredMode = QStringLiteral("club");
@@ -861,6 +1230,10 @@ void NetworkManager::clearSessionUser()
     if (m_gamesModel)
         m_gamesModel->setFeaturedGames({});
     emit featuredChanged();
+    if (!m_partySeatNames.isEmpty()) {
+        m_partySeatNames.clear();
+        emit partyChanged();
+    }
 }
 
 void NetworkManager::clearPendingReceipt()
@@ -1138,7 +1511,7 @@ void NetworkManager::releaseScheduledOrder(int terminalId)
     });
 }
 
-void NetworkManager::login(const QString &phone, const QString &pin, int terminalId)
+void NetworkManager::login(const QString &phone, const QString &pin, int terminalId, bool acceptSeatChange)
 {
     if (m_serverUrl.isEmpty()) {
         emit loginFailed(tr("Сервер не настроен"));
@@ -1163,6 +1536,7 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
     json["phone"] = cleanPhone;
     json["pin"] = cleanPin;
     json["terminal_id"] = terminalId;
+    json["accept_seat_change"] = acceptSeatChange;
 
     qDebug() << "[NET] Login →" << url.toString();
 
@@ -1184,7 +1558,13 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
         const QJsonDocument doc = QJsonDocument::fromJson(responseData);
         const QJsonObject response = doc.object();
 
-        if (httpStatus == 200 && response.value("status").toString() == "success") {
+        const QString status = response.value(QStringLiteral("status")).toString();
+        if (httpStatus == 200 && (status == QLatin1String("wrong_pc_available")
+                                  || status == QLatin1String("wrong_pc_occupied"))) {
+            emit seatChangeRequired(
+                response.value(QStringLiteral("message")).toString(),
+                status == QLatin1String("wrong_pc_available"));
+        } else if (httpStatus == 200 && status == QLatin1String("success")) {
             const QJsonObject user = response.value("user").toObject();
             const int bookingId = response.value("booking_id").toInt(0);
             if (m_lastBookingId != bookingId) {
@@ -1206,9 +1586,19 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             m_sawActiveSession = true;
             m_userSessionActive = true;
             applyClubName(response.value(QStringLiteral("club_name")).toString());
+            const QString nick = user.value("name").toString("GUEST");
+            if (nick != m_playerName) {
+                m_playerName = nick;
+                emit playerNameChanged();
+            }
             const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
             startSessionFans(fanObj);
             startSessionLights(response.value(QStringLiteral("light")).toObject());
+            applyPartyFromJson(response);
+            applyLanLiveFromJson(response);
+            syncGsiListen();
+            applyLanLiveFromJson(response);
+            syncGsiListen();
 
             const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
             const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
@@ -1256,9 +1646,17 @@ void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
     m_sawActiveSession = true;
     m_userSessionActive = true;
     applyClubName(response.value(QStringLiteral("club_name")).toString());
+    const QString nick = user.value(QStringLiteral("name")).toString(QStringLiteral("GUEST"));
+    if (nick != m_playerName) {
+        m_playerName = nick;
+        emit playerNameChanged();
+    }
 
     startSessionFans(response.value(QStringLiteral("fan")).toObject());
     startSessionLights(response.value(QStringLiteral("light")).toObject());
+    applyPartyFromJson(response);
+    applyLanLiveFromJson(response);
+    syncGsiListen();
 
     const QJsonObject receipt = response.value(QStringLiteral("fiscal_receipt")).toObject();
     const QString receiptUrl = receipt.value(QStringLiteral("fiscal_receipt_url")).toString();
@@ -1349,6 +1747,12 @@ void NetworkManager::requestQrChallenge(int terminalId)
             return;
         }
         const QJsonObject response = QJsonDocument::fromJson(reply->readAll()).object();
+        applyClubFeaturesFromJson(response);
+        applyThroneFromJson(response);
+        if (response.contains(QStringLiteral("enabled"))
+                && !response.value(QStringLiteral("enabled")).toBool()) {
+            return;
+        }
         if (response.value(QStringLiteral("status")).toString() != QLatin1String("ok")) {
             emit qrChallengeFailed(
                 response.value(QStringLiteral("message")).toString(tr("Ошибка QR")));
@@ -1359,6 +1763,7 @@ void NetworkManager::requestQrChallenge(int terminalId)
             m_qrToken,
             response.value(QStringLiteral("qr_payload")).toString(),
             response.value(QStringLiteral("expires_at")).toString());
+        applyThroneFromJson(response);
         if (m_qrPollTimer && !m_qrPollTimer->isActive())
             m_qrPollTimer->start();
     });
@@ -1441,6 +1846,9 @@ void NetworkManager::refreshBalance()
             balance = jsonToDouble(response.value(QStringLiteral("deposit_balance")), -1.0);
         else if (response.value(QStringLiteral("user")).isObject())
             balance = userBalanceFromJson(response.value(QStringLiteral("user")).toObject());
+
+        applyPartyFromJson(response);
+        applyLanLiveFromJson(response);
 
         if (balance < 0.0)
             return;
@@ -1722,11 +2130,45 @@ void NetworkManager::fetchOverlays(int terminalId)
                  << "| ключи:" << payload.keys()
                  << "| байт:" << raw.size();
 
-        emit overlaysReady(payload.toVariantMap());
+        applyClanWarFromJson(rootObject);
+        if (!rootObject.contains(QStringLiteral("clan_war")))
+            applyClanWarFromJson(payload);
+        applyArenaFromJson(rootObject);
+        if (!rootObject.contains(QStringLiteral("arena")) && !rootObject.contains(QStringLiteral("arena_duel")))
+            applyArenaFromJson(payload);
+        applyClubFeaturesFromJson(rootObject);
+        if (!rootObject.contains(QStringLiteral("features")))
+            applyClubFeaturesFromJson(payload);
+
+        // Round-trip через JSON, иначе вложенный layers[] из toVariantMap
+        // в QML иногда приходит не как массив — слот без video URL.
+        const QJsonDocument asDoc(payload);
+        emit overlaysReady(asDoc.toVariant().toMap());
 
         // Если за время запроса пришёл другой terminal_id — один догон.
         if (queued > 0 && queued != targetId)
             fetchOverlays(queued);
+    });
+}
+
+void NetworkManager::fetchClanWar(int terminalId)
+{
+    if (m_serverUrl.isEmpty())
+        return;
+    const int targetId = terminalId > 0 ? terminalId : (m_computerId > 0 ? m_computerId : 1);
+    QUrl url(m_serverUrl + "/api/shell/clan-wars/live?terminal_id=" + QString::number(targetId)
+             + "&t=" + QString::number(QDateTime::currentMSecsSinceEpoch()));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, "ReactorShell/1.0");
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (!doc.isObject())
+            return;
+        applyClanWarFromJson(doc.object());
     });
 }
 
@@ -1809,6 +2251,81 @@ QString NetworkManager::primaryMacAddress() const
     return {};
 }
 
+void NetworkManager::setDisklessController(CcbootSuperClient *controller)
+{
+    m_diskless = controller;
+}
+
+void NetworkManager::setLinkFlapWatchdog(LinkFlapWatchdog *watchdog)
+{
+    m_linkFlap = watchdog;
+}
+
+void NetworkManager::setPatchCache(PatchCacheCoordinator *cache)
+{
+    m_patchCache = cache;
+}
+
+void NetworkManager::noteLinkFlap(const QJsonObject &payload)
+{
+    ++m_pendingLinkFlaps;
+    m_lastLinkFlapPayload = payload;
+    qWarning() << "[LINK-FLAP] pending" << m_pendingLinkFlaps;
+}
+
+void NetworkManager::ackPatchPull(qint64 commandId, const QString &result, const QString &message)
+{
+    m_lastPatchPullAckId = commandId;
+    m_lastPatchPullResult = result;
+    m_lastPatchPullMessage = message.left(240);
+    QTimer::singleShot(0, this, [this]() { sendPowerHeartbeat(); });
+}
+
+QString NetworkManager::primaryLanIp() const
+{
+    auto normMac = [](QString mac) {
+        mac = mac.trimmed().toUpper();
+        mac.remove(QLatin1Char('-'));
+        mac.remove(QLatin1Char(':'));
+        mac.remove(QLatin1Char('.'));
+        return mac;
+    };
+    const QString wantMac = normMac(primaryMacAddress());
+    const auto ifaces = QNetworkInterface::allInterfaces();
+    auto firstIpv4 = [](const QNetworkInterface &iface) -> QString {
+        for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
+            const QHostAddress ip = entry.ip();
+            if (ip.protocol() != QAbstractSocket::IPv4Protocol || ip.isLoopback())
+                continue;
+            return ip.toString();
+        }
+        return {};
+    };
+    for (const QNetworkInterface &iface : ifaces) {
+        const auto flags = iface.flags();
+        if (flags & QNetworkInterface::IsLoopBack)
+            continue;
+        if (!(flags & QNetworkInterface::IsUp) || !(flags & QNetworkInterface::IsRunning))
+            continue;
+        if (!wantMac.isEmpty() && normMac(iface.hardwareAddress()) != wantMac)
+            continue;
+        const QString ip = firstIpv4(iface);
+        if (!ip.isEmpty())
+            return ip;
+    }
+    for (const QNetworkInterface &iface : ifaces) {
+        const auto flags = iface.flags();
+        if (flags & QNetworkInterface::IsLoopBack)
+            continue;
+        if (!(flags & QNetworkInterface::IsUp) || !(flags & QNetworkInterface::IsRunning))
+            continue;
+        const QString ip = firstIpv4(iface);
+        if (!ip.isEmpty())
+            return ip;
+    }
+    return {};
+}
+
 void NetworkManager::setMaintenance(bool on)
 {
     if (m_maintenance == on)
@@ -1831,6 +2348,197 @@ bool NetworkManager::isLocalSessionActive() const
             && sessionUser != QLatin1String("");
 }
 
+bool NetworkManager::isGuestSessionActive() const
+{
+    return isLocalSessionActive();
+}
+
+bool NetworkManager::isWarmupIdle() const
+{
+    return m_lastPowerDesired == QLatin1String("on")
+            && !m_lastSessionActiveFromHeartbeat
+            && !isLocalSessionActive()
+            && !m_maintenance;
+}
+
+bool NetworkManager::hasPersonalFanRelay() const
+{
+    return hasRelayConfig();
+}
+
+void NetworkManager::setPersonalFanSpeedDirect(int speed)
+{
+    QVector<FanRelayEndpoint> targets = m_fanRelays;
+    if (targets.isEmpty() && !m_fanRelayHost.isEmpty()) {
+        FanRelayEndpoint one;
+        one.host = m_fanRelayHost;
+        one.port = m_fanRelayPort;
+        one.driver = m_fanRelayDriver;
+        one.channel = m_fanRelayChannel;
+        one.channel2 = m_fanRelayChannel2;
+        targets.append(one);
+    }
+    if (targets.isEmpty())
+        return;
+
+    int want = qBound(1, speed, 3);
+    for (const FanRelayEndpoint &t : targets) {
+        QString err;
+        FanRelayController::setSpeed(t.host, t.port, t.channel, t.channel2, want, &err, 2000, 0, t.driver);
+    }
+}
+
+void NetworkManager::setFanProbeLock(bool on)
+{
+    m_fanProbeLock = on;
+}
+
+void NetworkManager::reportShellIncident(const QString &type, const QString &severity,
+                                         const QString &description, const QJsonObject &payload)
+{
+    if (m_serverUrl.isEmpty())
+        return;
+    const int termId = resolveTerminalId(0);
+    if (termId <= 0 && m_hwid.isEmpty())
+        return;
+
+    QJsonObject body;
+    if (termId > 0)
+        body.insert(QStringLiteral("terminal_id"), termId);
+    if (!m_hwid.isEmpty())
+        body.insert(QStringLiteral("hwid"), m_hwid);
+    body.insert(QStringLiteral("type"), type);
+    body.insert(QStringLiteral("severity"), severity);
+    if (!description.isEmpty())
+        body.insert(QStringLiteral("description"), description);
+    if (!payload.isEmpty())
+        body.insert(QStringLiteral("payload"), payload);
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/incidents"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, type]() {
+        const QByteArray raw = reply->readAll();
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[INCIDENT] POST failed:" << type << reply->errorString();
+            return;
+        }
+        qWarning() << "[INCIDENT] posted:" << type;
+        if (type != QLatin1String("hardware_abuse"))
+            return;
+        const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+        if (obj.value(QStringLiteral("accepted")).toBool(true) == false)
+            return;
+        QVariantMap calm = obj.value(QStringLiteral("calm_down")).toObject().toVariantMap();
+        if (calm.isEmpty()) {
+            calm.insert(QStringLiteral("title"), QStringLiteral("Всё в порядке"));
+            calm.insert(QStringLiteral("message"),
+                        QStringLiteral("Похоже, партия идёт тяжело. Стол тут ни при чём — сделайте паузу, можем принести напиток."));
+        }
+        emit rageSmashAlert(calm);
+    });
+}
+
+void NetworkManager::setIntegrityTelemetry(const QString &status, const QString &hash,
+                                           const QString &message, const QStringList &driftPaths)
+{
+    m_integrityStatus = status;
+    m_integrityHash = hash;
+    m_integrityMessage = message;
+    m_integrityDrift = driftPaths;
+}
+
+void NetworkManager::setGpuTelemetry(int limitW, const QString &mode)
+{
+    m_gpuPowerLimitW = limitW;
+    m_gpuMode = mode;
+}
+
+void NetworkManager::ackResyncCommand(qint64 commandId, const QString &result, const QString &message)
+{
+    m_lastResyncAckId = commandId;
+    m_lastResyncResult = result;
+    m_lastResyncMessage = message.left(240);
+    QTimer::singleShot(0, this, [this]() { sendPowerHeartbeat(); });
+}
+
+void NetworkManager::ackRollbackCommand(qint64 commandId, const QString &result, const QString &message)
+{
+    m_lastRollbackAckId = commandId;
+    m_lastRollbackResult = result;
+    m_lastRollbackMessage = message.left(240);
+    QTimer::singleShot(0, this, [this]() { sendPowerHeartbeat(); });
+}
+
+void NetworkManager::setCrashTelemetry(bool detected, const QString &reason, const QString &detail)
+{
+    m_crashDetected = detected;
+    m_crashReason = reason.left(32);
+    m_crashDetail = detail.left(240);
+}
+
+void NetworkManager::postGoldenRevision(const QJsonObject &payload)
+{
+    if (m_serverUrl.isEmpty())
+        return;
+    const int termId = resolveTerminalId(0);
+    if (termId <= 0 && m_hwid.isEmpty())
+        return;
+    QJsonObject body = payload;
+    if (termId > 0)
+        body.insert(QStringLiteral("terminal_id"), termId);
+    if (!m_hwid.isEmpty())
+        body.insert(QStringLiteral("hwid"), m_hwid);
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/golden-image/revision"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "[ROLLBACK] POST revision failed:" << reply->errorString();
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        qWarning() << "[ROLLBACK] revision" << root.value(QStringLiteral("revision_id")).toInteger()
+                   << root.value(QStringLiteral("revision_status")).toString();
+    });
+}
+
+void NetworkManager::fetchGoldenRevision(qint64 revisionId)
+{
+    if (m_serverUrl.isEmpty() || revisionId <= 0)
+        return;
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/golden-image/revisions/%1").arg(revisionId));
+    QUrlQuery q;
+    const int termId = resolveTerminalId(0);
+    if (termId > 0)
+        q.addQueryItem(QStringLiteral("terminal_id"), QString::number(termId));
+    if (!m_hwid.isEmpty())
+        q.addQueryItem(QStringLiteral("hwid"), m_hwid);
+    url.setQuery(q);
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, revisionId]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            emit goldenRevisionFetchFailed(revisionId, reply->errorString());
+            return;
+        }
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            emit goldenRevisionFetchFailed(revisionId, root.value(QStringLiteral("message")).toString());
+            return;
+        }
+        emit goldenRevisionFetched(revisionId, root);
+    });
+}
+
 bool NetworkManager::isSetupScreenOpen() const
 {
     if (!m_rootQml)
@@ -1840,9 +2548,271 @@ bool NetworkManager::isSetupScreenOpen() const
     return false;
 }
 
+void NetworkManager::attachStationHealth(QJsonObject &json)
+{
+    const QString mac = json.value(QStringLiteral("mac_address")).toString();
+    const StationHealth::NicInfo nic = StationHealth::nicInfo(mac);
+    if (nic.linkMbps >= 0)
+        json.insert(QStringLiteral("nic_link_mbps"), nic.linkMbps);
+    if (nic.inErrors > 0)
+        json.insert(QStringLiteral("nic_in_errors"), static_cast<qint64>(nic.inErrors));
+    if (nic.outErrors > 0)
+        json.insert(QStringLiteral("nic_out_errors"), static_cast<qint64>(nic.outErrors));
+
+    if (m_pendingLinkFlaps > 0) {
+        json.insert(QStringLiteral("nic_flap_events"), m_pendingLinkFlaps);
+        if (!m_lastLinkFlapPayload.isEmpty())
+            json.insert(QStringLiteral("nic_flap_payload"), m_lastLinkFlapPayload);
+    }
+
+    const QString lanIp = primaryLanIp();
+    if (!lanIp.isEmpty())
+        json.insert(QStringLiteral("lan_ip"), lanIp);
+    if (m_patchCache) {
+        // Super Client всегда сид; иначе — если сервер уже просил и сервер слушает.
+        // Во время гостевой сессии сид гасим (кроме SC).
+        if (m_diskless && m_diskless->superClientActive()) {
+            m_patchCache->applySeedPolicy(QJsonObject{
+                {QStringLiteral("enabled"), true},
+                {QStringLiteral("port"), 8745},
+            });
+        } else if (isGuestSessionActive()) {
+            m_patchCache->applySeedPolicy(QJsonObject{{QStringLiteral("enabled"), false}});
+            m_patchCache->applyIngestPolicy(QJsonObject{{QStringLiteral("enabled"), false}});
+        }
+        json.insert(QStringLiteral("patch_seed_port"),
+                    m_patchCache->seedActive() ? m_patchCache->seedPort() : 0);
+        json.insert(QStringLiteral("patch_ingest_active"), m_patchCache->ingestActive());
+        if (!m_patchCache->ingestResult().isEmpty())
+            json.insert(QStringLiteral("patch_ingest_result"), m_patchCache->ingestResult());
+        if (!m_patchCache->ingestMessage().isEmpty())
+            json.insert(QStringLiteral("patch_ingest_message"), m_patchCache->ingestMessage());
+    }
+
+    PathResolver *paths = PathResolver::instance();
+    const QString volume = paths ? paths->volumeLetter() : QString();
+    const StationHealth::SsdHealth ssd = StationHealth::readSsdHealth(volume);
+    if (ssd.wearPct >= 0)
+        json.insert(QStringLiteral("ssd_wear_pct"), ssd.wearPct);
+    if (ssd.readErrors >= 0)
+        json.insert(QStringLiteral("ssd_read_errors"), static_cast<qint64>(ssd.readErrors));
+    if (ssd.writeErrors >= 0)
+        json.insert(QStringLiteral("ssd_write_errors"), static_cast<qint64>(ssd.writeErrors));
+    if (!ssd.status.isEmpty())
+        json.insert(QStringLiteral("ssd_health"), ssd.status);
+    if (!ssd.media.isEmpty())
+        json.insert(QStringLiteral("cache_media"), ssd.media);
+
+    const bool cacheOk = paths && paths->cacheOk();
+    if (cacheOk && (m_healthTick % 5 == 0 || m_cachedGamesHash.isEmpty())) {
+        const StationHealth::GameInventory inv = StationHealth::scanGames(
+            paths->steamPath(), paths->epicPath());
+        QJsonArray arr;
+        for (const auto &g : inv.games) {
+            QJsonObject o;
+            o.insert(QStringLiteral("p"), g.platform);
+            o.insert(QStringLiteral("id"), g.appId);
+            o.insert(QStringLiteral("b"), g.buildId);
+            o.insert(QStringLiteral("n"), g.name);
+            arr.append(o);
+        }
+        m_cachedGamesJson = arr;
+        m_cachedGamesHash = inv.hash;
+        m_cachedSteamCount = inv.steamCount;
+        m_cachedEpicCount = inv.epicCount;
+    }
+    ++m_healthTick;
+
+    if (!m_cachedGamesHash.isEmpty()) {
+        json.insert(QStringLiteral("games_inventory_hash"), m_cachedGamesHash);
+        json.insert(QStringLiteral("games_inventory"), m_cachedGamesJson);
+        json.insert(QStringLiteral("games_steam_count"), m_cachedSteamCount);
+        json.insert(QStringLiteral("games_epic_count"), m_cachedEpicCount);
+    }
+
+    if (m_diskless) {
+        m_diskless->refresh();
+        const bool sc = m_diskless->superClientActive();
+        json.insert(QStringLiteral("super_client"), sc);
+        if (sc && !m_maintenance) {
+            m_maintenance = true;
+            json.insert(QStringLiteral("maintenance"), true);
+            emit maintenanceChanged();
+        }
+    }
+    if (m_lastDisklessAckId > 0)
+        json.insert(QStringLiteral("diskless_ack_id"), m_lastDisklessAckId);
+    if (!m_lastDisklessResult.isEmpty())
+        json.insert(QStringLiteral("diskless_result"), m_lastDisklessResult);
+    if (!m_lastDisklessMessage.isEmpty())
+        json.insert(QStringLiteral("diskless_message"), m_lastDisklessMessage);
+
+    if (!m_integrityHash.isEmpty()) {
+        json.insert(QStringLiteral("integrity_status"),
+                    m_integrityStatus.isEmpty() ? QStringLiteral("ok") : m_integrityStatus);
+        json.insert(QStringLiteral("integrity_hash"), m_integrityHash);
+        if (!m_integrityMessage.isEmpty())
+            json.insert(QStringLiteral("integrity_message"), m_integrityMessage.left(240));
+        if (!m_integrityDrift.isEmpty()) {
+            QJsonArray drift;
+            for (const QString &p : m_integrityDrift)
+                drift.append(p);
+            json.insert(QStringLiteral("integrity_drift"), drift);
+        }
+    }
+    if (m_gpuPowerLimitW > 0)
+        json.insert(QStringLiteral("gpu_power_limit_w"), m_gpuPowerLimitW);
+    if (!m_gpuMode.isEmpty())
+        json.insert(QStringLiteral("gpu_mode"), m_gpuMode);
+    if (m_lastResyncAckId > 0) {
+        json.insert(QStringLiteral("resync_ack_id"), m_lastResyncAckId);
+        if (!m_lastResyncResult.isEmpty())
+            json.insert(QStringLiteral("resync_result"), m_lastResyncResult);
+        if (!m_lastResyncMessage.isEmpty())
+            json.insert(QStringLiteral("resync_message"), m_lastResyncMessage);
+    }
+    if (m_lastRollbackAckId > 0) {
+        json.insert(QStringLiteral("rollback_ack_id"), m_lastRollbackAckId);
+        if (!m_lastRollbackResult.isEmpty())
+            json.insert(QStringLiteral("rollback_result"), m_lastRollbackResult);
+        if (!m_lastRollbackMessage.isEmpty())
+            json.insert(QStringLiteral("rollback_message"), m_lastRollbackMessage);
+    }
+    if (m_crashDetected) {
+        json.insert(QStringLiteral("crash_detected"), true);
+        if (!m_crashReason.isEmpty())
+            json.insert(QStringLiteral("crash_reason"), m_crashReason);
+        if (!m_crashDetail.isEmpty())
+            json.insert(QStringLiteral("crash_detail"), m_crashDetail);
+    }
+    if (m_lastPatchPullAckId > 0) {
+        json.insert(QStringLiteral("patch_pull_ack_id"), m_lastPatchPullAckId);
+        if (!m_lastPatchPullResult.isEmpty())
+            json.insert(QStringLiteral("patch_pull_result"), m_lastPatchPullResult);
+        if (!m_lastPatchPullMessage.isEmpty())
+            json.insert(QStringLiteral("patch_pull_message"), m_lastPatchPullMessage);
+    }
+}
+
+void NetworkManager::handleDisklessCommand(const QJsonObject &obj)
+{
+    if (obj.isEmpty())
+        return;
+    const qint64 id = obj.value(QStringLiteral("command_id")).toInteger();
+    const QString action = obj.value(QStringLiteral("action")).toString().trimmed();
+    const QString diskMode = obj.value(QStringLiteral("disk_mode")).toString().trimmed();
+    if (id <= 0 || action.isEmpty())
+        return;
+    if (id == m_lastDisklessAckId)
+        return;
+    if (m_diskless && m_diskless->busy()) {
+        qWarning() << "[DISKLESS] busy, retry command" << id << action;
+        return;
+    }
+
+    auto reject = [this, id](const QString &result, const QString &message) {
+        m_lastDisklessAckId = id;
+        m_lastDisklessResult = result;
+        m_lastDisklessMessage = message.left(240);
+        qWarning() << "[DISKLESS]" << result << message;
+        QTimer::singleShot(0, this, [this]() { sendPowerHeartbeat(); });
+    };
+
+    if (!m_diskless) {
+        reject(QStringLiteral("error"), QStringLiteral("CCBoot-контроллер недоступен"));
+        return;
+    }
+    if (m_diskless->configuredPassword().isEmpty()) {
+        reject(QStringLiteral("no_password"),
+               QStringLiteral("Задайте Diskless/admin_password в config.ini"));
+        return;
+    }
+    if (isLocalSessionActive()) {
+        reject(QStringLiteral("busy_session"),
+               QStringLiteral("На месте есть гость — Super Client отклонён"));
+        return;
+    }
+
+    m_lastDisklessAckId = id;
+    m_lastDisklessResult = QStringLiteral("accepted");
+    m_lastDisklessMessage = QStringLiteral("Команда принята");
+    if (!m_maintenance) {
+        m_maintenance = true;
+        emit maintenanceChanged();
+    }
+    qWarning() << "[DISKLESS] apply" << action << "mode" << diskMode << "id" << id;
+    m_diskless->applyCloudAction(action, diskMode);
+    QTimer::singleShot(0, this, [this]() { sendPowerHeartbeat(); });
+}
+
+void NetworkManager::handleResyncCommand(const QJsonObject &obj)
+{
+    if (obj.isEmpty())
+        return;
+    const qint64 id = obj.value(QStringLiteral("command_id")).toInteger();
+    const QString action = obj.value(QStringLiteral("action")).toString().trimmed();
+    if (id <= 0 || action.isEmpty())
+        return;
+    if (id == m_lastResyncAckId)
+        return;
+    if (isLocalSessionActive()) {
+        ackResyncCommand(id, QStringLiteral("busy_session"),
+                         QStringLiteral("На месте есть гость — re-sync отложен"));
+        return;
+    }
+    qWarning() << "[RESYNC] command" << action << "id" << id;
+    emit resyncCommandReceived(id, action);
+}
+
+void NetworkManager::handleRollbackCommand(const QJsonObject &obj)
+{
+    if (obj.isEmpty())
+        return;
+    const qint64 id = obj.value(QStringLiteral("command_id")).toInteger();
+    const qint64 revisionId = obj.value(QStringLiteral("revision_id")).toInteger();
+    const QString action = obj.value(QStringLiteral("action")).toString().trimmed();
+    if (id <= 0 || revisionId <= 0)
+        return;
+    if (id == m_lastRollbackAckId)
+        return;
+    if (isLocalSessionActive()) {
+        ackRollbackCommand(id, QStringLiteral("busy_session"),
+                           QStringLiteral("На месте есть гость — откат отложен"));
+        return;
+    }
+    qWarning() << "[ROLLBACK] command" << action << "rev" << revisionId << "id" << id;
+    emit rollbackCommandReceived(id, revisionId, action);
+}
+
+void NetworkManager::handlePatchCommands(const QJsonObject &root)
+{
+    if (!m_patchCache)
+        return;
+    const QJsonObject seed = root.value(QStringLiteral("patch_seed")).toObject();
+    if (!seed.isEmpty()) {
+        QJsonObject policy = seed;
+        if (isGuestSessionActive() && !(m_diskless && m_diskless->superClientActive())
+            && policy.value(QStringLiteral("enabled")).toBool()) {
+            policy.insert(QStringLiteral("enabled"), false);
+        }
+        m_patchCache->applySeedPolicy(policy);
+    }
+    const QJsonObject ingest = root.value(QStringLiteral("patch_ingest")).toObject();
+    if (!ingest.isEmpty())
+        m_patchCache->applyIngestPolicy(ingest);
+    const QJsonObject pull = root.value(QStringLiteral("patch_pull")).toObject();
+    if (!pull.isEmpty())
+        m_patchCache->applyPullCommand(pull);
+}
+
 void NetworkManager::handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive)
 {
     if (m_maintenance || isSetupScreenOpen()) {
+        m_idleShutdownRequested = false;
+        return;
+    }
+
+    if (m_patchCache && m_patchCache->ingestActive()) {
         m_idleShutdownRequested = false;
         return;
     }
@@ -1927,6 +2897,8 @@ void NetworkManager::sendPowerHeartbeat()
             json.insert(QStringLiteral("ssd_temp_c"), ssdC);
     }
 
+    attachStationHealth(json);
+
     m_powerHeartbeatInFlight = true;
     QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(json).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -1942,11 +2914,29 @@ void NetworkManager::sendPowerHeartbeat()
         if (root.value(QStringLiteral("status")).toString() != QLatin1String("success"))
             return;
 
+        m_lastPowerDesired = root.value(QStringLiteral("power_desired")).toString();
+        m_lastSessionActiveFromHeartbeat = root.value(QStringLiteral("session_active")).toBool();
         handlePowerPolicy(
-            root.value(QStringLiteral("power_desired")).toString(),
+            m_lastPowerDesired,
             root.value(QStringLiteral("power_action")).toString(),
-            root.value(QStringLiteral("session_active")).toBool());
+            m_lastSessionActiveFromHeartbeat);
+        handleDisklessCommand(root.value(QStringLiteral("diskless")).toObject());
+        handleResyncCommand(root.value(QStringLiteral("resync")).toObject());
+        handleRollbackCommand(root.value(QStringLiteral("rollback")).toObject());
+        handlePatchCommands(root);
+        if (root.contains(QStringLiteral("nic_flap_acked"))) {
+            const int acked = root.value(QStringLiteral("nic_flap_acked")).toInt();
+            if (acked > 0) {
+                m_pendingLinkFlaps = qMax(0, m_pendingLinkFlaps - acked);
+                if (m_linkFlap)
+                    m_linkFlap->consumeFlaps(acked);
+                if (m_pendingLinkFlaps <= 0)
+                    m_lastLinkFlapPayload = QJsonObject();
+            }
+        }
         applyLightStateFromJson(root.value(QStringLiteral("light")).toObject());
+        applyThroneFromJson(root);
+        applyClubFeaturesFromJson(root);
     });
 }
 
@@ -2007,6 +2997,31 @@ void NetworkManager::notifyPowerOffline()
     }
     reply->deleteLater();
 }
+
+namespace {
+
+int fanJsonPort(const QJsonObject &o)
+{
+    const int p = o.value(QStringLiteral("port")).toInt(0);
+    return p > 0 ? p : FanRelayController::DefaultTcpPort;
+}
+
+QString fanJsonDriver(const QJsonObject &o)
+{
+    return o.value(QStringLiteral("driver")).toString();
+}
+
+void fillFanEndpoint(FanRelayEndpoint &ep, const QJsonObject &o)
+{
+    ep.fanId = o.value(QStringLiteral("fan_id")).toInt(ep.fanId);
+    ep.host = o.value(QStringLiteral("host")).toString();
+    ep.port = fanJsonPort(o);
+    ep.driver = fanJsonDriver(o);
+    ep.channel = o.value(QStringLiteral("channel")).toInt(0);
+    ep.channel2 = o.value(QStringLiteral("channel2")).toInt(0);
+}
+
+} // namespace
 
 bool NetworkManager::hasRelayConfig() const
 {
@@ -2106,6 +3121,7 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
         FanRelayEndpoint one;
         one.host = m_fanRelayHost;
         one.port = m_fanRelayPort;
+        one.driver = m_fanRelayDriver;
         one.channel = m_fanRelayChannel;
         one.channel2 = m_fanRelayChannel2;
         targets.append(one);
@@ -2148,16 +3164,17 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
 
     for (int i = 0; i < targets.size(); ++i) {
         const FanRelayEndpoint &t = targets.at(i);
-        setFanDebug(QStringLiteral("relay[%1/%2] http://%3/%4/ K%5+K%6 want=%7")
+        const QString statusUrl = FanRelayController::commandUrl(
+            t.host, t.port, QStringLiteral("99"), t.driver);
+        setFanDebug(QStringLiteral("relay[%1/%2] %3 K%4+K%5 want=%6")
                         .arg(i + 1)
                         .arg(targets.size())
-                        .arg(t.host)
-                        .arg(t.port)
+                        .arg(statusUrl)
                         .arg(t.channel)
                         .arg(t.channel2)
                         .arg(want));
 
-        auto status = FanRelayController::readStatus(t.host, t.port);
+        auto status = FanRelayController::readStatus(t.host, t.port, 2000, t.driver);
         int current = -1;
         if (status.ok) {
             current = FanRelayController::speedFromStatus(status.body, t.channel, t.channel2);
@@ -2165,9 +3182,8 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
         } else {
             m_fanRelayUnreachableUntilMs = now + 45000;
             error = status.error;
-            setFanDebug(QStringLiteral("status FAIL: %1 → http://%2/%3/99")
-                            .arg(status.error, t.host)
-                            .arg(t.port));
+            setFanDebug(QStringLiteral("status FAIL: %1 → %2")
+                            .arg(status.error, statusUrl));
             continue;
         }
 
@@ -2179,7 +3195,8 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
 
         QString localErr;
         const int got = FanRelayController::setSpeed(
-            t.host, t.port, t.channel, t.channel2, want, &localErr);
+            t.host, t.port, t.channel, t.channel2, want, &localErr, 2000,
+            FanRelayController::SoftStepMs, t.driver);
         if (got > 0) {
             applied = got;
             anyOk = true;
@@ -2215,6 +3232,7 @@ void NetworkManager::ensureFanOffBeforeExit()
         FanRelayEndpoint one;
         one.host = m_fanRelayHost;
         one.port = m_fanRelayPort;
+        one.driver = m_fanRelayDriver;
         one.channel = m_fanRelayChannel;
         one.channel2 = m_fanRelayChannel2;
         targets.append(one);
@@ -2227,7 +3245,7 @@ void NetworkManager::ensureFanOffBeforeExit()
     for (const FanRelayEndpoint &t : targets) {
         QString localErr;
         const int got = FanRelayController::setSpeed(
-            t.host, t.port, t.channel, t.channel2, 1, &localErr, 2000, 0);
+            t.host, t.port, t.channel, t.channel2, 1, &localErr, 2000, 0, t.driver);
         if (got > 0)
             applied = got;
         else if (!localErr.isEmpty())
@@ -2342,32 +3360,27 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
         for (const QJsonValue &rv : relaysArr) {
             const QJsonObject r = rv.toObject();
             FanRelayEndpoint ep;
-            ep.fanId = r.value(QStringLiteral("fan_id")).toInt(0);
-            ep.host = r.value(QStringLiteral("host")).toString();
-            ep.port = r.value(QStringLiteral("port")).toInt(30000);
-            ep.channel = r.value(QStringLiteral("channel")).toInt(0);
-            ep.channel2 = r.value(QStringLiteral("channel2")).toInt(0);
+            fillFanEndpoint(ep, r);
             if (!ep.host.isEmpty())
                 m_fanRelays.append(ep);
         }
     }
     if (m_fanRelays.isEmpty() && !relay.isEmpty()) {
         FanRelayEndpoint ep;
-        ep.host = relay.value(QStringLiteral("host")).toString();
-        ep.port = relay.value(QStringLiteral("port")).toInt(30000);
-        ep.channel = relay.value(QStringLiteral("channel")).toInt(0);
-        ep.channel2 = relay.value(QStringLiteral("channel2")).toInt(0);
+        fillFanEndpoint(ep, relay);
         if (!ep.host.isEmpty())
             m_fanRelays.append(ep);
     }
     if (!m_fanRelays.isEmpty()) {
         m_fanRelayHost = m_fanRelays.first().host;
         m_fanRelayPort = m_fanRelays.first().port;
+        m_fanRelayDriver = m_fanRelays.first().driver;
         m_fanRelayChannel = m_fanRelays.first().channel;
         m_fanRelayChannel2 = m_fanRelays.first().channel2;
     } else if (!relay.isEmpty()) {
         m_fanRelayHost = relay.value(QStringLiteral("host")).toString();
-        m_fanRelayPort = relay.value(QStringLiteral("port")).toInt(30000);
+        m_fanRelayPort = fanJsonPort(relay);
+        m_fanRelayDriver = fanJsonDriver(relay);
         m_fanRelayChannel = relay.value(QStringLiteral("channel")).toInt(0);
         m_fanRelayChannel2 = relay.value(QStringLiteral("channel2")).toInt(0);
     }
@@ -2390,12 +3403,12 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
     const int desired = computeLocalDesiredPower(fanObj);
     // Не затирать детальный лог apply/setSpeed после ack (skip path).
     if (!m_skipRelayApply) {
-        setFanDebug(QStringLiteral("state mode=%1 desired=%2 applied=%3 http://%4/%5/ K1=%6 K2=%7")
+        setFanDebug(QStringLiteral("state mode=%1 desired=%2 applied=%3 %4 K1=%5 K2=%6")
                         .arg(mode)
                         .arg(desired)
                         .arg(m_fanAppliedPower)
-                        .arg(m_fanRelayHost)
-                        .arg(m_fanRelayPort)
+                        .arg(FanRelayController::commandUrl(
+                            m_fanRelayHost, m_fanRelayPort, QStringLiteral("99"), m_fanRelayDriver))
                         .arg(m_fanRelayChannel)
                         .arg(m_fanRelayChannel2));
     }
@@ -2713,6 +3726,35 @@ void NetworkManager::applyLightStateFromJson(const QJsonObject &lightObj)
         m_dmx->setNodes(nodes, fadeMs);
     }
 
+    if (m_gsi && lightObj.contains(QStringLiteral("events"))
+        && lightObj.value(QStringLiteral("events")).isObject()) {
+        m_gsi->setEventPresets(lightObj.value(QStringLiteral("events")).toObject());
+    }
+
+    const QString playEvent = lightObj.value(QStringLiteral("play_event")).toString();
+    const qint64 playAt = qint64(lightObj.value(QStringLiteral("play_event_at")).toDouble());
+    if (m_gsi && !playEvent.isEmpty() && playAt > 0 && playAt != m_lastPlayEventAt) {
+        m_lastPlayEventAt = playAt;
+        ReactiveLighting::Priority pri = ReactiveLighting::Event;
+        if (playEvent.contains(QLatin1String("bomb")))
+            pri = ReactiveLighting::Alert;
+        else if (playEvent.contains(QLatin1String("win"))
+                 || playEvent == QLatin1String("session_start"))
+            pri = ReactiveLighting::Round;
+        QString hint = playEvent;
+        if (playEvent == QLatin1String("pc_on"))
+            hint = QStringLiteral("включение");
+        else if (playEvent == QLatin1String("session_start"))
+            hint = QStringLiteral("сессия");
+        else if (playEvent == QLatin1String("session_end"))
+            hint = QStringLiteral("конец");
+        else if (playEvent == QLatin1String("pc_shutdown"))
+            hint = QStringLiteral("выключение");
+        else if (playEvent == QLatin1String("pc_off"))
+            hint = QStringLiteral("выключен");
+        m_gsi->playPreset(playEvent, pri, hint);
+    }
+
     const bool changed = m_lightAvailable != available
         || m_lightColor != color
         || m_lightBrightness != brightness
@@ -2725,8 +3767,21 @@ void NetworkManager::applyLightStateFromJson(const QJsonObject &lightObj)
     if (changed)
         emit lightStateChanged();
 
-    if (!m_skipLightApply)
+    if (!m_skipLightApply && !(m_dmx && m_dmx->hasOverride()))
         applyDesiredToDmx(false);
+
+    if (lightObj.contains(QStringLiteral("interactive"))) {
+        const bool want = lightObj.value(QStringLiteral("interactive")).toBool(false);
+        if (m_lightInteractive != want) {
+            m_lightInteractive = want;
+            if (m_gsi)
+                m_gsi->setEnabled(want && m_userSessionActive);
+            emit lightStateChanged();
+        } else if (m_gsi && want && m_userSessionActive && !m_gsi->isEnabled()) {
+            m_gsi->setEnabled(true);
+        }
+        syncGsiListen();
+    }
 }
 
 void NetworkManager::applyDesiredToDmx(bool force)
@@ -2897,6 +3952,33 @@ void NetworkManager::setLightBrightness(int brightness)
     postLightScene(body);
 }
 
+void NetworkManager::setLightInteractive(bool on)
+{
+    if (m_lightInteractive == on && m_gsi && m_gsi->isEnabled() == (on && m_userSessionActive))
+        return;
+    m_lightInteractive = on;
+    if (m_gsi)
+        m_gsi->setEnabled(on && m_userSessionActive);
+    syncGsiListen();
+    if (!on)
+        m_lightInteractiveHint.clear();
+    emit lightStateChanged();
+
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || m_userId <= 0)
+        return;
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/light/interactive"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    json.insert(QStringLiteral("enabled"), on);
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
+
 void NetworkManager::ensureLightOffBeforeExit()
 {
     if (!m_dmx || !m_dmx->hasNodes())
@@ -2973,7 +4055,9 @@ void NetworkManager::fetchFanDiscover()
             row.insert(QStringLiteral("channel"), b.value(QStringLiteral("channel")).toInt());
             row.insert(QStringLiteral("channel2"), b.value(QStringLiteral("channel2")).toInt());
             row.insert(QStringLiteral("host"), b.value(QStringLiteral("host")).toString());
-            row.insert(QStringLiteral("port"), b.value(QStringLiteral("port")).toInt(30000));
+            const int boundPort = b.value(QStringLiteral("port")).toInt(0);
+            row.insert(QStringLiteral("port"), boundPort > 0 ? boundPort : FanRelayController::DefaultTcpPort);
+            row.insert(QStringLiteral("driver"), b.value(QStringLiteral("driver")).toString());
             row.insert(QStringLiteral("label"), b.value(QStringLiteral("label")).toString(
                 QStringLiteral("K%1+K%2")
                     .arg(b.value(QStringLiteral("channel")).toInt())
@@ -2994,7 +4078,9 @@ void NetworkManager::fetchFanDiscover()
             board.insert(QStringLiteral("id"), b.value(QStringLiteral("id")).toInt());
             board.insert(QStringLiteral("name"), b.value(QStringLiteral("name")).toString());
             board.insert(QStringLiteral("host"), b.value(QStringLiteral("host")).toString());
-            board.insert(QStringLiteral("port"), b.value(QStringLiteral("port")).toInt(30000));
+            const int boardPort = b.value(QStringLiteral("port")).toInt(0);
+            board.insert(QStringLiteral("port"), boardPort > 0 ? boardPort : FanRelayController::DefaultTcpPort);
+            board.insert(QStringLiteral("driver"), b.value(QStringLiteral("driver")).toString());
             QVariantList pairs;
             for (const QJsonValue &pv : b.value(QStringLiteral("pairs")).toArray()) {
                 const QJsonObject p = pv.toObject();
@@ -3103,7 +4189,8 @@ void NetworkManager::unbindFan(int fanId)
     });
 }
 
-void NetworkManager::testFanPair(const QString &host, int modulePort, int channel, int channel2)
+void NetworkManager::testFanPair(const QString &host, int modulePort, int channel, int channel2,
+                                 const QString &driver)
 {
     if (m_fanTestInFlight) {
         emit fanTestFinished(false, QStringLiteral("Тест уже идёт"));
@@ -3116,15 +4203,14 @@ void NetworkManager::testFanPair(const QString &host, int modulePort, int channe
 
     m_fanTestInFlight = true;
     emit fanDiscoverChanged();
-    setFanDebug(QStringLiteral("TEST pulse http://%1/%2/ K%3+K%4 → 100%")
-                    .arg(host)
-                    .arg(modulePort)
+    setFanDebug(QStringLiteral("TEST pulse %1 K%2+K%3 → 100%")
+                    .arg(FanRelayController::commandUrl(host, modulePort, QStringLiteral("99"), driver))
                     .arg(channel)
                     .arg(channel2));
 
     QString err;
     const int got = FanRelayController::setSpeed(
-        host, modulePort, channel, channel2, 3, &err, 2000, /*softStepMs*/ 0);
+        host, modulePort, channel, channel2, 3, &err, 2000, /*softStepMs*/ 0, driver);
     if (got < 0) {
         m_fanTestInFlight = false;
         emit fanTestFinished(false, err.isEmpty() ? QStringLiteral("setSpeed FAIL") : err);
@@ -3132,10 +4218,10 @@ void NetworkManager::testFanPair(const QString &host, int modulePort, int channe
         return;
     }
 
-    QTimer::singleShot(2500, this, [this, host, modulePort, channel, channel2]() {
+    QTimer::singleShot(2500, this, [this, host, modulePort, channel, channel2, driver]() {
         QString err2;
         FanRelayController::setSpeed(
-            host, modulePort, channel, channel2, 1, &err2, 2000, 0);
+            host, modulePort, channel, channel2, 1, &err2, 2000, 0, driver);
         m_fanTestInFlight = false;
         setFanDebug(QStringLiteral("TEST done → night K%1+K%2").arg(channel).arg(channel2));
         emit fanTestFinished(true, QStringLiteral("Пульс 100% ~2.5с → дежурный"));
@@ -3578,5 +4664,458 @@ void NetworkManager::setTtsVoice(const QString &voice)
             if (!previewErr.isEmpty())
                 qWarning() << "[VOICE-NET] voice preview:" << previewErr;
         }
+    });
+}
+
+void NetworkManager::postGsiEvent(const QJsonObject &payload)
+{
+    if (!m_userSessionActive || m_serverUrl.isEmpty())
+        return;
+    const int termId = resolveTerminalId(0);
+    if (termId <= 0)
+        return;
+    const QString event = payload.value(QStringLiteral("event")).toString();
+    if (event == QLatin1String("kill"))
+        emit killHighlight();
+    if (m_gsiPostInFlight) {
+        if (event != QLatin1String("heartbeat"))
+            m_pendingGsi = payload;
+        return;
+    }
+
+    QJsonObject json = payload;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/gsi"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(15000);
+
+    m_gsiPostInFlight = true;
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_gsiPostInFlight = false;
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        if (reply->error() == QNetworkReply::NoError)
+            applyLanLiveFromJson(root);
+
+        if (root.contains(QStringLiteral("time_remaining"))) {
+            emit sessionTimeUpdated(
+                root.value(QStringLiteral("time_remaining")).toString(QStringLiteral("00:00:00")),
+                true);
+        }
+        const QJsonObject settled = root.value(QStringLiteral("settled")).toObject();
+        const QString msg = settled.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+            emit bountySettled(msg);
+            refreshBalance();
+        }
+        const QJsonObject arenaSettled = root.value(QStringLiteral("arena_settled")).toObject();
+        if (!arenaSettled.isEmpty()) {
+            const QVariantMap result = arenaSettled.toVariantMap();
+            const QString arenaMsg = arenaSettled.value(QStringLiteral("message")).toString();
+            if (!arenaMsg.isEmpty()) {
+                m_lanLiveToast = arenaMsg;
+                emit lanLiveChanged();
+            }
+            emit arenaVictory(result);
+            if (m_gsi)
+                m_gsi->playPreset(QStringLiteral("arena.win"), ReactiveLighting::Round,
+                                  QStringLiteral("арена"));
+            refreshBalance();
+        }
+        const QString whisper = root.value(QStringLiteral("whisper")).toString();
+        if (!whisper.isEmpty())
+            emit ghostWhisper(whisper);
+
+        const QJsonObject crowned = root.value(QStringLiteral("throne_crowned")).toObject();
+        const QString crownLine = crowned.value(QStringLiteral("line")).toString();
+        if (!crownLine.isEmpty())
+            emit throneCrowned(crownLine);
+
+        if (!m_pendingGsi.isEmpty()) {
+            const QJsonObject next = m_pendingGsi;
+            m_pendingGsi = QJsonObject();
+            postGsiEvent(next);
+        }
+    });
+}
+
+void NetworkManager::fetchLanLive()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/lan-live"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("terminal_id"), QString::number(termId));
+    if (m_lastBookingId > 0)
+        q.addQueryItem(QStringLiteral("booking_id"), QString::number(m_lastBookingId));
+    url.setQuery(q);
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        applyLanLiveFromJson(QJsonDocument::fromJson(reply->readAll()).object());
+    });
+}
+
+void NetworkManager::createBounty(int targetComputerId, const QString &kind, const QString &game,
+                                 const QString &weapon, const QString &stakeType,
+                                 double stakeAmount, int productId, const QString &title)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || targetComputerId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    json.insert(QStringLiteral("target_computer_id"), targetComputerId);
+    json.insert(QStringLiteral("kind"), kind);
+    json.insert(QStringLiteral("game"), game);
+    json.insert(QStringLiteral("weapon"), weapon);
+    json.insert(QStringLiteral("stake_type"), stakeType);
+    json.insert(QStringLiteral("stake_amount"), stakeAmount);
+    if (productId > 0)
+        json.insert(QStringLiteral("product_id"), productId);
+    if (!title.trimmed().isEmpty())
+        json.insert(QStringLiteral("title"), title.trimmed());
+
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/bounties")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        applyLanLiveFromJson(root);
+        const QString msg = root.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+        }
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success"))
+            refreshBalance();
+    });
+}
+
+void NetworkManager::cancelBounty(int bountyId)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || bountyId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/bounties/%1/cancel").arg(bountyId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        applyLanLiveFromJson(QJsonDocument::fromJson(reply->readAll()).object());
+        refreshBalance();
+    });
+}
+
+void NetworkManager::createArenaChallenge(const QString &game, const QString &mode,
+                                          double entryFee, const QString &scope,
+                                          int targetComputerId, const QString &kind,
+                                          int maxPlayers)
+{
+    QJsonObject extra;
+    extra.insert(QStringLiteral("game"), game.isEmpty() ? QStringLiteral("cs2") : game);
+    extra.insert(QStringLiteral("mode"), mode);
+    extra.insert(QStringLiteral("entry_fee"), entryFee);
+    extra.insert(QStringLiteral("scope"), scope.isEmpty() ? QStringLiteral("hall") : scope);
+    extra.insert(QStringLiteral("terms"), true);
+    extra.insert(QStringLiteral("kind"), kind.trimmed().isEmpty() ? QStringLiteral("duel") : kind.trimmed());
+    if (maxPlayers > 0)
+        extra.insert(QStringLiteral("max_players"), maxPlayers);
+    if (targetComputerId > 0)
+        extra.insert(QStringLiteral("target_computer_id"), targetComputerId);
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges"), extra);
+}
+
+void NetworkManager::acceptArena(const QString &uuid)
+{
+    if (uuid.trimmed().isEmpty())
+        return;
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges/%1/accept").arg(uuid.trimmed()));
+}
+
+void NetworkManager::declineArena(const QString &uuid)
+{
+    if (uuid.trimmed().isEmpty())
+        return;
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges/%1/decline").arg(uuid.trimmed()));
+}
+
+void NetworkManager::cancelArena(const QString &uuid)
+{
+    if (uuid.trimmed().isEmpty())
+        return;
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges/%1/cancel").arg(uuid.trimmed()));
+}
+
+void NetworkManager::proposeArenaRaise(const QString &uuid, double entryFee)
+{
+    if (uuid.trimmed().isEmpty() || entryFee <= 0)
+        return;
+    QJsonObject extra;
+    extra.insert(QStringLiteral("entry_fee"), entryFee);
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges/%1/raise").arg(uuid.trimmed()), extra);
+}
+
+void NetworkManager::voteArenaRaise(const QString &uuid, bool agree)
+{
+    if (uuid.trimmed().isEmpty())
+        return;
+    QJsonObject extra;
+    extra.insert(QStringLiteral("agree"), agree);
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges/%1/raise-vote").arg(uuid.trimmed()), extra);
+}
+
+void NetworkManager::startArena(const QString &uuid)
+{
+    if (uuid.trimmed().isEmpty())
+        return;
+    postArenaAction(QStringLiteral("/api/shell/arena/challenges/%1/start").arg(uuid.trimmed()));
+}
+
+void NetworkManager::postArenaAction(const QString &path, const QJsonObject &extra)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    QJsonObject json = extra;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    QNetworkRequest request(QUrl(m_serverUrl + path));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        applyLanLiveFromJson(root);
+        const QString msg = root.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+        }
+        const QJsonObject duel = root.value(QStringLiteral("duel")).toObject();
+        const QString connect = duel.value(QStringLiteral("connect")).toString();
+        if (!connect.isEmpty()) {
+            if (QClipboard *clip = QGuiApplication::clipboard())
+                clip->setText(connect);
+        }
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success"))
+            refreshBalance();
+    });
+}
+
+void NetworkManager::setPartyAutoFuel(bool on)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    json.insert(QStringLiteral("auto_fuel"), on);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/party/energy/auto-fuel")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        applyLanLiveFromJson(QJsonDocument::fromJson(reply->readAll()).object());
+    });
+}
+
+void NetworkManager::contributePartyEnergy(int minutes, const QString &source)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    json.insert(QStringLiteral("minutes"), minutes);
+    json.insert(QStringLiteral("source"), source);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/party/energy/contribute")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        applyLanLiveFromJson(root);
+        const QString msg = root.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+        }
+        refreshBalance();
+    });
+}
+
+void NetworkManager::setGhostCoachEnabled(bool on)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    m_ghostCoachEnabled = on;
+    emit lanLiveChanged();
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    json.insert(QStringLiteral("enabled"), on);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/coach")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        applyLanLiveFromJson(QJsonDocument::fromJson(reply->readAll()).object());
+    });
+}
+
+void NetworkManager::enqueueLfg(const QString &game, const QString &rank)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || rank.trimmed().isEmpty())
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    json.insert(QStringLiteral("game"), game.trimmed().isEmpty() ? QStringLiteral("cs2") : game.trimmed());
+    json.insert(QStringLiteral("rank"), rank.trimmed());
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/lfg")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        applyLanLiveFromJson(root);
+        const QString msg = root.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+        }
+        if (root.value(QStringLiteral("moved")).toBool()) {
+            emit lfgSitSucceeded(
+                root.value(QStringLiteral("pin_code")).toString(),
+                root.value(QStringLiteral("to")).toString(),
+                msg);
+        }
+    });
+}
+
+void NetworkManager::cancelLfg()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/lfg/cancel")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        applyLanLiveFromJson(QJsonDocument::fromJson(reply->readAll()).object());
+    });
+}
+
+void NetworkManager::sitLfg()
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/lfg/sit")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        const QString msg = root.value(QStringLiteral("message")).toString();
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success")
+                && root.value(QStringLiteral("moved")).toBool()) {
+            emit lfgSitSucceeded(
+                root.value(QStringLiteral("pin_code")).toString(),
+                root.value(QStringLiteral("to")).toString(),
+                msg);
+            return;
+        }
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+        }
+    });
+}
+
+void NetworkManager::openLootbox(int dropId)
+{
+    const int termId = resolveTerminalId(0);
+    if (m_serverUrl.isEmpty() || termId <= 0 || dropId <= 0)
+        return;
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), termId);
+    if (m_lastBookingId > 0)
+        json.insert(QStringLiteral("booking_id"), m_lastBookingId);
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/lootbox/%1/open").arg(dropId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        applyLanLiveFromJson(root);
+        applyLootboxFromJson(root);
+        const QString msg = root.value(QStringLiteral("message")).toString();
+        if (!msg.isEmpty()) {
+            m_lanLiveToast = msg;
+            emit lanLiveChanged();
+        }
+        if (root.value(QStringLiteral("status")).toString() == QLatin1String("success"))
+            refreshBalance();
     });
 }

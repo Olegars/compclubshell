@@ -13,7 +13,7 @@ Item {
     anchors.fill: parent
 
     // БУФЕР ДЛЯ ХРАНЕНИЯ ТОКЕНОВ СЕТЕВОЙ СЕССИИ (ОБЪЯВЛЕН СТРОГО ОДИН РАЗ)
-    property string lastToken: ""
+    property string lastLanToast: ""
     property string lastLogin: ""
     property string lastId: ""
     property string lastPersonaName: ""
@@ -24,6 +24,26 @@ Item {
     property string userName: (typeof root !== 'undefined') ? root.sessionUser : "PLAYER_1"
     property real userBalance: (typeof root !== 'undefined' && root !== null) ? root.sessionBalance : 0.0
     property string timeRemaining: (typeof root !== 'undefined') ? root.sessionTime : "00:00:00"
+
+    Component.onCompleted: {
+        var t = (typeof NetworkManager !== "undefined" && NetworkManager.throne)
+                ? NetworkManager.throne.challenge : ""
+        if (t && t.length)
+            Qt.callLater(function() { replayToast.show(t) })
+        if (typeof NetworkManager !== 'undefined') {
+            NetworkManager.fetchProducts()
+            NetworkManager.startClimateControl()
+            NetworkManager.fetchTtsVoices()
+            NetworkManager.fetchClanWar()
+            climateControl.syncFromNetwork()
+            // Логин успел положить чек до загрузки Dashboard.
+            if (NetworkManager.pendingReceiptUrl && NetworkManager.pendingReceiptUrl.length > 0)
+                Qt.callLater(openFiscalReceiptPopup)
+            var box = NetworkManager.lootbox
+            if (box && box.status === "pending")
+                Qt.callLater(function() { lootboxOverlay.present(box) })
+        }
+    }
 
     // Подсветка баланса, когда деньги прилетели (пополнение, возврат).
     // Первое присвоение после входа не считаем: там баланс приходит с нуля.
@@ -193,6 +213,103 @@ Item {
         function onClearGameSearchRequested() {
             dashboardRoot.clearGameSearch()
         }
+    }
+
+    Connections {
+        target: typeof InstantReplay !== "undefined" ? InstantReplay : null
+        function onClipSaved(shareUrl) {
+            replayToast.show("Клип в облачном профиле")
+        }
+        function onClipFailed(message) {
+            replayToast.show(message)
+        }
+    }
+
+    Connections {
+        target: typeof NetworkManager !== "undefined" ? NetworkManager : null
+        function onBountySettled(message) {
+            replayToast.show(message)
+        }
+        function onThroneCrowned(line) {
+            replayToast.show(line || "Ты King этого ПК")
+        }
+        function onLootboxDropped(box) {
+            lootboxOverlay.present(box)
+        }
+        function onLootboxOpened(box) {
+            lootboxOverlay.applyOpened(box)
+        }
+        function onRageSmashAlert(payload) {
+            rageCalmOverlay.present(payload)
+        }
+        function onArenaIncoming(challenge) {
+            arenaOverlay.presentIncoming(challenge)
+        }
+        function onArenaVictory(result) {
+            arenaOverlay.presentVictory(result)
+        }
+        function onLanLiveChanged() {
+            var toast = NetworkManager.lanLiveToast
+            if (toast && toast.length && toast !== dashboardRoot.lastLanToast) {
+                dashboardRoot.lastLanToast = toast
+                replayToast.show(toast)
+            }
+        }
+        function onLfgSitSucceeded(pin, pcName, message) {
+            lfgPopup.donePin = pin || ""
+            lfgPopup.donePcName = pcName || ""
+            replayToast.show(message || "Пересадка рядом с тиммейтом")
+        }
+    }
+
+    Rectangle {
+        id: replayToast
+        z: 80
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 28
+        width: Math.min(parent.width - 40, 420)
+        height: 44
+        radius: 8
+        color: "#111"
+        border.color: Theme.shop
+        opacity: 0
+        visible: opacity > 0.05
+        function show(msg) {
+            replayToastText.text = msg
+            opacity = 1
+            replayToastHide.restart()
+        }
+        Text {
+            id: replayToastText
+            anchors.centerIn: parent
+            color: "white"
+            font.pixelSize: 13
+            elide: Text.ElideRight
+            width: parent.width - 24
+            horizontalAlignment: Text.AlignHCenter
+        }
+        Timer {
+            id: replayToastHide
+            interval: 2800
+            onTriggered: replayToast.opacity = 0
+        }
+        Behavior on opacity { NumberAnimation { duration: 200 } }
+    }
+
+    LootboxOverlay {
+        id: lootboxOverlay
+        anchors.fill: parent
+    }
+
+    RageCalmOverlay {
+        id: rageCalmOverlay
+        anchors.fill: parent
+    }
+
+    ArenaDuelOverlay {
+        id: arenaOverlay
+        anchors.fill: parent
     }
 
     function looksLikeRiot(platform, exePath, args, title) {
@@ -521,18 +638,6 @@ Item {
             "game_id": parseInt(gameId),
             "terminal_id": parseInt(dashboardRoot.termId)
         }))
-    }
-
-    Component.onCompleted: {
-        if (typeof NetworkManager !== 'undefined') {
-            NetworkManager.fetchProducts()
-            NetworkManager.startClimateControl()
-            NetworkManager.fetchTtsVoices()
-            climateControl.syncFromNetwork()
-            // Логин успел положить чек до загрузки Dashboard.
-            if (NetworkManager.pendingReceiptUrl && NetworkManager.pendingReceiptUrl.length > 0)
-                Qt.callLater(openFiscalReceiptPopup)
-        }
     }
 
     function openFiscalReceiptPopup() {
@@ -1497,7 +1602,7 @@ Item {
                     Rectangle {
                         id: lightBox
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 76
+                        Layout.preferredHeight: 98
                         color: "#0a0f0b"
                         border.color: (typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable)
                                       ? Qt.rgba(0.13, 0.77, 0.36, 0.4)
@@ -1607,6 +1712,102 @@ Item {
                                                     return
                                                 NetworkManager.setLightColor(modelData.key)
                                             }
+                                        }
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Rectangle {
+                                    width: 14
+                                    height: 14
+                                    radius: 3
+                                    color: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive)
+                                           ? accentColor : "#222"
+                                    border.color: "#555"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive) ? "✓" : ""
+                                        color: "black"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        enabled: typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable
+                                        onClicked: NetworkManager.setLightInteractive(!NetworkManager.lightInteractive)
+                                    }
+                                }
+                                Text {
+                                    text: "ИНТЕРАКТИВ"
+                                    color: accentColor
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1.2
+                                    opacity: 0.8
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        enabled: typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable
+                                        onClicked: NetworkManager.setLightInteractive(!NetworkManager.lightInteractive)
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractiveHint)
+                                          ? NetworkManager.lightInteractiveHint : "игра"
+                                    color: "#8a8a8a"
+                                    font.pixelSize: 9
+                                    elide: Text.ElideRight
+                                    visible: typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive
+                                }
+                            }
+
+                            RowLayout {
+                                visible: typeof NetworkManager === "undefined"
+                                         || NetworkManager.featureEnabled("ghost_coach")
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Rectangle {
+                                    width: 14
+                                    height: 14
+                                    radius: 3
+                                    color: (typeof NetworkManager !== "undefined" && NetworkManager.ghostCoachEnabled)
+                                           ? accentColor : "#222"
+                                    border.color: "#555"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: (typeof NetworkManager !== "undefined" && NetworkManager.ghostCoachEnabled) ? "✓" : ""
+                                        color: "black"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (typeof NetworkManager !== "undefined")
+                                                NetworkManager.setGhostCoachEnabled(!NetworkManager.ghostCoachEnabled)
+                                        }
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "GHOST COACH"
+                                    color: accentColor
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1.2
+                                    opacity: 0.8
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (typeof NetworkManager !== "undefined")
+                                                NetworkManager.setGhostCoachEnabled(!NetworkManager.ghostCoachEnabled)
                                         }
                                     }
                                 }
@@ -1826,6 +2027,41 @@ Item {
                                 }
                             }
 
+                            Rectangle {
+                                visible: typeof NetworkManager !== "undefined" && NetworkManager.featureEnabled("clan_wars") && NetworkManager.clanWar && NetworkManager.clanWar.id
+                                width: parent.width
+                                height: warScoreCol.implicitHeight + 10
+                                radius: 6
+                                color: "#22a855f7"
+                                border.color: "#66c084fc"
+                                border.width: 1
+                                Column {
+                                    id: warScoreCol
+                                    anchors.centerIn: parent
+                                    spacing: 2
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: "CLAN WAR"
+                                        color: "#e9d5ff"
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        font.letterSpacing: 2
+                                    }
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: {
+                                            var w = NetworkManager.clanWar
+                                            if (!w || !w.side_a) return ""
+                                            return String(w.side_a.score || 0) + " : " + String(w.side_b.score || 0)
+                                        }
+                                        color: "white"
+                                        font.pixelSize: 18
+                                        font.bold: true
+                                        font.family: "Monospace"
+                                    }
+                                }
+                            }
+
                             Item {
                                 width: parent.width
                                 height: sidebarBalance.implicitHeight
@@ -1950,6 +2186,14 @@ Item {
                                    : (secondsLeft < 300 ? Theme.danger
                                       : (secondsLeft < 900 ? Theme.warning : Theme.textPrimary))
                             Behavior on color { ColorAnimation { duration: 250 } }
+                        }
+                        Text {
+                            visible: typeof InstantReplay !== "undefined" && InstantReplay.available
+                            text: (typeof InstantReplay !== "undefined" ? InstantReplay.hotkeyName : "F8")
+                                  + " — клип 60с в профиль"
+                            color: accentColor
+                            opacity: 0.55
+                            font.pixelSize: Theme.fontCaption
                         }
                     }
 
@@ -2097,6 +2341,8 @@ Item {
                                 text: "МАГАЗИН"
                                 icon: "🛒"
                                 baseColor: Theme.shop
+                                visible: typeof NetworkManager === "undefined"
+                                         || NetworkManager.featureEnabled("shell_store")
                                 isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
                                 orderIsFinished: (typeof root !== 'undefined'
                                                   && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
@@ -2134,6 +2380,95 @@ Item {
                                 Layout.preferredWidth: 1
                                 Layout.minimumWidth: 0
                                 compact: true
+                                text: "АРЕНА"
+                                icon: "⚔"
+                                baseColor: "#fb923c"
+                                visible: typeof NetworkManager === "undefined"
+                                         || NetworkManager.featureEnabled("arena_duels")
+                                onClicked: {
+                                    if (typeof NetworkManager !== "undefined")
+                                        NetworkManager.fetchLanLive()
+                                    arenaPopup.open()
+                                }
+                            }
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ОХОТА"
+                                icon: "🎯"
+                                baseColor: "#f59e0b"
+                                visible: typeof NetworkManager === "undefined"
+                                         || NetworkManager.featureEnabled("lan_bounty")
+                                onClicked: {
+                                    if (typeof NetworkManager !== "undefined")
+                                        NetworkManager.fetchLanLive()
+                                    bountyPopup.open()
+                                }
+                            }
+                            ActionBtn {
+                                visible: typeof NetworkManager !== "undefined"
+                                         && NetworkManager.featureEnabled("lucky_seat")
+                                         && NetworkManager.lootbox
+                                         && NetworkManager.lootbox.status === "pending"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "КЕЙС"
+                                icon: "✦"
+                                baseColor: Theme.shop
+                                onClicked: {
+                                    if (typeof NetworkManager !== "undefined")
+                                        lootboxOverlay.present(NetworkManager.lootbox)
+                                }
+                            }
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: "ПАТИ"
+                                icon: "🎮"
+                                baseColor: "#22c55e"
+                                visible: typeof NetworkManager === "undefined"
+                                         || NetworkManager.featureEnabled("lfg")
+                                onClicked: {
+                                    if (typeof NetworkManager !== "undefined")
+                                        NetworkManager.fetchLanLive()
+                                    lfgPopup.open()
+                                }
+                            }
+                            ActionBtn {
+                                visible: typeof NetworkManager !== "undefined"
+                                         && NetworkManager.featureEnabled("party_energy")
+                                         && NetworkManager.partyEnergyAvailable
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
+                                text: NetworkManager.partyEnergyMinutes > 0
+                                      ? ("КОТЁЛ " + NetworkManager.partyEnergyMinutes + "м")
+                                      : "КОТЁЛ"
+                                icon: "⚡"
+                                baseColor: "#a78bfa"
+                                onClicked: {
+                                    if (typeof NetworkManager !== "undefined")
+                                        NetworkManager.fetchLanLive()
+                                    energyPopup.open()
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            ActionBtn {
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.minimumWidth: 0
+                                compact: true
                                 text: "ПРОДЛИТЬ"
                                 icon: "⏱"
                                 baseColor: accentColor
@@ -2151,6 +2486,8 @@ Item {
                                 text: "ПЕРЕСЕСТЬ"
                                 icon: "↔"
                                 baseColor: "#06b6d4"
+                                visible: typeof NetworkManager === "undefined"
+                                         || NetworkManager.featureEnabled("seat_transfer")
                                 onClicked: transferPopup.open()
                             }
                         }
@@ -2215,7 +2552,10 @@ Item {
                                 baseColor: "#525252"
                                 onClicked: {
                                     if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
-                                    if (typeof NetworkManager !== "undefined") NetworkManager.logoutTerminal(dashboardRoot.termId)
+                                    if (typeof InstantReplay !== "undefined")
+                                        InstantReplay.flushAndLogout(dashboardRoot.termId)
+                                    else if (typeof NetworkManager !== "undefined")
+                                        NetworkManager.logoutTerminal(dashboardRoot.termId)
                                     if (typeof root !== 'undefined') root.sessionUser = ""
                                     dashboardRoot.visible = false
                                 }
@@ -3117,6 +3457,7 @@ Item {
                     color: Theme.bgPanel
                     border.color: "#1c1c1c"
                     radius: 8
+                    property bool forPartyOrder: true
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -3216,6 +3557,58 @@ Item {
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        Rectangle {
+                            visible: typeof NetworkManager !== "undefined" && NetworkManager.partyOrderAvailable
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 40
+                            radius: 6
+                            color: cartBoxContainer.forPartyOrder ? "#1a2a1a" : "#111"
+                            border.color: cartBoxContainer.forPartyOrder ? Theme.shop : "#333"
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                spacing: 10
+
+                                Rectangle {
+                                    width: 16
+                                    height: 16
+                                    radius: 3
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: cartBoxContainer.forPartyOrder ? Theme.shop : "#222"
+                                    border.color: "#555"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: cartBoxContainer.forPartyOrder ? "✓" : ""
+                                        color: "black"
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+                                }
+                                Text {
+                                    width: parent.width - 26
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: {
+                                        var n = (typeof NetworkManager !== "undefined" && NetworkManager.partySeatNames)
+                                                ? NetworkManager.partySeatNames : []
+                                        var a = []
+                                        for (var i = 0; i < n.length; i++)
+                                            a.push(n[i])
+                                        return "Заказ на пати (" + a.join(", ") + ")"
+                                    }
+                                    color: "#ccc"
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: cartBoxContainer.forPartyOrder = !cartBoxContainer.forPartyOrder
                             }
                         }
 
@@ -3348,7 +3741,10 @@ Item {
                                     var url = baseUrl + "/api/shell/store/checkout"
                                     var body = JSON.stringify({
                                         "terminal_id": parseInt(dashboardRoot.termId) || 0,
-                                        "items": apiItems
+                                        "items": apiItems,
+                                        "for_party": !!(typeof NetworkManager !== "undefined"
+                                                         && NetworkManager.partyOrderAvailable
+                                                         && cartBoxContainer.forPartyOrder)
                                     })
                                     console.log("[SHOP] POST", url, body, "lines=", apiItems.length)
                                     xhr.open("POST", url)
@@ -3612,6 +4008,477 @@ Item {
                     onTapped: closeFiscalReceiptPopup()
                 }
             }
+        }
+    }
+
+    ArenaChallengePopup {
+        id: arenaPopup
+    }
+
+    Popup {
+        id: bountyPopup
+        width: Math.min(720, parent.width * 0.92)
+        height: Math.min(720, parent.height * 0.9)
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        property int targetId: 0
+        property string kind: "frag"
+        property string game: "cs2"
+        property string weapon: "knife"
+        property string stakeType: "deposit"
+        property double stakeAmount: 150
+        property int productId: 0
+        onOpened: {
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.fetchLanLive()
+            if (bountyTargetBox.count > 0) {
+                bountyTargetBox.currentIndex = 0
+                bountyPopup.targetId = Number(bountyTargetBox.currentValue || 0)
+            }
+        }
+        background: Rectangle {
+            color: "#050505"
+            border.color: "#f59e0b"
+            border.width: 2
+            radius: Theme.radiusSm
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 24
+            spacing: 12
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    text: "ОХОТА ЗА ГОЛОВАМИ"
+                    color: "#f59e0b"
+                    font.pixelSize: 22
+                    font.bold: true
+                    font.italic: true
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: "✕"
+                    color: "white"
+                    font.pixelSize: 18
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -8
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: bountyPopup.close()
+                    }
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "Ставка с депозита или бар. Шелл сам подтвердит фраг по GSI и переведёт награду."
+                color: "#9ca3af"
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 150
+                clip: true
+                model: (typeof NetworkManager !== "undefined") ? NetworkManager.bounties : []
+                delegate: Rectangle {
+                    width: ListView.view.width
+                    height: 44
+                    color: index % 2 ? "#0c0c0c" : "#111"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        Text {
+                            Layout.fillWidth: true
+                            text: (modelData.title || "Охота") + " → " + (modelData.prize_label || "")
+                            color: modelData.status === "won" ? Theme.success : "white"
+                            elide: Text.ElideRight
+                            font.pixelSize: 13
+                        }
+                        Text {
+                            visible: modelData.mine === true && modelData.status === "open"
+                            text: "СНЯТЬ"
+                            color: Theme.danger
+                            font.bold: true
+                            font.pixelSize: 12
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: NetworkManager.cancelBounty(modelData.id)
+                            }
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                ComboBox {
+                    id: bountyTargetBox
+                    Layout.fillWidth: true
+                    model: (typeof NetworkManager !== "undefined") ? NetworkManager.bountyTargets : []
+                    textRole: "name"
+                    valueRole: "id"
+                    onActivated: bountyPopup.targetId = Number(currentValue || 0)
+                }
+                ComboBox {
+                    model: ["CS2", "Dota"]
+                    onActivated: bountyPopup.game = currentIndex === 1 ? "dota" : "cs2"
+                    Layout.preferredWidth: 100
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                ComboBox {
+                    model: ["Фраг", "1v1"]
+                    onActivated: bountyPopup.kind = currentIndex === 1 ? "duel" : "frag"
+                    Layout.preferredWidth: 110
+                }
+                ComboBox {
+                    model: ["Нож", "AWP", "Любое"]
+                    onActivated: bountyPopup.weapon = currentIndex === 0 ? "knife" : (currentIndex === 1 ? "awp" : "any")
+                    Layout.preferredWidth: 110
+                }
+                ComboBox {
+                    model: ["Депозит", "Напиток"]
+                    onActivated: bountyPopup.stakeType = currentIndex === 1 ? "product" : "deposit"
+                    Layout.preferredWidth: 120
+                }
+            }
+            RowLayout {
+                visible: bountyPopup.stakeType === "deposit"
+                Layout.fillWidth: true
+                Text { text: "₽"; color: "#f59e0b"; font.bold: true }
+                TextField {
+                    Layout.fillWidth: true
+                    text: "150"
+                    color: "white"
+                    validator: IntValidator { bottom: 50; top: 5000 }
+                    background: Rectangle { color: "#111"; border.color: "#333"; radius: 4 }
+                    onTextChanged: bountyPopup.stakeAmount = Number(text || 0)
+                }
+            }
+            ComboBox {
+                visible: bountyPopup.stakeType === "product"
+                Layout.fillWidth: true
+                model: (typeof NetworkManager !== "undefined") ? NetworkManager.bountyProducts : []
+                textRole: "name"
+                valueRole: "id"
+                onActivated: bountyPopup.productId = Number(currentValue || 0)
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                radius: 6
+                color: "#f59e0b"
+                Text {
+                    anchors.centerIn: parent
+                    text: "ОБЪЯВИТЬ ОХОТУ"
+                    color: "black"
+                    font.bold: true
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var tid = bountyPopup.targetId
+                        if (!tid && bountyTargetBox.count > 0) {
+                            bountyTargetBox.currentIndex = 0
+                            tid = Number(bountyTargetBox.currentValue || 0)
+                        }
+                        if (!tid)
+                            return
+                        NetworkManager.createBounty(
+                            tid, bountyPopup.kind, bountyPopup.game, bountyPopup.weapon,
+                            bountyPopup.stakeType, bountyPopup.stakeAmount,
+                            bountyPopup.productId, "")
+                    }
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: energyPopup
+        width: Math.min(520, parent.width * 0.9)
+        height: 340
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            color: "#050505"
+            border.color: "#a78bfa"
+            border.width: 2
+            radius: Theme.radiusSm
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 24
+            spacing: 14
+            Text {
+                text: "КОТЁЛ ПАТИ"
+                color: "#a78bfa"
+                font.pixelSize: 22
+                font.bold: true
+                font.italic: true
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "Минут в котле: " + ((typeof NetworkManager !== "undefined") ? NetworkManager.partyEnergyMinutes : 0)
+                      + "\nЕсли у друга кончится время посреди катки — шелл не выкинет его, а заберёт минуты отсюда."
+                color: "#ccc"
+                wrapMode: Text.WordWrap
+                font.pixelSize: 13
+            }
+            Rectangle {
+                visible: typeof NetworkManager !== "undefined" && NetworkManager.partyEnergyIsCaptain
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                radius: 6
+                color: NetworkManager.partyEnergyAutoFuel ? "#1a1028" : "#111"
+                border.color: "#a78bfa"
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    Text {
+                        Layout.fillWidth: true
+                        text: NetworkManager.partyEnergyAutoFuel ? "Автоподпитка включена" : "Автоподпитка выключена"
+                        color: "white"
+                    }
+                    Text { text: NetworkManager.partyEnergyAutoFuel ? "✓" : ""; color: "#a78bfa"; font.bold: true }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: NetworkManager.setPartyAutoFuel(!NetworkManager.partyEnergyAutoFuel)
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    radius: 6
+                    color: "#a78bfa"
+                    Text { anchors.centerIn: parent; text: "+15 мин с депозита"; color: "black"; font.bold: true; font.pixelSize: 12 }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: NetworkManager.contributePartyEnergy(15, "deposit")
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    radius: 6
+                    color: "#333"
+                    Text { anchors.centerIn: parent; text: "Скинуть 15 мин"; color: "white"; font.bold: true; font.pixelSize: 12 }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: NetworkManager.contributePartyEnergy(15, "time")
+                    }
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: lfgPopup
+        width: Math.min(560, parent.width * 0.9)
+        height: Math.min(520, parent.height * 0.88)
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        property string game: "cs2"
+        property string rank: "lem"
+        property string donePin: ""
+        property string donePcName: ""
+        background: Rectangle {
+            color: "#050505"
+            border.color: "#22c55e"
+            border.width: 2
+            radius: Theme.radiusSm
+        }
+        onOpened: {
+            if (typeof NetworkManager !== "undefined")
+                NetworkManager.fetchLanLive()
+        }
+        readonly property var queue: (typeof NetworkManager !== "undefined" && NetworkManager.lfg)
+                                     ? (NetworkManager.lfg.queue || {}) : ({})
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 24
+            spacing: 12
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    text: "НАЙТИ ПАТИ В КЛУБЕ"
+                    color: "#22c55e"
+                    font.pixelSize: 20
+                    font.bold: true
+                    font.italic: true
+                }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: "✕"
+                    color: "white"
+                    font.pixelSize: 18
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -8
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: lfgPopup.close()
+                    }
+                }
+            }
+            Text {
+                visible: lfgPopup.donePin.length === 0
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#9ca3af"
+                font.pixelSize: 13
+                text: "Соло в зале: укажи игру и ранг. Шелл подберёт тиммейта на соседнем ПК."
+            }
+            Text {
+                visible: lfgPopup.donePin.length > 0
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#22c55e"
+                font.pixelSize: 14
+                font.bold: true
+                text: "Пересадка на " + lfgPopup.donePcName + ". PIN на новом месте:"
+            }
+            Text {
+                visible: lfgPopup.donePin.length > 0
+                Layout.alignment: Qt.AlignHCenter
+                text: lfgPopup.donePin
+                color: "white"
+                font.pixelSize: 42
+                font.bold: true
+                font.letterSpacing: 10
+            }
+            Text {
+                visible: lfgPopup.queue && lfgPopup.queue.line
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "white"
+                font.pixelSize: 15
+                font.bold: true
+                text: lfgPopup.queue && lfgPopup.queue.line ? lfgPopup.queue.line : ""
+            }
+            Text {
+                visible: lfgPopup.queue && lfgPopup.queue.hint
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#a3a3a3"
+                font.pixelSize: 13
+                text: lfgPopup.queue && lfgPopup.queue.hint ? lfgPopup.queue.hint : ""
+            }
+            RowLayout {
+                visible: lfgPopup.donePin.length === 0
+                Layout.fillWidth: true
+                ComboBox {
+                    model: ["CS2", "Dota 2", "Valorant"]
+                    Layout.preferredWidth: 150
+                    onActivated: lfgPopup.game = currentIndex === 1 ? "dota" : (currentIndex === 2 ? "valorant" : "cs2")
+                }
+                ComboBox {
+                    Layout.fillWidth: true
+                    model: lfgPopup.game === "dota"
+                           ? ["herald", "guardian", "crusader", "archon", "legend", "ancient", "divine", "immortal"]
+                           : (lfgPopup.game === "valorant"
+                              ? ["iron", "bronze", "silver", "gold", "plat", "diamond", "ascendant", "immortal", "radiant"]
+                              : ["silver", "gold nova", "mg", "dmg", "lem", "supreme", "global"])
+                    onActivated: lfgPopup.rank = currentText
+                    Component.onCompleted: lfgPopup.rank = currentText
+                }
+            }
+            Rectangle {
+                visible: lfgPopup.donePin.length === 0 && !(lfgPopup.queue && lfgPopup.queue.status === "matched")
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                radius: 6
+                color: "#22c55e"
+                Text {
+                    anchors.centerIn: parent
+                    text: (lfgPopup.queue && lfgPopup.queue.status === "open") ? "ИЩЕМ…" : "НАЙТИ ПАТИ"
+                    color: "black"
+                    font.bold: true
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: NetworkManager.enqueueLfg(lfgPopup.game, lfgPopup.rank)
+                }
+            }
+            Rectangle {
+                visible: lfgPopup.donePin.length === 0 && lfgPopup.queue && lfgPopup.queue.can_sit === true
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                radius: 6
+                color: "#06b6d4"
+                Text {
+                    anchors.centerIn: parent
+                    text: "ПЕРЕСЕСТЬ РЯДОМ"
+                    color: "black"
+                    font.bold: true
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: NetworkManager.sitLfg()
+                }
+            }
+            Text {
+                visible: lfgPopup.donePin.length === 0 && lfgPopup.queue && lfgPopup.queue.status === "matched"
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#d4d4d4"
+                font.pixelSize: 12
+                text: lfgPopup.queue && lfgPopup.queue.voice_url
+                      ? "Войс: включите голосовой чат в игре или Discord клуба."
+                      : "Войс: включите голосовой чат в игре или сядьте рядом."
+            }
+            Rectangle {
+                visible: lfgPopup.donePin.length === 0 && lfgPopup.queue && lfgPopup.queue.voice_url
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                radius: 6
+                color: "#5865F2"
+                Text {
+                    anchors.centerIn: parent
+                    text: "DISCORD КЛУБА"
+                    color: "white"
+                    font.bold: true
+                    font.pixelSize: 12
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (lfgPopup.queue && lfgPopup.queue.voice_url)
+                            Qt.openUrlExternally(lfgPopup.queue.voice_url)
+                    }
+                }
+            }
+            Text {
+                visible: lfgPopup.donePin.length === 0 && lfgPopup.queue && (lfgPopup.queue.status === "open" || lfgPopup.queue.status === "matched")
+                color: Theme.danger
+                font.pixelSize: 12
+                font.bold: true
+                text: "Отменить поиск"
+                MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -6
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: NetworkManager.cancelLfg()
+                }
+            }
+            Item { Layout.fillHeight: true }
         }
     }
 

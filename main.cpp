@@ -30,9 +30,18 @@
 #include "src/core/securitymanager.h"
 #include "src/core/processmanager.h"
 #include "src/core/hidinputmonitor.h"
+#include "src/core/hardwarehealthwatchdog.h"
+#include "src/core/ragesmashwatchdog.h"
 #include "src/core/voiceassistant.h"
+#include "src/core/instantreplay.h"
 #include "src/core/lobbyaudiomanager.h"
 #include "src/core/ccbootsuperclient.h"
+#include "src/core/bearingwearprobe.h"
+#include "src/core/goldenimagedriftwatchdog.h"
+#include "src/core/rollbackmarker.h"
+#include "src/core/gpupowerlimiter.h"
+#include "src/core/linkflapwatchdog.h"
+#include "src/core/patchcachecoordinator.h"
 
 // C++ Модели данных для QML слоя
 #include "src/models/gamemodel.h"
@@ -96,6 +105,7 @@ bool isNoisyLogLine(QtMsgType type, const QString &msg)
         || msg.contains(QLatin1String("[PLAYER-OPTIMIZED]"))
         || msg.contains(QLatin1String("[SHOP]"))
         || msg.contains(QLatin1String("[HID]"))
+        || msg.contains(QLatin1String("[HW-HEALTH] watch"))
         || msg.contains(QLatin1String("[START-TRACE]"))
         || msg.contains(QLatin1String("[DEBUG-MAIN]"))
         || msg.contains(QLatin1String("[PAY] diag"))
@@ -314,17 +324,38 @@ int main(int argc, char *argv[])
     ProcessManager *processManager = new ProcessManager(networkManager, &app);
     SessionAlertManager *sessionAlertManager = new SessionAlertManager(&app);
     HidInputMonitor *hidMonitor = new HidInputMonitor(networkManager, &app);
+    HardwareHealthWatchdog *hwHealth = new HardwareHealthWatchdog(networkManager, hidMonitor, &app);
+    RageSmashWatchdog *rageSmash = new RageSmashWatchdog(networkManager, hidMonitor, &app);
     VoiceAssistant *voiceAssistant = new VoiceAssistant(
         networkManager, processManager, sessionAlertManager, &app);
+    InstantReplay *instantReplay = new InstantReplay(networkManager, pathResolver, &app);
     LobbyAudioManager *lobbyAudio = new LobbyAudioManager(
         networkManager, sessionAlertManager, &app);
+    BearingWearProbe *bearingProbe = new BearingWearProbe(networkManager, voiceAssistant, &app);
+    GoldenImageDriftWatchdog *goldenWatchdog = new GoldenImageDriftWatchdog(networkManager, processManager, &app);
+    RollbackMarkerWatchdog *rollbackMarkers = new RollbackMarkerWatchdog(networkManager, ccbootSuper, &app);
+    GpuPowerLimiter *gpuEco = new GpuPowerLimiter(networkManager, &app);
+    LinkFlapWatchdog *linkFlap = new LinkFlapWatchdog(networkManager, &app);
+    PatchCacheCoordinator *patchCache = new PatchCacheCoordinator(networkManager, &app);
+    networkManager->setLinkFlapWatchdog(linkFlap);
+    networkManager->setPatchCache(patchCache);
+    Q_UNUSED(bearingProbe);
+    Q_UNUSED(hwHealth);
+    Q_UNUSED(rageSmash);
+    Q_UNUSED(gpuEco);
+    Q_UNUSED(linkFlap);
+    Q_UNUSED(rollbackMarkers);
+    QObject::connect(processManager, &ProcessManager::gameSessionFinished,
+                     goldenWatchdog, &GoldenImageDriftWatchdog::onGameSessionFinished);
 
+    networkManager->setDisklessController(ccbootSuper);
     networkManager->fetchTerminalConfig(HwidProvider::machineHwid());
     if (ccbootSuper->superClientActive())
         networkManager->setMaintenance(true);
     networkManager->checkTerminalStatus();
 
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, networkManager, [networkManager]() {
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, networkManager, [networkManager, rollbackMarkers]() {
+        rollbackMarkers->markCleanShutdown();
         networkManager->notifyPowerOffline();
     });
 
@@ -339,6 +370,7 @@ int main(int argc, char *argv[])
     rootContext->setContextProperty("SessionAlert", sessionAlertManager);
     rootContext->setContextProperty("HidMonitor", hidMonitor);
     rootContext->setContextProperty("VoiceAssistant", voiceAssistant);
+    rootContext->setContextProperty("InstantReplay", instantReplay);
     rootContext->setContextProperty("LobbyAudio", lobbyAudio);
     rootContext->setContextProperty("SecurityManager", securityManager);
     rootContext->setContextProperty("Ccboot", ccbootSuper);
