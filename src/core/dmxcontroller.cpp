@@ -125,7 +125,51 @@ void DmxController::startRefresh()
 
 void DmxController::stopRefresh()
 {
+    if (m_localMirror) {
+        startRefresh();
+        return;
+    }
     m_timer.stop();
+}
+
+void DmxController::setLocalMirror(bool on)
+{
+    m_localMirror = on;
+    if (!on) {
+        m_mirrorValid = false;
+        return;
+    }
+    startRefresh();
+    if (m_nodes.isEmpty())
+        paintGhost();
+    else
+        sendOnce(nullptr);
+}
+
+void DmxController::emitMirror(const QColor &color)
+{
+    if (!m_localMirror)
+        return;
+    if (m_mirrorValid && m_mirrorColor == color)
+        return;
+    m_mirrorValid = true;
+    m_mirrorColor = color;
+    emit renderedColor(color);
+}
+
+void DmxController::paintGhost()
+{
+    Node ghost;
+    ghost.host = QStringLiteral("local");
+    Fixture fx;
+    fx.start = 1;
+    fx.count = 1;
+    fx.layout = QStringLiteral("rgb");
+    fx.brightness = 0;
+    ghost.fixtures.append(fx);
+    QByteArray dmx(512, char(0));
+    paintUniverse(dmx, ghost);
+    emitMirror(m_liveColors.value(fixtureKey(ghost, fx)));
 }
 
 QColor DmxController::scaledRgb(const QString &color, int brightness, int r, int g, int b,
@@ -175,11 +219,17 @@ bool DmxController::sendOnce(QString *errorOut)
 
     bool anyOk = false;
     QString lastErr;
+    bool captured = false;
+    QColor primary;
     for (const Node &node : m_nodes) {
-        if (node.host.trimmed().isEmpty() || node.port <= 0)
-            continue;
         QByteArray dmx(512, char(0));
         paintUniverse(dmx, node);
+        if (!captured && !node.fixtures.isEmpty()) {
+            primary = m_liveColors.value(fixtureKey(node, node.fixtures.first()));
+            captured = true;
+        }
+        if (node.host.trimmed().isEmpty() || node.port <= 0)
+            continue;
         const QByteArray pkt = buildArtDmx(node.universe, dmx);
         const qint64 n = m_sock.writeDatagram(pkt, QHostAddress(node.host.trimmed()), quint16(node.port));
         if (m_sequence == 255)
@@ -195,6 +245,9 @@ bool DmxController::sendOnce(QString *errorOut)
         }
     }
 
+    if (captured)
+        emitMirror(primary);
+
     if (!anyOk && errorOut)
         *errorOut = lastErr.isEmpty() ? QStringLiteral("Art-Net send failed") : lastErr;
     return anyOk;
@@ -202,7 +255,10 @@ bool DmxController::sendOnce(QString *errorOut)
 
 void DmxController::onTick()
 {
-    sendOnce(nullptr);
+    if (!m_nodes.isEmpty())
+        sendOnce(nullptr);
+    else if (m_localMirror)
+        paintGhost();
     if (m_fadeMs > 0) {
         const qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_fadeStartMs;
         if (elapsed >= m_fadeMs) {

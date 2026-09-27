@@ -32,6 +32,8 @@ public:
                                     QObject *parent = nullptr);
     ~HardwareHealthWatchdog() override;
 
+    bool faultLatched() const { return m_faultLatched; }
+
 #ifdef Q_OS_WIN
     void handleMouse(WPARAM wParam, const MSLLHOOKSTRUCT *info);
     void handleKey(WPARAM wParam, const KBDLLHOOKSTRUCT *info);
@@ -89,6 +91,7 @@ private:
     int m_stuckOtherPresses = 4;
     int m_cooldownMs = 600000;
     qint64 m_lastReportMs = 0;
+    bool m_faultLatched = false;
 
     ButtonState m_buttons[3];
     QHash<quint32, KeyState> m_keys;

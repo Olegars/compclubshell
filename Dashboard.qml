@@ -19,6 +19,8 @@ Item {
     property string lastPersonaName: ""
     property string clubName: (typeof NetworkManager !== "undefined" && NetworkManager.clubName)
                               ? NetworkManager.clubName : "Клуб"
+    // Пока /api/shell/games не ответил — не орём «библиотека пуста» и не перекрываем сетку чеком.
+    property bool catalogAwaiting: true
 
     // Данные текущей сессии пользователя
     property string userName: (typeof root !== 'undefined') ? root.sessionUser : "PLAYER_1"
@@ -36,9 +38,9 @@ Item {
             NetworkManager.fetchTtsVoices()
             NetworkManager.fetchClanWar()
             climateControl.syncFromNetwork()
-            // Логин успел положить чек до загрузки Dashboard.
-            if (NetworkManager.pendingReceiptUrl && NetworkManager.pendingReceiptUrl.length > 0)
-                Qt.callLater(openFiscalReceiptPopup)
+            if (typeof gamesModel !== "undefined" && gamesModel && gamesModel.count > 0)
+                dashboardRoot.catalogAwaiting = false
+            scheduleFiscalReceiptAfterCatalog()
             var box = NetworkManager.lootbox
             if (box && box.status === "pending")
                 Qt.callLater(function() { lootboxOverlay.present(box) })
@@ -640,6 +642,10 @@ Item {
         }))
     }
 
+    function catalogHasGames() {
+        return typeof gamesModel !== "undefined" && gamesModel && gamesModel.count > 0
+    }
+
     function openFiscalReceiptPopup() {
         if (typeof NetworkManager === 'undefined')
             return
@@ -651,6 +657,19 @@ Item {
         fiscalReceiptPopup.isStub = !!NetworkManager.pendingReceiptStub
         fiscalReceiptPopup.description = NetworkManager.pendingReceiptDescription || ""
         fiscalReceiptPopup.open()
+    }
+
+    function scheduleFiscalReceiptAfterCatalog() {
+        if (typeof NetworkManager === "undefined")
+            return
+        if (!NetworkManager.pendingReceiptUrl || NetworkManager.pendingReceiptUrl.length < 1)
+            return
+        if (catalogHasGames()) {
+            dashboardRoot.catalogAwaiting = false
+            Qt.callLater(openFiscalReceiptPopup)
+            return
+        }
+        receiptAfterCatalogTimer.restart()
     }
 
     function closeFiscalReceiptPopup() {
@@ -666,9 +685,27 @@ Item {
             fiscalReceiptPopup.receiptAmount = amount || 0
             fiscalReceiptPopup.isStub = !!isStub
             fiscalReceiptPopup.description = description || ""
-            if (fiscalReceiptPopup.receiptUrl.length > 0)
+            if (fiscalReceiptPopup.receiptUrl.length < 1)
+                return
+            if (catalogHasGames())
                 fiscalReceiptPopup.open()
+            else
+                scheduleFiscalReceiptAfterCatalog()
         }
+        function onGamesLoaded() {
+            dashboardRoot.catalogAwaiting = false
+            if (catalogHasGames()) {
+                receiptAfterCatalogTimer.stop()
+                Qt.callLater(openFiscalReceiptPopup)
+            }
+        }
+    }
+
+    Timer {
+        id: receiptAfterCatalogTimer
+        interval: 12000
+        repeat: false
+        onTriggered: openFiscalReceiptPopup()
     }
 
     // --- Климат-контроль: декор оборотов / кнопка ---
@@ -1242,7 +1279,8 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.margins: 40
-        anchors.topMargin: 40 + dashboardRoot.topBannerOffset
+        // Баннеры (кэш SSD, return-to-game) — оверлей, панель не сдвигаем.
+        anchors.topMargin: 40
         spacing: 40
 
         Rectangle {
@@ -1256,11 +1294,14 @@ Item {
 
             Item {
                 anchors.fill: parent
-                anchors.margins: 30
+                anchors.leftMargin: 20
+                anchors.rightMargin: 20
+                anchors.topMargin: 14
+                anchors.bottomMargin: 16
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 12
+                    spacing: 8
 
                     RowLayout {
                         id: topTilesRow
@@ -1602,7 +1643,7 @@ Item {
                     Rectangle {
                         id: lightBox
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 98
+                        Layout.preferredHeight: 88
                         color: "#0a0f0b"
                         border.color: (typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable)
                                       ? Qt.rgba(0.13, 0.77, 0.36, 0.4)
@@ -1717,102 +1758,6 @@ Item {
                                 }
                             }
 
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 8
-                                Rectangle {
-                                    width: 14
-                                    height: 14
-                                    radius: 3
-                                    color: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive)
-                                           ? accentColor : "#222"
-                                    border.color: "#555"
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive) ? "✓" : ""
-                                        color: "black"
-                                        font.pixelSize: 10
-                                        font.bold: true
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        enabled: typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable
-                                        onClicked: NetworkManager.setLightInteractive(!NetworkManager.lightInteractive)
-                                    }
-                                }
-                                Text {
-                                    text: "ИНТЕРАКТИВ"
-                                    color: accentColor
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1.2
-                                    opacity: 0.8
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        enabled: typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable
-                                        onClicked: NetworkManager.setLightInteractive(!NetworkManager.lightInteractive)
-                                    }
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractiveHint)
-                                          ? NetworkManager.lightInteractiveHint : "игра"
-                                    color: "#8a8a8a"
-                                    font.pixelSize: 9
-                                    elide: Text.ElideRight
-                                    visible: typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive
-                                }
-                            }
-
-                            RowLayout {
-                                visible: typeof NetworkManager === "undefined"
-                                         || NetworkManager.featureEnabled("ghost_coach")
-                                Layout.fillWidth: true
-                                spacing: 8
-                                Rectangle {
-                                    width: 14
-                                    height: 14
-                                    radius: 3
-                                    color: (typeof NetworkManager !== "undefined" && NetworkManager.ghostCoachEnabled)
-                                           ? accentColor : "#222"
-                                    border.color: "#555"
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: (typeof NetworkManager !== "undefined" && NetworkManager.ghostCoachEnabled) ? "✓" : ""
-                                        color: "black"
-                                        font.pixelSize: 10
-                                        font.bold: true
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            if (typeof NetworkManager !== "undefined")
-                                                NetworkManager.setGhostCoachEnabled(!NetworkManager.ghostCoachEnabled)
-                                        }
-                                    }
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: "GHOST COACH"
-                                    color: accentColor
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1.2
-                                    opacity: 0.8
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            if (typeof NetworkManager !== "undefined")
-                                                NetworkManager.setGhostCoachEnabled(!NetworkManager.ghostCoachEnabled)
-                                        }
-                                    }
-                                }
-                            }
-
                             Item {
                                 id: lightSlider
                                 Layout.fillWidth: true
@@ -1875,6 +1820,105 @@ Item {
                                                 && NetworkManager.lightAvailable
                                                 && NetworkManager.lightManualLockSec <= 0)
                                             NetworkManager.setLightBrightness(lightSlider.value)
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    spacing: 6
+                                    Rectangle {
+                                        width: 14
+                                        height: 14
+                                        radius: 3
+                                        color: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive)
+                                               ? accentColor : "#222"
+                                        border.color: "#555"
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: (typeof NetworkManager !== "undefined" && NetworkManager.lightInteractive) ? "✓" : ""
+                                            color: "black"
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            enabled: typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable
+                                            onClicked: NetworkManager.setLightInteractive(!NetworkManager.lightInteractive)
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        text: "ИНТЕРАКТИВ"
+                                        color: accentColor
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        font.letterSpacing: 1.0
+                                        opacity: 0.8
+                                        elide: Text.ElideRight
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            enabled: typeof NetworkManager !== "undefined" && NetworkManager.lightAvailable
+                                            onClicked: NetworkManager.setLightInteractive(!NetworkManager.lightInteractive)
+                                        }
+                                    }
+                                }
+
+                                RowLayout {
+                                    visible: typeof NetworkManager === "undefined"
+                                             || NetworkManager.featureEnabled("ghost_coach")
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    spacing: 6
+                                    Rectangle {
+                                        width: 14
+                                        height: 14
+                                        radius: 3
+                                        color: (typeof NetworkManager !== "undefined" && NetworkManager.ghostCoachEnabled)
+                                               ? accentColor : "#222"
+                                        border.color: "#555"
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: (typeof NetworkManager !== "undefined" && NetworkManager.ghostCoachEnabled) ? "✓" : ""
+                                            color: "black"
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (typeof NetworkManager !== "undefined")
+                                                    NetworkManager.setGhostCoachEnabled(!NetworkManager.ghostCoachEnabled)
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        text: "GHOST COACH"
+                                        color: accentColor
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                        font.letterSpacing: 1.0
+                                        opacity: 0.8
+                                        elide: Text.ElideRight
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (typeof NetworkManager !== "undefined")
+                                                    NetworkManager.setGhostCoachEnabled(!NetworkManager.ghostCoachEnabled)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2028,7 +2072,9 @@ Item {
                             }
 
                             Rectangle {
-                                visible: typeof NetworkManager !== "undefined" && NetworkManager.featureEnabled("clan_wars") && NetworkManager.clanWar && NetworkManager.clanWar.id
+                                visible: typeof NetworkManager !== "undefined"
+                                         && NetworkManager.featureEnabled("clan_wars")
+                                         && !!(NetworkManager.clanWar && NetworkManager.clanWar.id)
                                 width: parent.width
                                 height: warScoreCol.implicitHeight + 10
                                 radius: 6
@@ -2203,8 +2249,8 @@ Item {
                     GridLayout {
                         columns: 3
                         rows: 3
-                        columnSpacing: 8
-                        rowSpacing: 8
+                        columnSpacing: 6
+                        rowSpacing: 6
                         Layout.fillWidth: true
                         PlatformSquareBtn {
                             btnText: "STEAM"
@@ -2323,242 +2369,198 @@ Item {
                         }
                     }
 
-                    Item { height: 5; width: 1 }
+                    Item { height: 4; width: 1 }
 
-                    ColumnLayout {
+                    Flow {
+                        id: sideActions
+                        objectName: "sideActions"
                         Layout.fillWidth: true
-                        spacing: 8
+                        Layout.preferredHeight: implicitHeight
+                        spacing: 6
+                        readonly property int cols: 3
+                        readonly property int cellW: Math.max(1, Math.floor((width - spacing * (cols - 1)) / cols))
 
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            ActionBtn {
-                                id: storeActionBtn
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "МАГАЗИН"
-                                icon: "🛒"
-                                baseColor: Theme.shop
-                                visible: typeof NetworkManager === "undefined"
-                                         || NetworkManager.featureEnabled("shell_store")
-                                isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
-                                orderIsFinished: (typeof root !== 'undefined'
-                                                  && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
-                                                      || root.orderStatusText.indexOf("ОТМЕН") >= 0))
-                                orderIsCooking: (typeof root !== 'undefined'
-                                                 && (root.orderStatusCode === "cooking"
-                                                     || root.orderStatusText.indexOf("В РАБОТЕ") >= 0
-                                                     || root.orderStatusText.indexOf("ГОТОВИТ") >= 0))
-                                statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
-                                onClicked: {
-                                    console.log("[SHOP] open, termId=", dashboardRoot.termId,
-                                                "balance=", dashboardRoot.userBalance)
-                                    if (typeof NetworkManager !== 'undefined')
-                                        NetworkManager.fetchProducts()
-                                    storePopup.open()
-                                }
-                            }
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ПОПОЛНИТЬ"
-                                icon: "💳"
-                                baseColor: Theme.shop
-                                onClicked: depositPopup.open()
+                        ActionBtn {
+                            id: storeActionBtn
+                            compact: true
+                            text: "МАГАЗИН"
+                            icon: "🛒"
+                            baseColor: Theme.shop
+                            visible: typeof NetworkManager === "undefined"
+                                     || NetworkManager.featureEnabled("shell_store")
+                            isActiveStatus: (typeof root !== 'undefined') ? root.hasActiveOrder : false
+                            orderIsFinished: (typeof root !== 'undefined'
+                                              && (root.orderStatusText.indexOf("ВЫПОЛНЕН") >= 0
+                                                  || root.orderStatusText.indexOf("ОТМЕН") >= 0))
+                            orderIsCooking: (typeof root !== 'undefined'
+                                             && (root.orderStatusCode === "cooking"
+                                                 || root.orderStatusText.indexOf("В РАБОТЕ") >= 0
+                                                 || root.orderStatusText.indexOf("ГОТОВИТ") >= 0))
+                            statusText: (typeof root !== 'undefined' && root.hasActiveOrder) ? root.orderStatusText : ""
+                            onClicked: {
+                                console.log("[SHOP] open, termId=", dashboardRoot.termId,
+                                            "balance=", dashboardRoot.userBalance)
+                                filterCatRow.activeCat = "Все"
+                                if (typeof storeModel !== 'undefined')
+                                    storeModel.setFilter("")
+                                if (typeof NetworkManager !== 'undefined')
+                                    NetworkManager.fetchProducts()
+                                storePopup.open()
                             }
                         }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "АРЕНА"
-                                icon: "⚔"
-                                baseColor: "#fb923c"
-                                visible: typeof NetworkManager === "undefined"
-                                         || NetworkManager.featureEnabled("arena_duels")
-                                onClicked: {
-                                    if (typeof NetworkManager !== "undefined")
-                                        NetworkManager.fetchLanLive()
-                                    arenaPopup.open()
-                                }
-                            }
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ОХОТА"
-                                icon: "🎯"
-                                baseColor: "#f59e0b"
-                                visible: typeof NetworkManager === "undefined"
-                                         || NetworkManager.featureEnabled("lan_bounty")
-                                onClicked: {
-                                    if (typeof NetworkManager !== "undefined")
-                                        NetworkManager.fetchLanLive()
-                                    bountyPopup.open()
-                                }
-                            }
-                            ActionBtn {
-                                visible: typeof NetworkManager !== "undefined"
-                                         && NetworkManager.featureEnabled("lucky_seat")
-                                         && NetworkManager.lootbox
-                                         && NetworkManager.lootbox.status === "pending"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "КЕЙС"
-                                icon: "✦"
-                                baseColor: Theme.shop
-                                onClicked: {
-                                    if (typeof NetworkManager !== "undefined")
-                                        lootboxOverlay.present(NetworkManager.lootbox)
-                                }
-                            }
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ПАТИ"
-                                icon: "🎮"
-                                baseColor: "#22c55e"
-                                visible: typeof NetworkManager === "undefined"
-                                         || NetworkManager.featureEnabled("lfg")
-                                onClicked: {
-                                    if (typeof NetworkManager !== "undefined")
-                                        NetworkManager.fetchLanLive()
-                                    lfgPopup.open()
-                                }
-                            }
-                            ActionBtn {
-                                visible: typeof NetworkManager !== "undefined"
-                                         && NetworkManager.featureEnabled("party_energy")
-                                         && NetworkManager.partyEnergyAvailable
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: NetworkManager.partyEnergyMinutes > 0
-                                      ? ("КОТЁЛ " + NetworkManager.partyEnergyMinutes + "м")
-                                      : "КОТЁЛ"
-                                icon: "⚡"
-                                baseColor: "#a78bfa"
-                                onClicked: {
-                                    if (typeof NetworkManager !== "undefined")
-                                        NetworkManager.fetchLanLive()
-                                    energyPopup.open()
-                                }
+                        ActionBtn {
+                            compact: true
+                            text: "ПОПОЛНИТЬ"
+                            icon: "💳"
+                            baseColor: Theme.shop
+                            onClicked: depositPopup.open()
+                        }
+                        ActionBtn {
+                            compact: true
+                            text: "АРЕНА"
+                            icon: "⚔"
+                            baseColor: "#fb923c"
+                            visible: typeof NetworkManager === "undefined"
+                                     || NetworkManager.featureEnabled("arena_duels")
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.fetchLanLive()
+                                arenaPopup.open()
                             }
                         }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ПРОДЛИТЬ"
-                                icon: "⏱"
-                                baseColor: accentColor
-                                onClicked: {
-                                    console.log("[SESSION] ПРОДЛИТЬ ВРЕМЯ — stub")
-                                    if (typeof SessionAlert !== "undefined")
-                                        SessionAlert.requestExtendTime()
-                                }
-                            }
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ПЕРЕСЕСТЬ"
-                                icon: "↔"
-                                baseColor: "#06b6d4"
-                                visible: typeof NetworkManager === "undefined"
-                                         || NetworkManager.featureEnabled("seat_transfer")
-                                onClicked: transferPopup.open()
+                        ActionBtn {
+                            compact: true
+                            text: "ОХОТА"
+                            icon: "🎯"
+                            baseColor: "#f59e0b"
+                            visible: typeof NetworkManager === "undefined"
+                                     || NetworkManager.featureEnabled("lan_bounty")
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.fetchLanLive()
+                                bountyPopup.open()
                             }
                         }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ПАУЗА"
-                                icon: "⏳"
-                                baseColor: "#3b82f6"
-                                onClicked: {
-                                    var baseUrl = dashboardRoot.apiBase()
-                                    if (baseUrl.length === 0)
+                        ActionBtn {
+                            compact: true
+                            text: "ПАТИ"
+                            icon: "🎮"
+                            baseColor: "#22c55e"
+                            visible: typeof NetworkManager === "undefined"
+                                     || NetworkManager.featureEnabled("lfg")
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.fetchLanLive()
+                                lfgPopup.open()
+                            }
+                        }
+                        ActionBtn {
+                            visible: typeof NetworkManager !== "undefined"
+                                     && NetworkManager.featureEnabled("lucky_seat")
+                                     && NetworkManager.lootbox
+                                     && NetworkManager.lootbox.status === "pending"
+                            compact: true
+                            text: "КЕЙС"
+                            icon: "✦"
+                            baseColor: Theme.shop
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    lootboxOverlay.present(NetworkManager.lootbox)
+                            }
+                        }
+                        ActionBtn {
+                            visible: typeof NetworkManager !== "undefined"
+                                     && NetworkManager.featureEnabled("party_energy")
+                                     && NetworkManager.partyEnergyAvailable
+                            compact: true
+                            text: NetworkManager.partyEnergyMinutes > 0
+                                  ? ("КОТЁЛ " + NetworkManager.partyEnergyMinutes + "м")
+                                  : "КОТЁЛ"
+                            icon: "⚡"
+                            baseColor: "#a78bfa"
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.fetchLanLive()
+                                energyPopup.open()
+                            }
+                        }
+                        ActionBtn {
+                            compact: true
+                            text: "ПРОДЛИТЬ"
+                            icon: "⏱"
+                            baseColor: accentColor
+                            onClicked: {
+                                console.log("[SESSION] ПРОДЛИТЬ ВРЕМЯ — stub")
+                                if (typeof SessionAlert !== "undefined")
+                                    SessionAlert.requestExtendTime()
+                            }
+                        }
+                        ActionBtn {
+                            compact: true
+                            text: "ПЕРЕСЕСТЬ"
+                            icon: "↔"
+                            baseColor: "#06b6d4"
+                            visible: typeof NetworkManager === "undefined"
+                                     || NetworkManager.featureEnabled("seat_transfer")
+                            onClicked: transferPopup.open()
+                        }
+                        ActionBtn {
+                            compact: true
+                            text: "ПАУЗА"
+                            icon: "⏳"
+                            baseColor: "#3b82f6"
+                            onClicked: {
+                                var baseUrl = dashboardRoot.apiBase()
+                                if (baseUrl.length === 0)
+                                    return
+                                var pcId = parseInt(dashboardRoot.termId)
+                                if (!pcId) {
+                                    console.error("[PAUSE] terminalId пуст")
+                                    return
+                                }
+                                var xhr = new XMLHttpRequest()
+                                xhr.open("POST", baseUrl + "/api/shell/game/pause")
+                                xhr.setRequestHeader("Content-Type", "application/json")
+                                xhr.onreadystatechange = function() {
+                                    if (xhr.readyState !== XMLHttpRequest.DONE)
                                         return
-                                    var pcId = parseInt(dashboardRoot.termId)
-                                    if (!pcId) {
-                                        console.error("[PAUSE] terminalId пуст")
+                                    if (xhr.status !== 200) {
+                                        console.error("[PAUSE] HTTP", xhr.status, xhr.responseText)
                                         return
                                     }
-                                    var xhr = new XMLHttpRequest()
-                                    xhr.open("POST", baseUrl + "/api/shell/game/pause")
-                                    xhr.setRequestHeader("Content-Type", "application/json")
-                                    xhr.onreadystatechange = function() {
-                                        if (xhr.readyState !== XMLHttpRequest.DONE)
-                                            return
-                                        if (xhr.status !== 200) {
-                                            console.error("[PAUSE] HTTP", xhr.status, xhr.responseText)
-                                            return
+                                    try {
+                                        var res = JSON.parse(xhr.responseText)
+                                        if (res.status === "success" && res.pin_code && typeof root !== 'undefined') {
+                                            root.sessionUserBeforePause = root.sessionUser
+                                            root.temporaryPausePin = String(res.pin_code)
+                                            root.sessionUser = "PAUSE"
+                                            console.log("[PAUSE] OK, одноразовый PIN выдан")
+                                        } else {
+                                            console.error("[PAUSE] отказ:", res.message || xhr.responseText)
                                         }
-                                        try {
-                                            var res = JSON.parse(xhr.responseText)
-                                            if (res.status === "success" && res.pin_code && typeof root !== 'undefined') {
-                                                root.sessionUserBeforePause = root.sessionUser
-                                                root.temporaryPausePin = String(res.pin_code)
-                                                root.sessionUser = "PAUSE"
-                                                console.log("[PAUSE] OK, одноразовый PIN выдан")
-                                            } else {
-                                                console.error("[PAUSE] отказ:", res.message || xhr.responseText)
-                                            }
-                                        } catch (e) {
-                                            console.error("[PAUSE] parse:", e)
-                                        }
+                                    } catch (e) {
+                                        console.error("[PAUSE] parse:", e)
                                     }
-                                    xhr.send(JSON.stringify({
-                                        "computer_id": pcId,
-                                        "booking_id": (typeof NetworkManager !== 'undefined') ? NetworkManager.lastBookingId : 0
-                                    }))
                                 }
+                                xhr.send(JSON.stringify({
+                                    "computer_id": pcId,
+                                    "booking_id": (typeof NetworkManager !== 'undefined') ? NetworkManager.lastBookingId : 0
+                                }))
                             }
-                            ActionBtn {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.minimumWidth: 0
-                                compact: true
-                                text: "ВЫЙТИ"
-                                icon: "🚪"
-                                baseColor: "#525252"
-                                onClicked: {
-                                    if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
-                                    if (typeof InstantReplay !== "undefined")
-                                        InstantReplay.flushAndLogout(dashboardRoot.termId)
-                                    else if (typeof NetworkManager !== "undefined")
-                                        NetworkManager.logoutTerminal(dashboardRoot.termId)
-                                    if (typeof root !== 'undefined') root.sessionUser = ""
-                                    dashboardRoot.visible = false
-                                }
+                        }
+                        ActionBtn {
+                            compact: true
+                            text: "ВЫЙТИ"
+                            icon: "🚪"
+                            baseColor: "#525252"
+                            onClicked: {
+                                if (typeof HidMonitor !== "undefined") HidMonitor.stopWatch()
+                                if (typeof InstantReplay !== "undefined")
+                                    InstantReplay.flushAndLogout(dashboardRoot.termId)
+                                else if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.logoutTerminal(dashboardRoot.termId)
+                                if (typeof root !== 'undefined') root.sessionUser = ""
+                                dashboardRoot.visible = false
                             }
                         }
                     }
@@ -2871,6 +2873,10 @@ Item {
                 function posterUrl(pUrl) {
                     if (!pUrl || pUrl === "")
                         return ""
+                    var lower = String(pUrl).toLowerCase()
+                    // Wikipedia FilePath часто 404 и держит очередь картинок на 20–30 с.
+                    if (lower.indexOf("wikipedia.org") >= 0 || lower.indexOf("wikimedia.org") >= 0)
+                        return ""
                     if (pUrl.indexOf("http") === 0 || pUrl.indexOf("file") === 0)
                         return pUrl
                     var baseUrl = dashboardRoot.apiBase()
@@ -2956,11 +2962,13 @@ Item {
                                         width: parent.width
                                         height: parent.height - gamesGridHost.cardTitleH
                                         // Unique URL per gameId keeps poster tied to title
-                                        source: cardRoot.cardPoster.length
-                                                ? (gamesGridHost.posterUrl(cardRoot.cardPoster)
-                                                   + (cardRoot.cardPoster.indexOf("?") >= 0 ? "&" : "?")
-                                                   + "gid=" + cardRoot.cardGameId)
-                                                : ""
+                                        source: {
+                                            var u = gamesGridHost.posterUrl(cardRoot.cardPoster)
+                                            if (!u || u.length === 0)
+                                                return ""
+                                            return u + (u.indexOf("?") >= 0 ? "&" : "?")
+                                                   + "gid=" + cardRoot.cardGameId
+                                        }
                                         // Постер вписывается целиком: без обрезки и без искажения
                                         fillMode: Image.PreserveAspectFit
                                         asynchronous: true
@@ -2971,6 +2979,10 @@ Item {
                                         sourceSize.height: Theme.px(gamesGridHost.posterH)
                                         opacity: (status === Image.Ready)
                                                  ? (cardArea.containsMouse ? 1.0 : 0.7) : 0.0
+                                        onStatusChanged: {
+                                            if (status === Image.Error)
+                                                source = ""
+                                        }
                                     }
 
                                     Rectangle {
@@ -3119,13 +3131,15 @@ Item {
 
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: gamesEmptyState.isFiltered ? "🔍" : "🎮"
+                            text: gamesEmptyState.isFiltered ? "🔍"
+                                  : (dashboardRoot.catalogAwaiting ? "…" : "🎮")
                             font.pixelSize: 44
                             opacity: 0.35
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: gamesEmptyState.isFiltered ? "Игры не найдены" : "Библиотека пуста"
+                            text: gamesEmptyState.isFiltered ? "Игры не найдены"
+                                  : (dashboardRoot.catalogAwaiting ? "Загрузка каталога…" : "Библиотека пуста")
                             color: "#8a8a8a"
                             font.pixelSize: 20
                             font.bold: true
@@ -3137,7 +3151,9 @@ Item {
                                   ? (gameSearchInput.text.length > 0
                                      ? "Измените запрос"
                                      : "Выберите другую категорию")
-                                  : "Проверьте соединение"
+                                  : (dashboardRoot.catalogAwaiting
+                                     ? "Подтягиваем игры с сервера"
+                                     : "Проверьте соединение")
                             color: "#555555"
                             font.pixelSize: 14
                         }
@@ -3290,8 +3306,9 @@ Item {
                 Repeater {
                     model: [
                         { name: "Все", tag: "" },
-                        { name: "Напитки", tag: "drinks" },
-                        { name: "Снэки", tag: "food" }
+                        { name: "Напитки", tag: "Напитки" },
+                        { name: "Снэки", tag: "Снэки" },
+                        { name: "Еда", tag: "Еда" }
                     ]
                     delegate: Rectangle {
                         width: 120
@@ -3351,6 +3368,7 @@ Item {
                                 clip: true
 
                                 Image {
+                                    id: shopThumb
                                     anchors.fill: parent
                                     anchors.margins: 5
                                     fillMode: Image.PreserveAspectFit
@@ -3360,18 +3378,18 @@ Item {
                                     sourceSize.height: Theme.px(130)
                                     source: {
                                         var imgUrl = model.image || ""
+                                        var baseUrl = dashboardRoot.apiBase()
                                         if (imgUrl === "")
-                                            return ""
+                                            imgUrl = "images/shop/default.png"
                                         if (imgUrl.indexOf("http") === 0 || imgUrl.indexOf("file") === 0)
                                             return imgUrl
-                                        var baseUrl = dashboardRoot.apiBase()
                                         if (baseUrl.length === 0)
                                             return ""
                                         return imgUrl.indexOf("/") === 0 ? baseUrl + imgUrl : baseUrl + "/" + imgUrl
                                     }
                                 }
                                 Text {
-                                    visible: !model.image
+                                    visible: shopThumb.status !== Image.Ready
                                     anchors.centerIn: parent
                                     text: "📦"
                                     font.pixelSize: 36
@@ -3442,7 +3460,9 @@ Item {
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: "Товары не найдены"
+                            text: filterCatRow.activeCat === "Все"
+                                  ? "В баре пока нет товаров"
+                                  : "Товары не найдены"
                             color: "#8a8a8a"
                             font.pixelSize: 18
                             font.bold: true
@@ -4362,7 +4382,7 @@ Item {
                 font.letterSpacing: 10
             }
             Text {
-                visible: lfgPopup.queue && lfgPopup.queue.line
+                visible: !!(lfgPopup.queue && lfgPopup.queue.line)
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 color: "white"
@@ -4371,7 +4391,7 @@ Item {
                 text: lfgPopup.queue && lfgPopup.queue.line ? lfgPopup.queue.line : ""
             }
             Text {
-                visible: lfgPopup.queue && lfgPopup.queue.hint
+                visible: !!(lfgPopup.queue && lfgPopup.queue.hint)
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 color: "#a3a3a3"
@@ -4444,7 +4464,7 @@ Item {
                       : "Войс: включите голосовой чат в игре или сядьте рядом."
             }
             Rectangle {
-                visible: lfgPopup.donePin.length === 0 && lfgPopup.queue && lfgPopup.queue.voice_url
+                visible: lfgPopup.donePin.length === 0 && !!(lfgPopup.queue && lfgPopup.queue.voice_url)
                 Layout.fillWidth: true
                 Layout.preferredHeight: 40
                 radius: 6
@@ -6564,7 +6584,7 @@ Item {
         property bool orderIsFinished: false
         property bool orderIsCooking: false
         property string statusText: ""
-        // Половинная кнопка: контент по центру, статус второй строкой.
+        // Половинная кнопка: иконка+текст слева, статус второй строкой.
         property bool compact: false
         property bool shortRow: false
         readonly property color statusAccent: orderIsFinished ? Theme.success
@@ -6577,7 +6597,12 @@ Item {
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         Layout.minimumWidth: 0
-        Layout.preferredHeight: shortRow ? 36 : (compact ? 44 : 50)
+        implicitHeight: shortRow ? 36 : (compact ? 40 : 50)
+        height: implicitHeight
+        Layout.preferredHeight: implicitHeight
+        // В Flow (3 в ряд) ширина ячейки приходит с родителя.
+        width: (parent && parent.objectName === "sideActions" && parent.cellW > 0)
+               ? parent.cellW : implicitWidth
         // Hover scale искажает «размер» соседних кнопок — только opacity/border.
         scale: 1.0
         radius: 4
@@ -6624,30 +6649,35 @@ Item {
 
         Column {
             visible: controlRoot.compact
-            anchors.centerIn: parent
-            width: parent.width - 12
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.leftMargin: 8
+            anchors.rightMargin: 6
             spacing: 1
 
             Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 5
+                spacing: 4
                 Text {
                     text: icon
-                    font.pixelSize: 12
+                    font.pixelSize: 11
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
                     text: controlRoot.text
                     color: actionMouse.pressed ? "black" : (actionMouse.containsMouse || isActiveStatus ? "white" : baseColor)
                     font.bold: true
-                    font.pixelSize: 12
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
+                    width: Math.min(implicitWidth, Math.max(0, controlRoot.width - 28))
                     anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignLeft
                 }
             }
 
             Text {
                 width: parent.width
-                horizontalAlignment: Text.AlignHCenter
+                horizontalAlignment: Text.AlignLeft
                 elide: Text.ElideRight
                 visible: controlRoot.isActiveStatus && controlRoot.statusText !== ""
                 text: controlRoot.statusText
@@ -6721,7 +6751,9 @@ Item {
         signal clicked()
 
         Layout.fillWidth: true
-        Layout.preferredHeight: 58
+        Layout.preferredHeight: 52
+        Layout.minimumHeight: 52
+        Layout.maximumHeight: 52
         radius: 4
         color: {
             if (platBtnMouse.pressed)
@@ -6734,7 +6766,7 @@ Item {
                       ? brandColor
                       : Qt.darker(brandColor, 1.35)
         border.width: platBtnMouse.containsMouse || platBtnMouse.pressed ? 2 : 1
-        scale: platBtnMouse.pressed ? 0.96 : (platBtnMouse.containsMouse ? 1.03 : 1.0)
+        scale: platBtnMouse.pressed ? 0.97 : 1.0
         opacity: platBtnMouse.containsMouse ? 1 : 0.92
 
         Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
@@ -6744,10 +6776,10 @@ Item {
 
         Column {
             anchors.centerIn: parent
-            spacing: 3
+            spacing: 1
             Item {
-                width: 22
-                height: 22
+                width: 20
+                height: 20
                 anchors.horizontalCenter: parent.horizontalCenter
                 scale: platBtnMouse.containsMouse ? 1.1 : 1.0
                 Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
@@ -6757,7 +6789,8 @@ Item {
                     visible: platBtn.iconSource.length > 0
                     source: platBtn.iconSource
                     fillMode: Image.PreserveAspectFit
-                    asynchronous: true
+                    asynchronous: false
+                    cache: true
                     smooth: true
                     mipmap: true
                 }
@@ -6766,13 +6799,13 @@ Item {
                     visible: platBtn.iconSource.length === 0
                     text: iconText
                     color: brandColor
-                    font.pixelSize: 18
+                    font.pixelSize: 14
                 }
             }
             Text {
                 text: btnText
                 color: platBtnMouse.containsMouse ? brandColor : "white"
-                font.pixelSize: Theme.fontCaption
+                font.pixelSize: 10
                 font.bold: platBtnMouse.containsMouse
                 anchors.horizontalCenter: parent.horizontalCenter
                 Behavior on color { ColorAnimation { duration: 120 } }

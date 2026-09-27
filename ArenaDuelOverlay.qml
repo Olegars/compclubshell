@@ -90,7 +90,7 @@ Item {
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
             text: overlay.challenge.line ? String(overlay.challenge.line)
-                                         : ("Банк " + Math.round(Number(overlay.challenge.entry_fee || 0) * 2) + " ₽")
+                                         : "1 на 1 или зассал"
             color: "white"
             font.pixelSize: 16
         }
@@ -135,7 +135,7 @@ Item {
                 color: "#fb923c"
                 Text {
                     anchors.centerIn: parent
-                    text: "ПРИНЯТЬ (−" + Math.round(Number(overlay.challenge.entry_fee || 0)) + " ₽)"
+                    text: "ПРИНЯТЬ ВЫЗОВ"
                     color: "#111"
                     font.bold: true
                     font.pixelSize: 13
@@ -155,7 +155,7 @@ Item {
             width: parent.width
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
-            text: "Приз на депозит клуба. Без вывода на карту."
+            text: "Без ставок. За рейтинг клуба и царя горы."
             color: "#6b7280"
             font.pixelSize: 11
         }
@@ -178,14 +178,18 @@ Item {
             width: parent.width
             wrapMode: Text.WordWrap
             horizontalAlignment: Text.AlignHCenter
-            text: overlay.result.message ? String(overlay.result.message) : "Банк закрыт"
+            text: overlay.result.message ? String(overlay.result.message) : "Победа на арене"
             color: "white"
             font.pixelSize: 18
             font.bold: true
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: overlay.result.prize ? ("+" + Math.round(Number(overlay.result.prize)) + " ₽ на депозит") : ""
+            text: overlay.result.perk && overlay.result.perk.label
+                  ? String(overlay.result.perk.label)
+                  : (overlay.result.koth && overlay.result.koth.streak
+                     ? ("Серия " + Number(overlay.result.koth.streak))
+                     : "")
             color: "#fde68a"
             font.pixelSize: 16
         }

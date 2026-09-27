@@ -25,6 +25,8 @@ qt_add_executable(appsector0451
     src/core/stationhealth.h src/core/stationhealth.cpp
     src/core/fanrelaycontroller.h src/core/fanrelaycontroller.cpp
     src/core/dmxcontroller.h src/core/dmxcontroller.cpp
+    src/core/openrgbclient.h src/core/openrgbclient.cpp
+    src/core/faceitsession.h src/core/faceitsession.cpp
     src/core/localhttpserver.h src/core/localhttpserver.cpp
     src/core/reactivelighting.h src/core/reactivelighting.cpp
     src/core/valvegsi.h src/core/valvegsi.cpp
@@ -61,6 +63,7 @@ qt_add_qml_module(appsector0451
         SetupScreen.qml
         OverlayBlock.qml
         ClanWarBanner.qml
+        FaceitHubBanner.qml
         ArenaDuelBanner.qml
         ArenaDuelOverlay.qml
         ArenaChallengePopup.qml

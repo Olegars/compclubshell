@@ -4,7 +4,7 @@ import sector0451
 Rectangle {
     id: banner
     property var war: null
-    visible: war && war.id
+    visible: !!(war && war.id)
     color: "#cc050510"
     border.color: Theme.accentBorder
     border.width: 1

@@ -14,6 +14,8 @@
 #include <QSettings>
 #include <QCryptographicHash>
 #include <QTimer>
+#include <QThread>
+#include <QMetaObject>
 
 namespace {
 
@@ -43,6 +45,63 @@ QString localRelKey(const QString &abs)
     return QFileInfo(abs).fileName();
 }
 
+QString hashFileSha256(const QString &abs)
+{
+    QFile f(abs);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    while (!f.atEnd()) {
+        const QByteArray chunk = f.read(64 * 1024);
+        if (chunk.isEmpty())
+            break;
+        hash.addData(chunk);
+    }
+    return QString::fromLatin1(hash.result().toHex());
+}
+
+QHash<QString, QString> hashPathsSha256(const QStringList &paths)
+{
+    QHash<QString, QString> out;
+    for (const QString &abs : paths) {
+        const QString hex = hashFileSha256(abs);
+        if (!hex.isEmpty())
+            out.insert(normPath(abs), hex);
+    }
+    return out;
+}
+
+QHash<QString, QString> readTemplateHashes(const QString &templateRoot, int maxFiles)
+{
+    QHash<QString, QString> map;
+    const QString manifestPath = QDir(templateRoot).filePath(QStringLiteral("manifest.json"));
+    QFile mf(manifestPath);
+    if (mf.open(QIODevice::ReadOnly)) {
+        const QJsonObject files = QJsonDocument::fromJson(mf.readAll()).object().value(QStringLiteral("files")).toObject();
+        for (auto it = files.begin(); it != files.end(); ++it) {
+            const QString rel = normPath(it.key());
+            const QString hash = it.value().toString().trimmed().toLower();
+            if (!hash.isEmpty())
+                map.insert(rel, hash);
+        }
+        if (!map.isEmpty())
+            return map;
+    }
+
+    if (!QDir(templateRoot).exists())
+        return map;
+
+    QDirIterator it(templateRoot, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext() && map.size() < maxFiles) {
+        const QString abs = it.next();
+        const QString hex = hashFileSha256(abs);
+        if (hex.isEmpty())
+            continue;
+        map.insert(normPath(relFromRoot(templateRoot, abs)), hex);
+    }
+    return map;
+}
+
 } // namespace
 
 GoldenImageDriftWatchdog::GoldenImageDriftWatchdog(NetworkManager *net,
@@ -56,7 +115,8 @@ GoldenImageDriftWatchdog::GoldenImageDriftWatchdog(NetworkManager *net,
     loadConfig();
     if (m_net) {
         connect(m_net, &NetworkManager::loginSucceeded, this, [this]() {
-            QTimer::singleShot(0, this, &GoldenImageDriftWatchdog::snapshotAtSessionStart);
+            // После логина UI должен сразу показать каталог. Хеш — через паузу и не на UI-потоке.
+            QTimer::singleShot(4000, this, [this]() { startSnapshotAsync(true); });
         });
         connect(m_net, &NetworkManager::resyncCommandReceived, this,
                 [this](qint64 commandId, const QString &action) {
@@ -134,15 +194,7 @@ QStringList GoldenImageDriftWatchdog::criticalPaths() const
 
 QHash<QString, QString> GoldenImageDriftWatchdog::hashFiles(const QStringList &paths) const
 {
-    QHash<QString, QString> out;
-    for (const QString &abs : paths) {
-        QFile f(abs);
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
-        out.insert(normPath(abs),
-                   QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex()));
-    }
-    return out;
+    return hashPathsSha256(paths);
 }
 
 QString GoldenImageDriftWatchdog::aggregateHash(const QHash<QString, QString> &hashes) const
@@ -157,34 +209,7 @@ QString GoldenImageDriftWatchdog::aggregateHash(const QHash<QString, QString> &h
 
 QHash<QString, QString> GoldenImageDriftWatchdog::loadTemplateHashes() const
 {
-    QHash<QString, QString> map;
-    const QString manifestPath = QDir(m_templateRoot).filePath(QStringLiteral("manifest.json"));
-    QFile mf(manifestPath);
-    if (mf.open(QIODevice::ReadOnly)) {
-        const QJsonObject files = QJsonDocument::fromJson(mf.readAll()).object().value(QStringLiteral("files")).toObject();
-        for (auto it = files.begin(); it != files.end(); ++it) {
-            const QString rel = normPath(it.key());
-            const QString hash = it.value().toString().trimmed().toLower();
-            if (!hash.isEmpty())
-                map.insert(rel, hash);
-        }
-        if (!map.isEmpty())
-            return map;
-    }
-
-    if (!QDir(m_templateRoot).exists())
-        return map;
-
-    QDirIterator it(m_templateRoot, QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext() && map.size() < m_maxFiles) {
-        const QString abs = it.next();
-        QFile f(abs);
-        if (!f.open(QIODevice::ReadOnly))
-            continue;
-        map.insert(normPath(relFromRoot(m_templateRoot, abs)),
-                     QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex()));
-    }
-    return map;
+    return readTemplateHashes(m_templateRoot, m_maxFiles);
 }
 
 QStringList GoldenImageDriftWatchdog::diffPaths(const QHash<QString, QString> &local,
@@ -206,17 +231,49 @@ QStringList GoldenImageDriftWatchdog::diffPaths(const QHash<QString, QString> &l
 
 void GoldenImageDriftWatchdog::snapshotAtSessionStart()
 {
+    startSnapshotAsync(false);
+}
+
+void GoldenImageDriftWatchdog::startSnapshotAsync(bool loadTemplate)
+{
     if (!m_enabled || !m_net)
         return;
+    bool expected = false;
+    if (!m_snapshotBusy.compare_exchange_strong(expected, true))
+        return;
+
     const QStringList paths = criticalPaths();
-    m_sessionHashes = hashFiles(paths);
-    if (!m_templateLoaded) {
-        m_templateHashes = loadTemplateHashes();
+    const QString templateRoot = m_templateRoot;
+    const int maxFiles = m_maxFiles;
+    const bool needTemplate = loadTemplate && !m_templateLoaded;
+
+    QThread *thread = QThread::create([this, paths, templateRoot, maxFiles, needTemplate]() {
+        const QHash<QString, QString> hashes = hashPathsSha256(paths);
+        QHash<QString, QString> tpl;
+        if (needTemplate)
+            tpl = readTemplateHashes(templateRoot, maxFiles);
+        QMetaObject::invokeMethod(this, [this, hashes, tpl, needTemplate]() {
+            applySnapshot(hashes, tpl, needTemplate);
+        }, Qt::QueuedConnection);
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
+}
+
+void GoldenImageDriftWatchdog::applySnapshot(const QHash<QString, QString> &hashes,
+                                             const QHash<QString, QString> &templateHashes,
+                                             bool loadedTemplate)
+{
+    m_sessionHashes = hashes;
+    if (loadedTemplate) {
+        m_templateHashes = templateHashes;
         m_templateLoaded = true;
     }
     const QString agg = aggregateHash(m_sessionHashes);
-    m_net->setIntegrityTelemetry(QStringLiteral("ok"), agg, QString(), {});
+    if (m_net)
+        m_net->setIntegrityTelemetry(QStringLiteral("ok"), agg, QString(), {});
     qWarning() << "[INTEGRITY] snapshot" << m_sessionHashes.size() << "files hash" << agg.left(12);
+    m_snapshotBusy.store(false);
 }
 
 bool GoldenImageDriftWatchdog::shouldCheckAfterFailure(const QString &reason) const
@@ -230,11 +287,9 @@ void GoldenImageDriftWatchdog::onGameSessionFinished(const QString &reason)
 {
     if (!m_enabled || !m_net || !shouldCheckAfterFailure(reason))
         return;
-    if (m_sessionHashes.isEmpty())
-        snapshotAtSessionStart();
-    if (!m_templateLoaded) {
-        m_templateHashes = loadTemplateHashes();
-        m_templateLoaded = true;
+    if (m_sessionHashes.isEmpty() || !m_templateLoaded) {
+        startSnapshotAsync(true);
+        return;
     }
     const QStringList drift = diffPaths(m_sessionHashes, m_templateHashes);
     if (drift.isEmpty())

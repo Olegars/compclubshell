@@ -200,6 +200,42 @@ QJsonObject HidInputMonitor::enumerateFingerprint() const
     return root;
 }
 
+QStringList HidInputMonitor::auditPresentKinds() const
+{
+    QStringList kinds;
+    const QJsonObject fp = enumerateFingerprint();
+    if (!fp.value(QStringLiteral("mice")).toArray().isEmpty())
+        kinds << QStringLiteral("mouse");
+    if (!fp.value(QStringLiteral("keyboards")).toArray().isEmpty())
+        kinds << QStringLiteral("keyboard");
+
+#ifdef Q_OS_WIN
+    HDEVINFO hDevInfo = SetupDiGetClassDevsW(&GUID_DEVCLASS_MEDIA, nullptr, nullptr, DIGCF_PRESENT);
+    if (hDevInfo != INVALID_HANDLE_VALUE) {
+        SP_DEVINFO_DATA deviceInfo{};
+        deviceInfo.cbSize = sizeof(SP_DEVINFO_DATA);
+        for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &deviceInfo); ++i) {
+            WCHAR descBuf[256] = {};
+            if (!SetupDiGetDeviceRegistryPropertyW(
+                    hDevInfo, &deviceInfo, SPDRP_DEVICEDESC, nullptr,
+                    reinterpret_cast<PBYTE>(descBuf), sizeof(descBuf), nullptr)) {
+                continue;
+            }
+            const QString desc = QString::fromWCharArray(descBuf).toLower();
+            if (desc.contains(QStringLiteral("headset"))
+                || desc.contains(QStringLiteral("headphone"))
+                || desc.contains(QStringLiteral("гарнит"))) {
+                kinds << QStringLiteral("headset");
+                break;
+            }
+        }
+        SetupDiDestroyDeviceInfoList(hDevInfo);
+    }
+#endif
+
+    return kinds;
+}
+
 QString HidInputMonitor::fingerprintSignature(const QJsonObject &fp) const
 {
     QStringList keys;

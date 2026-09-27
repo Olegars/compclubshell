@@ -117,6 +117,8 @@ Window {
             return
         if (typeof Launcher !== "undefined")
             Launcher.launchDetached(app.path, app.args || "")
+        if (typeof NetworkManager !== "undefined")
+            NetworkManager.recordTvAppLaunch(app.title || "")
         collapseToCorner()
     }
 

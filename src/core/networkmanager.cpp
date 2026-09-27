@@ -1,4 +1,5 @@
 #include "networkmanager.h"
+#include "faceitsession.h"
 #include "ccbootsuperclient.h"
 #include "hwidprovider.h"
 #include "pathresolver.h"
@@ -6,12 +7,16 @@
 #include "thermalmonitor.h"
 #include "fanrelaycontroller.h"
 #include "dmxcontroller.h"
+#include "openrgbclient.h"
 #include "reactivelighting.h"
 #include "valvegsi.h"
 #include "linkflapwatchdog.h"
 #include "patchcachecoordinator.h"
+#include "hardwarehealthwatchdog.h"
+#include "hidinputmonitor.h"
 #include "../models/gamemodel.h"
 #include "../models/storemodel.h"
+#include <QColor>
 #include <QCoreApplication>
 #include <QFile>
 #include <QDir>
@@ -29,6 +34,7 @@
 #include <QVariantMap>
 #include <QVariantList>
 #include <QTimer>
+#include <QThread>
 #include <QHttpMultiPart>
 #include <QHttpPart>
 #include <QNetworkInterface>
@@ -104,6 +110,7 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
 
     qDebug() << "[REACTOR-SHELL] Путь к кэшу оверлеев:" << m_cachePath;
     qDebug() << "[REACTOR-SHELL] Инициализация сети завершена. Сервер:" << m_serverUrl;
+    setupOpenRgb(settings);
 }
 
 bool NetworkManager::isPcRegistered() const {
@@ -401,6 +408,7 @@ void NetworkManager::applyLanLiveFromJson(const QJsonObject &root)
     applyThroneFromJson(root);
     applyLootboxFromJson(root);
     applyClanWarFromJson(root);
+    applyFaceitFromJson(root);
     applyArenaFromJson(root);
     applyClubFeaturesFromJson(root);
     if (changed)
@@ -461,6 +469,44 @@ void NetworkManager::applyClanWarFromJson(const QJsonObject &root)
         return;
     m_clanWar = next;
     emit clanWarChanged();
+}
+
+void NetworkManager::applyFaceitFromJson(const QJsonObject &root)
+{
+    if (!root.contains(QStringLiteral("faceit")))
+        return;
+    const QJsonValue v = root.value(QStringLiteral("faceit"));
+    QVariantMap next;
+    if (v.isObject())
+        next = v.toObject().toVariantMap();
+    if (next != m_faceit) {
+        m_faceit = next;
+        emit faceitChanged();
+    }
+    if (next.value(QStringLiteral("enabled")).toBool() && m_userId > 0) {
+        QString rootPath = QStringLiteral("D:/ShellData");
+        if (PathResolver *paths = PathResolver::instance()) {
+            if (!paths->dataRoot().isEmpty())
+                rootPath = paths->dataRoot();
+        }
+        FaceitSession::mount(m_userId, rootPath);
+    } else {
+        FaceitSession::release();
+    }
+}
+
+void NetworkManager::applyFaceitMatchFromJson(const QJsonObject &root)
+{
+    if (!root.contains(QStringLiteral("faceit_match")))
+        return;
+    const QJsonValue v = root.value(QStringLiteral("faceit_match"));
+    QVariantMap next;
+    if (v.isObject())
+        next = v.toObject().toVariantMap();
+    if (next == m_faceitMatch)
+        return;
+    m_faceitMatch = next;
+    emit faceitMatchChanged();
 }
 
 void NetworkManager::applyArenaFromJson(const QJsonObject &root)
@@ -612,6 +658,7 @@ void NetworkManager::registerStation(const QString &zoneType, const QString &pcN
 
 // ДОБАВЛЕННЫЙ МЕТОД: ПОЛНОЕ ЗАКРЫТИЕ СЕССИИ И ОЧИСТКА СОСТОЯНИЯ ТЕРМИНАЛА
 void NetworkManager::logoutTerminal(int terminalId) {
+    FaceitSession::release(true);
     if (m_serverUrl.isEmpty()) return;
 
     QUrl url(m_serverUrl + "/api/shell/logout");
@@ -859,6 +906,19 @@ void NetworkManager::fetchQuickApps()
         QVariantList apps;
         const QJsonArray rows = root.value(QStringLiteral("apps")).toArray();
         apps.reserve(rows.size());
+        PathResolver *paths = PathResolver::instance();
+        auto pathSafeToProbe = [paths](const QString &path) {
+            if (path.size() < 2 || path.at(1) != QLatin1Char(':'))
+                return true;
+            const QChar letter = path.at(0).toUpper();
+            if (letter == QLatin1Char('C'))
+                return true;
+            if (paths && paths->cacheOk()) {
+                const QString vol = paths->volumeLetter().toUpper();
+                return vol.size() == 1 && vol.at(0) == letter;
+            }
+            return false;
+        };
         for (const QJsonValue &value : rows) {
             if (!value.isObject())
                 continue;
@@ -873,7 +933,9 @@ void NetworkManager::fetchQuickApps()
             app.insert(QStringLiteral("title"), title);
             app.insert(QStringLiteral("path"), path);
             app.insert(QStringLiteral("args"), row.value(QStringLiteral("args")).toString());
-            app.insert(QStringLiteral("available"), QFileInfo::exists(path));
+            // exists() по отсутствующему D: на Windows может висеть секундами на путь.
+            app.insert(QStringLiteral("available"),
+                       pathSafeToProbe(path) && QFileInfo::exists(path));
             apps.append(app);
         }
 
@@ -911,6 +973,7 @@ void NetworkManager::fetchGames() {
             emit gamesLoaded();
         } else {
             qWarning() << "[NET] Ошибка получения списка игр:" << reply->errorString();
+            emit gamesLoaded();
         }
     });
 }
@@ -961,6 +1024,10 @@ void NetworkManager::applyGamesPayload(const QJsonDocument &doc)
     }
 
     auto allGames = parseArray(gamesArray);
+    if (allGames.empty() && m_gamesModel && m_gamesModel->count() > 0) {
+        qWarning() << "[NET] ignore empty games payload, keep catalog";
+        return;
+    }
     auto featuredGames = parseArray(featuredArray);
     if (static_cast<int>(featuredGames.size()) > GameModel::kMaxFeatured)
         featuredGames.resize(static_cast<size_t>(GameModel::kMaxFeatured));
@@ -1174,6 +1241,28 @@ void NetworkManager::sendSos(const QString &reasonCode, const QString &reasonLab
             qDebug() << "[SOS] posted:" << reasonCode << "computer" << m_computerId;
         emit sosSent(ok);
     });
+}
+
+void NetworkManager::recordTvAppLaunch(const QString &title)
+{
+    if (m_serverUrl.isEmpty() || m_computerId <= 0 || title.trimmed().isEmpty())
+        return;
+
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/telemetry/user-action"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("app"), title.trimmed());
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), m_computerId);
+    json.insert(QStringLiteral("feature_key"), QStringLiteral("tv_app_launch"));
+    json.insert(QStringLiteral("payload"), payload);
+
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
 void NetworkManager::clearSessionUser()
@@ -1419,13 +1508,25 @@ void NetworkManager::fetchProducts() {
                 item.price = priceVal.toDouble();
             }
             item.stock = obj.value("stock").toInt();
-            item.image = obj.value("image").toString();
+            item.image = resolveOverlayUrl(obj.value("image").toString());
+            if (item.image.isEmpty())
+                item.image = resolveOverlayUrl(QStringLiteral("images/shop/default.png"));
             item.category = obj.value("category").toString();
 
             productsVector.push_back(item);
         }
 
-        qDebug() << "[SHOP] products loaded:" << productsVector.size();
+        const bool storeEnabled = !doc.isObject()
+                || !doc.object().contains(QStringLiteral("store_enabled"))
+                || doc.object().value(QStringLiteral("store_enabled")).toBool(true);
+        int withImage = 0;
+        for (const auto &item : productsVector) {
+            if (!item.image.isEmpty())
+                ++withImage;
+        }
+        qWarning() << "[SHOP] products loaded:" << productsVector.size()
+                   << "with_image=" << withImage
+                   << "store_enabled=" << storeEnabled;
         if (m_storeModel) {
             m_storeModel->setProducts(productsVector);
         }
@@ -1595,8 +1696,6 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             startSessionFans(fanObj);
             startSessionLights(response.value(QStringLiteral("light")).toObject());
             applyPartyFromJson(response);
-            applyLanLiveFromJson(response);
-            syncGsiListen();
             applyLanLiveFromJson(response);
             syncGsiListen();
 
@@ -2133,6 +2232,9 @@ void NetworkManager::fetchOverlays(int terminalId)
         applyClanWarFromJson(rootObject);
         if (!rootObject.contains(QStringLiteral("clan_war")))
             applyClanWarFromJson(payload);
+        applyFaceitMatchFromJson(rootObject);
+        if (!rootObject.contains(QStringLiteral("faceit_match")))
+            applyFaceitMatchFromJson(payload);
         applyArenaFromJson(rootObject);
         if (!rootObject.contains(QStringLiteral("arena")) && !rootObject.contains(QStringLiteral("arena_duel")))
             applyArenaFromJson(payload);
@@ -2259,6 +2361,29 @@ void NetworkManager::setDisklessController(CcbootSuperClient *controller)
 void NetworkManager::setLinkFlapWatchdog(LinkFlapWatchdog *watchdog)
 {
     m_linkFlap = watchdog;
+}
+
+void NetworkManager::setHardwareHealthWatchdog(HardwareHealthWatchdog *watchdog)
+{
+    m_hwHealth = watchdog;
+}
+
+void NetworkManager::setHidInputMonitor(HidInputMonitor *hid)
+{
+    m_hidAudit = hid;
+}
+
+void NetworkManager::armShiftAudit()
+{
+    if (m_shiftAuditSent || m_shiftAuditArmed || isGuestSessionActive())
+        return;
+    m_shiftAuditArmed = true;
+    QTimer::singleShot(8000, this, [this]() {
+        if (m_shiftAuditSent || isGuestSessionActive())
+            return;
+        m_shiftAuditReady = true;
+        sendPowerHeartbeat();
+    });
 }
 
 void NetworkManager::setPatchCache(PatchCacheCoordinator *cache)
@@ -2899,20 +3024,42 @@ void NetworkManager::sendPowerHeartbeat()
 
     attachStationHealth(json);
 
+    const bool includeAudit = m_shiftAuditReady && !m_shiftAuditSent && !isGuestSessionActive();
+    if (includeAudit) {
+        json.insert(QStringLiteral("audit_complete"), true);
+        if (m_hidAudit) {
+            QJsonArray present;
+            const QStringList kinds = m_hidAudit->auditPresentKinds();
+            for (const QString &kind : kinds)
+                present.append(kind);
+            json.insert(QStringLiteral("hid_present"), present);
+        }
+        if (m_hwHealth && m_hwHealth->faultLatched())
+            json.insert(QStringLiteral("hardware_switch_fault"), true);
+        m_shiftAuditReady = false;
+    }
+
     m_powerHeartbeatInFlight = true;
     QNetworkReply *reply = m_networkManager->post(request, QJsonDocument(json).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, includeAudit]() {
         reply->deleteLater();
         m_powerHeartbeatInFlight = false;
 
         if (reply->error() != QNetworkReply::NoError) {
             qWarning() << "[POWER] heartbeat failed:" << reply->errorString();
+            if (includeAudit)
+                m_shiftAuditReady = true;
             return;
         }
 
         const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
-        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success"))
+        if (root.value(QStringLiteral("status")).toString() != QLatin1String("success")) {
+            if (includeAudit)
+                m_shiftAuditReady = true;
             return;
+        }
+        if (includeAudit)
+            m_shiftAuditSent = true;
 
         m_lastPowerDesired = root.value(QStringLiteral("power_desired")).toString();
         m_lastSessionActiveFromHeartbeat = root.value(QStringLiteral("session_active")).toBool();
@@ -2937,11 +3084,14 @@ void NetworkManager::sendPowerHeartbeat()
         applyLightStateFromJson(root.value(QStringLiteral("light")).toObject());
         applyThroneFromJson(root);
         applyClubFeaturesFromJson(root);
+        if (root.value(QStringLiteral("shift_audit")).toBool())
+            armShiftAudit();
     });
 }
 
 void NetworkManager::notifyPowerOffline()
 {
+    blackoutOpenRgb();
     ensureFanOffBeforeExit();
     stopPowerHeartbeat();
 
@@ -3979,8 +4129,76 @@ void NetworkManager::setLightInteractive(bool on)
     connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
+void NetworkManager::setupOpenRgb(const QSettings &settings)
+{
+    const QString en = settings.value(QStringLiteral("OpenRGB/enabled")).toString().trimmed().toLower();
+    m_openRgbEnabled = (en == QLatin1String("1")
+                        || en == QLatin1String("true")
+                        || en == QLatin1String("yes"));
+    m_openRgbStatus = m_openRgbEnabled
+        ? QStringLiteral("подключение…")
+        : QStringLiteral("выключено (OpenRGB/enabled)");
+    if (!m_openRgbEnabled || !m_dmx)
+        return;
+
+    OpenRgbClient::Config cfg;
+    cfg.host = settings.value(QStringLiteral("OpenRGB/host"), QStringLiteral("127.0.0.1")).toString().trimmed();
+    cfg.port = settings.value(QStringLiteral("OpenRGB/port"), 6742).toInt();
+    cfg.deviceFilter = settings.value(QStringLiteral("OpenRGB/device_filter"), QStringLiteral("ASRock")).toString().trimmed();
+    cfg.zoneIndex = settings.value(QStringLiteral("OpenRGB/zone_index"), -1).toInt();
+    cfg.maxFps = settings.value(QStringLiteral("OpenRGB/max_fps"), 20).toInt();
+    cfg.retrySec = settings.value(QStringLiteral("OpenRGB/connect_retry_sec"), 3).toInt();
+    cfg.ledCount = settings.value(QStringLiteral("OpenRGB/led_count"), 0).toInt();
+
+    m_openRgbThread = new QThread(this);
+    m_openRgbThread->setObjectName(QStringLiteral("OpenRgb"));
+    m_openRgb = new OpenRgbClient(cfg);
+    m_openRgb->moveToThread(m_openRgbThread);
+    connect(m_openRgbThread, &QThread::finished, m_openRgb, &QObject::deleteLater);
+    connect(m_dmx, &DmxController::renderedColor,
+            m_openRgb, &OpenRgbClient::submitColor, Qt::QueuedConnection);
+    connect(m_openRgb, &OpenRgbClient::statusChanged, this, [this](bool ok, const QString &text) {
+        if (m_openRgbConnected == ok && m_openRgbStatus == text)
+            return;
+        m_openRgbConnected = ok;
+        m_openRgbStatus = text;
+        emit openRgbChanged();
+    });
+    m_openRgbThread->start();
+    QMetaObject::invokeMethod(m_openRgb, "start", Qt::QueuedConnection);
+    m_dmx->setLocalMirror(true);
+}
+
+void NetworkManager::blackoutOpenRgb()
+{
+    if (!m_openRgb || !m_openRgbThread || !m_openRgbThread->isRunning())
+        return;
+    if (m_dmx) {
+        QObject::disconnect(m_dmx, &DmxController::renderedColor,
+                            m_openRgb, &OpenRgbClient::submitColor);
+        m_dmx->setLocalMirror(false);
+    }
+    QMetaObject::invokeMethod(m_openRgb, "blackout", Qt::BlockingQueuedConnection);
+    m_openRgbThread->quit();
+    m_openRgbThread->wait(1000);
+    m_openRgb = nullptr;
+    m_openRgbConnected = false;
+    m_openRgbStatus = QStringLiteral("погашено");
+    emit openRgbChanged();
+}
+
+void NetworkManager::testOpenRgbSync()
+{
+    if (!m_openRgb || !m_openRgbThread || !m_openRgbThread->isRunning())
+        return;
+    QMetaObject::invokeMethod(m_openRgb, "holdTestColor", Qt::QueuedConnection,
+                              Q_ARG(QColor, QColor(255, 0, 255)),
+                              Q_ARG(int, 4000));
+}
+
 void NetworkManager::ensureLightOffBeforeExit()
 {
+    blackoutOpenRgb();
     if (!m_dmx || !m_dmx->hasNodes())
         return;
 
@@ -4838,9 +5056,9 @@ void NetworkManager::createArenaChallenge(const QString &game, const QString &mo
                                           int maxPlayers)
 {
     QJsonObject extra;
+    Q_UNUSED(entryFee);
     extra.insert(QStringLiteral("game"), game.isEmpty() ? QStringLiteral("cs2") : game);
     extra.insert(QStringLiteral("mode"), mode);
-    extra.insert(QStringLiteral("entry_fee"), entryFee);
     extra.insert(QStringLiteral("scope"), scope.isEmpty() ? QStringLiteral("hall") : scope);
     extra.insert(QStringLiteral("terms"), true);
     extra.insert(QStringLiteral("kind"), kind.trimmed().isEmpty() ? QStringLiteral("duel") : kind.trimmed());

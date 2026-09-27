@@ -73,7 +73,15 @@ public:
     void stopRefresh();
     bool refreshRunning() const;
     bool fading() const;
+    /** Keep painting when Art-Net has no node, so a local sink (ARGB fans) still gets frames. */
+    void setLocalMirror(bool on);
+    bool localMirror() const { return m_localMirror; }
 
+signals:
+    /** First fixture of the room, after fade / strobe / rainbow. Same RGB the DMX frame just used. */
+    void renderedColor(const QColor &color);
+
+public:
     static QColor scaledRgb(const QString &color, int brightness, int r, int g, int b,
                              const QString &effect, int rainbowPeriodMs);
 
@@ -82,6 +90,8 @@ private:
     void paintUniverse(QByteArray &dmx, const Node &node);
     void writeFixture(QByteArray &dmx, const Fixture &fx, const QColor &c) const;
     void onTick();
+    void emitMirror(const QColor &color);
+    void paintGhost();
     QString fixtureKey(const Node &node, const Fixture &fx) const;
     static QColor lerpColor(const QColor &from, const QColor &to, float t);
 
@@ -103,6 +113,9 @@ private:
     QHash<QString, QColor> m_fadeFrom;
     qint64 m_fadeStartMs = 0;
     int m_fadeMs = 0;
+    bool m_localMirror = false;
+    bool m_mirrorValid = false;
+    QColor m_mirrorColor;
 };
 
 #endif // DMXCONTROLLER_H

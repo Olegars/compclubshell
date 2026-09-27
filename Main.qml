@@ -42,6 +42,11 @@ Window {
     property var orderItems: []
     property real orderItemsTotal: 0.0
     property int trackedOrderId: 0
+    readonly property bool sessionPollWanted: root.sessionUser !== "GUEST"
+                                               && root.sessionUser !== ""
+                                               && root.sessionUser !== "PAUSE"
+                                               && root.terminalId > 0
+    readonly property bool powerPollWanted: root.terminalId > 0 && !setupScreenLoader.item
 
     property string pcNameString: "PC-UNKNOWN"
 
@@ -86,10 +91,52 @@ Window {
         overlaysFetchDebounce.restart()
     }
 
+    // Фаза 0–8 с на каждом ПК, чтобы зал после загрузки образа не попадал в одну секунду.
+    function armStaggered(arm, poll, wanted) {
+        if (!wanted) {
+            arm.stop()
+            poll.stop()
+            return
+        }
+        if (poll.running || arm.running)
+            return
+        arm.interval = 50 + Math.floor(Math.random() * 8000)
+        arm.start()
+    }
+
+    function syncIdlePolls() {
+        root.armStaggered(clanWarPollArm, clanWarPoll, root.overlayPlaybackAllowed)
+        root.armStaggered(overlaysPollArm, overlaysPoll, root.overlayPlaybackAllowed)
+    }
+
+    function syncSessionPolls() {
+        root.armStaggered(orderStatusPollArm, orderStatusPollTimer, root.sessionPollWanted)
+        root.armStaggered(balancePollArm, balancePollTimer, root.sessionPollWanted)
+    }
+
+    function syncPowerPoll() {
+        root.armStaggered(powerPollArm, powerKeepaliveTimer, root.powerPollWanted)
+    }
+
+    function syncShellPolls() {
+        root.syncIdlePolls()
+        root.syncSessionPolls()
+        root.syncPowerPoll()
+    }
+
+    onOverlayPlaybackAllowedChanged: root.syncIdlePolls()
+    onSessionPollWantedChanged: root.syncSessionPolls()
+    onPowerPollWantedChanged: root.syncPowerPoll()
+
+    Timer {
+        id: clanWarPollArm
+        repeat: false
+        onTriggered: clanWarPoll.start()
+    }
+
     Timer {
         id: clanWarPoll
         interval: (typeof NetworkManager !== "undefined" && NetworkManager.clanWar && NetworkManager.clanWar.id) ? 3000 : 20000
-        running: root.overlayPlaybackAllowed
         repeat: true
         onTriggered: {
             if (typeof NetworkManager !== "undefined")
@@ -97,11 +144,16 @@ Window {
         }
     }
 
-    // Админка шлёт overlay.changed, но шелл сокет не слушает — поллим idle TV.
+    Timer {
+        id: overlaysPollArm
+        repeat: false
+        onTriggered: overlaysPoll.start()
+    }
+
+    // Админка шлёт overlay.changed, но шелл сокет не слушает — поллим idle.
     Timer {
         id: overlaysPoll
         interval: (typeof NetworkManager !== "undefined" && NetworkManager.clanWar && NetworkManager.clanWar.id) ? 4000 : 8000
-        running: root.overlayPlaybackAllowed
         repeat: true
         onTriggered: root.requestOverlays(root.terminalId > 0 ? root.terminalId : 1)
     }
@@ -325,6 +377,8 @@ Window {
                 ? NetworkManager.computerId
                 : (parseInt(root.pcNameString.replace(/[^0-9]/g, "")) || 0)
             console.log("[DEBUG-MAIN] Конец onAuthRequired. Итоговый terminalId =", root.terminalId)
+            // Каталог грузим на экране PIN — к входу сетка уже в памяти.
+            NetworkManager.fetchGames()
             // LobbyAudio после фокуса телефона — COM/MediaPlayer не бьёт в тот же кадр, что оверлеи.
             lobbyStartTimer.restart()
             if (typeof NetworkManager !== "undefined" && NetworkManager.featureEnabled("qr_login"))
@@ -367,14 +421,15 @@ Window {
             // Fade lobby music on speakers, then play personalized AI greeting.
             if (typeof LobbyAudio !== "undefined")
                 LobbyAudio.onLoginSucceeded()
-            screenSwitcher.sourceComponent = null
-            dashboardLoader.source = "Dashboard.qml"
+            // Каталог раньше тяжёлого Dashboard.qml — ответ /games обрабатывается, пока грузится QML.
             NetworkManager.fetchGames()
             NetworkManager.fetchQuickApps()
             NetworkManager.fetchProducts()
             NetworkManager.fetchLanLive()
             NetworkManager.refreshBalance()
             NetworkManager.startClimateControl()
+            screenSwitcher.sourceComponent = null
+            dashboardLoader.source = "Dashboard.qml"
             if (typeof HidMonitor !== "undefined") {
                 var cid = NetworkManager.computerId > 0 ? NetworkManager.computerId : root.terminalId
                 var bid = NetworkManager.lastBookingId || 0
@@ -495,12 +550,16 @@ Window {
         }
     }
 
+    Timer {
+        id: orderStatusPollArm
+        repeat: false
+        onTriggered: orderStatusPollTimer.start()
+    }
+
     // Poll shop order status while session is active (faster while order is open)
     Timer {
         id: orderStatusPollTimer
         interval: root.hasActiveOrder ? 5000 : (root.hasScheduledOrder ? 8000 : 25000)
-        running: root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.sessionUser !== "PAUSE"
-                 && root.terminalId > 0
         repeat: true
         triggeredOnStart: false
         onTriggered: {
@@ -513,12 +572,16 @@ Window {
         }
     }
 
+    Timer {
+        id: balancePollArm
+        repeat: false
+        onTriggered: balancePollTimer.start()
+    }
+
     // Keep wallet balance fresh during an active session (top-ups / admin credits / shop)
     Timer {
         id: balancePollTimer
         interval: 20000
-        running: root.sessionUser !== "GUEST" && root.sessionUser !== "" && root.sessionUser !== "PAUSE"
-                 && root.terminalId > 0
         repeat: true
         triggeredOnStart: false
         onTriggered: {
@@ -527,12 +590,18 @@ Window {
         }
     }
 
+    Timer {
+        id: powerPollArm
+        repeat: false
+        onTriggered: powerKeepaliveTimer.start()
+    }
+
     // Питание: пока шелл на экране логина/паузы — периодически помечаем ПК онлайн.
     // Новый бинарник бьёт /power/heartbeat; иначе — overlays (бэкенд тоже делает touch).
+    // triggeredOnStart после случайной задержки arm, не в одну секунду со всем залом.
     Timer {
         id: powerKeepaliveTimer
         interval: 30000
-        running: root.terminalId > 0 && !setupScreenLoader.item
         repeat: true
         triggeredOnStart: true
         onTriggered: {
@@ -573,6 +642,7 @@ Window {
         console.log("[START-TRACE] [STEP QML-A] ...Загрузка корневого окна...")
         // Прогрев multimedia backend до экрана телефона / overlaysReady.
         mediaWarmupTimer.start()
+        root.syncShellPolls()
     }
 
     Timer {
@@ -803,6 +873,15 @@ Window {
                     z: 80
                     war: (typeof NetworkManager !== "undefined") ? NetworkManager.clanWar : null
                 }
+                FaceitHubBanner {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.top
+                    anchors.topMargin: 18
+                    width: Math.min(720, parent.width * 0.38)
+                    height: 88
+                    z: 79
+                    match: (typeof NetworkManager !== "undefined") ? NetworkManager.faceitMatch : null
+                }
                 ArenaDuelBanner {
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.top: parent.top
@@ -817,6 +896,36 @@ Window {
     }
 
     Loader { id: dashboardLoader; anchors.fill: parent; source: ""; visible: dashboardLoader.status === Loader.Ready; z: 10 }
+
+    Rectangle {
+        visible: root.sessionUser !== "" && root.sessionUser !== "GUEST"
+                 && NetworkManager.faceit && NetworkManager.faceit.enabled === true
+                 && (NetworkManager.faceit.linked !== true || NetworkManager.faceit.banned === true || (NetworkManager.faceit.stack && NetworkManager.faceit.stack.label))
+        z: 40
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 28
+        width: Math.min(520, parent.width * 0.7)
+        height: 36
+        radius: 8
+        color: "#e6120c00"
+        border.color: "#ff9f1c"
+        Text {
+            anchors.centerIn: parent
+            color: "#ffb020"
+            font.pixelSize: 13
+            font.bold: true
+            text: {
+                var f = NetworkManager.faceit || {}
+                if (f.banned)
+                    return "FACEIT бан"
+                if (f.stack && f.stack.label)
+                    return String(f.stack.label)
+                return f.hint ? String(f.hint) : "Привяжи FACEIT в ЛК"
+            }
+        }
+    }
+
     Loader { id: screenSwitcher; anchors.fill: parent; z: 20 }
 
     Component {
@@ -1639,8 +1748,9 @@ Window {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        height: 52
+        height: 40
         z: 90
+        // Оверлей: не участвует в layout дашборда, панель не сдвигается.
         visible: typeof PathResolver !== "undefined"
                  && !PathResolver.cacheOk
                  && !setupScreenLoader.item

@@ -229,6 +229,7 @@ void HardwareHealthWatchdog::noteKeyStuck(quint32 scan, quint32 vk, qint64 nowMs
 void HardwareHealthWatchdog::queueIncident(const QString &kind, const QString &reason,
                                            const QJsonObject &extra)
 {
+    m_faultLatched = true;
     const QJsonObject copy = extra;
     QMetaObject::invokeMethod(this, [this, kind, reason, copy]() {
         postIncident(kind, reason, copy);

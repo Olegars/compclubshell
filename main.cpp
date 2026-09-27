@@ -103,7 +103,6 @@ bool isNoisyLogLine(QtMsgType type, const QString &msg)
         || msg.contains(QLatin1String("applyPowerAction:"))
         || msg.contains(QLatin1String("[OVERLAYS]"))
         || msg.contains(QLatin1String("[PLAYER-OPTIMIZED]"))
-        || msg.contains(QLatin1String("[SHOP]"))
         || msg.contains(QLatin1String("[HID]"))
         || msg.contains(QLatin1String("[HW-HEALTH] watch"))
         || msg.contains(QLatin1String("[START-TRACE]"))
@@ -339,6 +338,8 @@ int main(int argc, char *argv[])
     PatchCacheCoordinator *patchCache = new PatchCacheCoordinator(networkManager, &app);
     networkManager->setLinkFlapWatchdog(linkFlap);
     networkManager->setPatchCache(patchCache);
+    networkManager->setHardwareHealthWatchdog(hwHealth);
+    networkManager->setHidInputMonitor(hidMonitor);
     Q_UNUSED(bearingProbe);
     Q_UNUSED(hwHealth);
     Q_UNUSED(rageSmash);

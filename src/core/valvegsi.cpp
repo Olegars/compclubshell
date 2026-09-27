@@ -43,6 +43,10 @@ void ValveGsi::setEnabled(bool on)
         m_dotaDead = false;
         m_cs2Kills = -1;
         m_cs2RoundKills = -1;
+        m_mapMode.clear();
+        m_mapPhase.clear();
+        m_customGame.clear();
+        m_hasBots = false;
         if (m_inMatch) {
             m_inMatch = false;
             emit matchStateChanged(false);
@@ -152,6 +156,32 @@ bool mapNameHas(const QString &map, const QString &token)
     return map.contains(token, Qt::CaseInsensitive);
 }
 
+bool isSteamId64(const QString &id)
+{
+    static const QRegularExpression re(QStringLiteral("^7656\\d{13}$"));
+    return re.match(id.trimmed()).hasMatch();
+}
+
+/** CS2 allplayers: боты приходят как steamid BOT / 0, без SteamID64. */
+bool rosterHasBots(const QJsonObject &allplayers)
+{
+    for (auto it = allplayers.begin(); it != allplayers.end(); ++it) {
+        if (!it.value().isObject())
+            continue;
+        const QJsonObject player = it.value().toObject();
+        const QString team = player.value(QStringLiteral("team")).toString().trimmed().toUpper();
+        if (!team.isEmpty() && team != QLatin1String("T") && team != QLatin1String("CT"))
+            continue;
+        QString steam = player.value(QStringLiteral("steamid")).toString().trimmed();
+        if (steam.isEmpty())
+            steam = it.key().trimmed();
+        const QString low = steam.toLower();
+        if (low == QLatin1String("bot") || low == QLatin1String("0") || !isSteamId64(steam))
+            return true;
+    }
+    return false;
+}
+
 bool ancientInsideCaves(const GsiVec3 &p)
 {
     if (!p.ok)
@@ -223,7 +253,7 @@ void ValveGsi::emitSnapshot(const QString &event, const QJsonObject &extra)
     payload.insert(QStringLiteral("event"), event);
     payload.insert(QStringLiteral("game"), m_game);
     payload.insert(QStringLiteral("steam_id"), m_steamId);
-    payload.insert(QStringLiteral("map"), m_map);
+    payload.insert(QStringLiteral("map"), m_map.left(120));
     payload.insert(QStringLiteral("match_id"), m_matchId);
     payload.insert(QStringLiteral("team"), m_team);
     payload.insert(QStringLiteral("weapon"), m_weapon);
@@ -236,6 +266,13 @@ void ValveGsi::emitSnapshot(const QString &event, const QJsonObject &extra)
     payload.insert(QStringLiteral("in_match"), m_inMatch);
     payload.insert(QStringLiteral("ult_ready"), m_ultReady);
     payload.insert(QStringLiteral("alive"), m_alive);
+    if (!m_mapMode.isEmpty())
+        payload.insert(QStringLiteral("map_mode"), m_mapMode.left(32));
+    if (!m_mapPhase.isEmpty())
+        payload.insert(QStringLiteral("map_phase"), m_mapPhase.left(24));
+    if (!m_customGame.isEmpty())
+        payload.insert(QStringLiteral("custom_game"), m_customGame.left(64));
+    payload.insert(QStringLiteral("has_bots"), m_hasBots);
     if (m_round >= 0)
         payload.insert(QStringLiteral("round"), m_round);
     if (m_money >= 0)
@@ -283,6 +320,7 @@ QJsonObject ValveGsi::dotaUlt(const QJsonObject &root)
 void ValveGsi::handleCs2(const QJsonObject &root)
 {
     m_game = QStringLiteral("cs2");
+    m_customGame.clear();
     const QJsonObject round = root.value(QStringLiteral("round")).toObject();
     const QJsonObject prev = root.value(QStringLiteral("previously")).toObject();
     const QJsonObject prevRound = prev.value(QStringLiteral("round")).toObject();
@@ -295,8 +333,22 @@ void ValveGsi::handleCs2(const QJsonObject &root)
 
     m_steamId = player.value(QStringLiteral("steamid")).toString();
     m_playerName = player.value(QStringLiteral("name")).toString();
-    m_map = map.value(QStringLiteral("name")).toString();
-    m_matchId = QString::number(map.value(QStringLiteral("round")).toInt(-1));
+    if (map.contains(QStringLiteral("name"))) {
+        const QString nextMap = map.value(QStringLiteral("name")).toString();
+        if (nextMap != m_map)
+            m_hasBots = false;
+        m_map = nextMap;
+    }
+    if (map.contains(QStringLiteral("mode")))
+        m_mapMode = map.value(QStringLiteral("mode")).toString();
+    if (map.contains(QStringLiteral("phase")))
+        m_mapPhase = map.value(QStringLiteral("phase")).toString();
+    const int mapRound = map.value(QStringLiteral("round")).toInt(-1);
+    if (mapRound >= 0 && m_round >= 0 && mapRound < m_round)
+        m_hasBots = false;
+    if (root.contains(QStringLiteral("allplayers")))
+        m_hasBots = rosterHasBots(root.value(QStringLiteral("allplayers")).toObject());
+    m_matchId = QString::number(mapRound);
     m_team = player.value(QStringLiteral("team")).toString();
     m_weapon = activeWeapon(player);
     m_phase = round.value(QStringLiteral("phase")).toString();
@@ -388,6 +440,9 @@ void ValveGsi::handleCs2(const QJsonObject &root)
 void ValveGsi::handleDota(const QJsonObject &root)
 {
     m_game = QStringLiteral("dota");
+    m_mapMode.clear();
+    m_mapPhase.clear();
+    m_hasBots = false;
     const QJsonObject hero = root.value(QStringLiteral("hero")).toObject();
     const QJsonObject map = root.value(QStringLiteral("map")).toObject();
     const QJsonObject player = root.value(QStringLiteral("player")).toObject();
@@ -400,6 +455,8 @@ void ValveGsi::handleDota(const QJsonObject &root)
     m_playerName = player.value(QStringLiteral("name")).toString();
     m_map = QStringLiteral("dota");
     m_matchId = map.value(QStringLiteral("matchid")).toVariant().toString();
+    if (map.contains(QStringLiteral("customgamename")))
+        m_customGame = map.value(QStringLiteral("customgamename")).toString();
     m_team = player.value(QStringLiteral("team_name")).toString();
     if (m_team.isEmpty())
         m_team = QString::number(player.value(QStringLiteral("team")).toInt(0));
@@ -560,7 +617,8 @@ QString ValveGsi::cfgBody(bool dota) const
             "\t\t\"player_state\"\t\t\"1\"\n"
             "\t\t\"player_weapons\"\t\"1\"\n"
             "\t\t\"player_match_stats\"\t\"1\"\n"
-            "\t\t\"player_position\"\t\"1\"\n");
+            "\t\t\"player_position\"\t\"1\"\n"
+            "\t\t\"allplayers_id\"\t\"1\"\n");
     return QStringLiteral(
         "\"ReactorClubLights\"\n"
         "{\n"

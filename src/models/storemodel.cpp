@@ -51,22 +51,42 @@ void StoreModel::setProducts(const std::vector<StoreItem> &products)
 
 void StoreModel::setFilter(const QString &filter)
 {
-    QString target = filter.trimmed();
+    const QString target = filter.trimmed().toLower();
     qDebug() << "[STORE] Фильтр запрошен:" << target;
 
+    auto matches = [](const QString &category, const QString &needle) {
+        const QString cat = category.trimmed().toLower();
+        if (cat.isEmpty() || needle.isEmpty())
+            return false;
+        if (cat.contains(needle) || needle.contains(cat))
+            return true;
+        const bool drinkNeedle = needle.contains(QStringLiteral("drink"))
+                || needle.contains(QStringLiteral("напит"));
+        const bool snackNeedle = needle.contains(QStringLiteral("food"))
+                || needle.contains(QStringLiteral("snack"))
+                || needle.contains(QStringLiteral("снэк"))
+                || needle.contains(QStringLiteral("снек"));
+        const bool mealNeedle = needle.contains(QStringLiteral("еда"))
+                || needle.contains(QStringLiteral("meal"));
+        if (drinkNeedle && (cat.contains(QStringLiteral("напит")) || cat.contains(QStringLiteral("drink"))))
+            return true;
+        if (snackNeedle && (cat.contains(QStringLiteral("снэк")) || cat.contains(QStringLiteral("снек"))
+                            || cat.contains(QStringLiteral("snack"))))
+            return true;
+        if (mealNeedle && (cat.contains(QStringLiteral("еда")) || cat.contains(QStringLiteral("meal"))))
+            return true;
+        return false;
+    };
+
     beginResetModel();
-    if (target == "Все" || target.isEmpty()) {
+    if (target.isEmpty() || target == QStringLiteral("все")) {
         m_displayProducts = m_allProducts;
         qDebug() << "[STORE] Сброс. Всего товаров:" << m_displayProducts.size();
     } else {
         m_displayProducts.clear();
-        QString lowerTarget = target.toLower();
-
         for (const auto &item : m_allProducts) {
-            QString lowerCategory = item.category.trimmed().toLower();
-            if (lowerCategory.contains(lowerTarget) || lowerTarget.contains(lowerCategory)) {
+            if (matches(item.category, target))
                 m_displayProducts.push_back(item);
-            }
         }
         qDebug() << "[STORE] Найдено после фильтрации:" << m_displayProducts.size();
     }

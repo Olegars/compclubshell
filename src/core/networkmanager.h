@@ -20,9 +20,13 @@ class GameModel;
 class StoreModel;
 class DmxController;
 class ReactiveLighting;
+class OpenRgbClient;
+class QThread;
 class CcbootSuperClient;
 class LinkFlapWatchdog;
 class PatchCacheCoordinator;
+class HardwareHealthWatchdog;
+class HidInputMonitor;
 
 struct FanRelayEndpoint {
     QString host;
@@ -67,6 +71,9 @@ class NetworkManager : public QObject
     Q_PROPERTY(int lightManualLockSec READ lightManualLockSec NOTIFY lightStateChanged)
     Q_PROPERTY(bool lightInteractive READ lightInteractive NOTIFY lightStateChanged)
     Q_PROPERTY(QString lightInteractiveHint READ lightInteractiveHint NOTIFY lightStateChanged)
+    Q_PROPERTY(bool openRgbEnabled READ openRgbEnabled NOTIFY openRgbChanged)
+    Q_PROPERTY(bool openRgbConnected READ openRgbConnected NOTIFY openRgbChanged)
+    Q_PROPERTY(QString openRgbStatus READ openRgbStatus NOTIFY openRgbChanged)
     Q_PROPERTY(double cpuTempC READ cpuTempC NOTIFY cpuTempChanged)
     Q_PROPERTY(double ssdTempC READ ssdTempC NOTIFY ssdTempChanged)
     Q_PROPERTY(QString zoneName READ zoneName NOTIFY zoneInfoChanged)
@@ -94,6 +101,8 @@ class NetworkManager : public QObject
     Q_PROPERTY(QVariantMap lfg READ lfg NOTIFY lanLiveChanged)
     Q_PROPERTY(QVariantMap lootbox READ lootbox NOTIFY lootboxChanged)
     Q_PROPERTY(QVariantMap clanWar READ clanWar NOTIFY clanWarChanged)
+    Q_PROPERTY(QVariantMap faceit READ faceit NOTIFY faceitChanged)
+    Q_PROPERTY(QVariantMap faceitMatch READ faceitMatch NOTIFY faceitMatchChanged)
     Q_PROPERTY(QVariantMap arena READ arena NOTIFY arenaChanged)
     Q_PROPERTY(QVariantMap clubFeatures READ clubFeatures NOTIFY clubFeaturesChanged)
 public:
@@ -140,6 +149,9 @@ public:
     int lightManualLockSec() const { return m_lightManualLockSec; }
     bool lightInteractive() const { return m_lightInteractive; }
     QString lightInteractiveHint() const { return m_lightInteractiveHint; }
+    bool openRgbEnabled() const { return m_openRgbEnabled; }
+    bool openRgbConnected() const { return m_openRgbConnected; }
+    QString openRgbStatus() const { return m_openRgbStatus; }
     double cpuTempC() const { return m_cpuTempC; }
     double ssdTempC() const { return m_ssdTempC; }
     QString zoneName() const { return m_zoneName; }
@@ -166,6 +178,8 @@ public:
     QVariantMap lfg() const { return m_lfg; }
     QVariantMap lootbox() const { return m_lootbox; }
     QVariantMap clanWar() const { return m_clanWar; }
+    QVariantMap faceit() const { return m_faceit; }
+    QVariantMap faceitMatch() const { return m_faceitMatch; }
     QVariantMap arena() const { return m_arena; }
     QVariantMap clubFeatures() const { return m_clubFeatures; }
     Q_INVOKABLE bool featureEnabled(const QString &key) const;
@@ -189,6 +203,9 @@ public:
     void fetchGoldenRevision(qint64 revisionId);
     void setCrashTelemetry(bool detected, const QString &reason, const QString &detail);
     void setLinkFlapWatchdog(LinkFlapWatchdog *watchdog);
+    void setHardwareHealthWatchdog(HardwareHealthWatchdog *watchdog);
+    void setHidInputMonitor(HidInputMonitor *hid);
+    void armShiftAudit();
     void setPatchCache(PatchCacheCoordinator *cache);
     void noteLinkFlap(const QJsonObject &payload);
     void ackPatchPull(qint64 commandId, const QString &result, const QString &message);
@@ -240,6 +257,8 @@ public:
                                 const QString &aspect = QString(),
                                 const QString &source = QString());
     Q_INVOKABLE void sendSos(const QString &reasonCode, const QString &reasonLabel);
+    /** Ручной запуск приложения TV Shell. На ПК сервер событие не пишет. */
+    Q_INVOKABLE void recordTvAppLaunch(const QString &title);
     Q_INVOKABLE void clearSessionUser();
     /** Старт опроса температуры + состояния вентилятора (после логина). */
     Q_INVOKABLE void startClimateControl();
@@ -283,6 +302,8 @@ public:
     Q_INVOKABLE void setLightColor(const QString &color);
     Q_INVOKABLE void setLightBrightness(int brightness);
     Q_INVOKABLE void setLightInteractive(bool on);
+    /** Static magenta for ~4s so a tech can see the ARGB hub is in M/B sync. */
+    Q_INVOKABLE void testOpenRgbSync();
     /** Heartbeat питания: last_seen + MAC → power_desired / session_active. */
     Q_INVOKABLE void startPowerHeartbeat();
     Q_INVOKABLE void stopPowerHeartbeat();
@@ -345,6 +366,7 @@ signals:
     void fanBindFinished(bool ok, const QString &message);
     void fanTestFinished(bool ok, const QString &message);
     void lightStateChanged();
+    void openRgbChanged();
     void cpuTempChanged();
     void ssdTempChanged();
     void zoneInfoChanged();
@@ -374,6 +396,8 @@ signals:
     void inMatchChanged();
     void lanLiveChanged();
     void clanWarChanged();
+    void faceitChanged();
+    void faceitMatchChanged();
     void arenaChanged();
     void arenaIncoming(const QVariantMap &challenge);
     void arenaVictory(const QVariantMap &result);
@@ -404,6 +428,8 @@ private:
     void startSessionLights(const QJsonObject &lightObj);
     void applyLightStateFromJson(const QJsonObject &lightObj);
     void applyDesiredToDmx(bool force);
+    void setupOpenRgb(const QSettings &settings);
+    void blackoutOpenRgb();
     void acknowledgeLightApplied(const QString &color, int brightness, const QString &effect,
                                   const QString &error);
     void postLightScene(const QJsonObject &body);
@@ -435,6 +461,8 @@ private:
     void applyThroneFromJson(const QJsonObject &root);
     void applyLootboxFromJson(const QJsonObject &root);
     void applyClanWarFromJson(const QJsonObject &root);
+    void applyFaceitFromJson(const QJsonObject &root);
+    void applyFaceitMatchFromJson(const QJsonObject &root);
     void applyArenaFromJson(const QJsonObject &root);
     void postArenaAction(const QString &path, const QJsonObject &extra = QJsonObject());
     void applyClubFeaturesFromJson(const QJsonObject &root);
@@ -503,6 +531,11 @@ private:
     ReactiveLighting *m_gsi = nullptr;
     QTimer *m_lightLockTimer = nullptr;
     DmxController *m_dmx = nullptr;
+    OpenRgbClient *m_openRgb = nullptr;
+    QThread *m_openRgbThread = nullptr;
+    bool m_openRgbEnabled = false;
+    bool m_openRgbConnected = false;
+    QString m_openRgbStatus = QStringLiteral("выключено (OpenRGB/enabled)");
     double m_cpuTempC = -1.0;
     double m_ssdTempC = -1.0;
     QString m_zoneName;
@@ -553,6 +586,8 @@ private:
     QVariantMap m_lootbox;
     int m_lootboxAnnouncedId = 0;
     QVariantMap m_clanWar;
+    QVariantMap m_faceit;
+    QVariantMap m_faceitMatch;
     QVariantMap m_arena;
     QString m_arenaIncomingUuid;
     QVariantMap m_clubFeatures;
@@ -591,6 +626,11 @@ private:
     QString m_crashReason;
     QString m_crashDetail;
     LinkFlapWatchdog *m_linkFlap = nullptr;
+    HardwareHealthWatchdog *m_hwHealth = nullptr;
+    HidInputMonitor *m_hidAudit = nullptr;
+    bool m_shiftAuditArmed = false;
+    bool m_shiftAuditReady = false;
+    bool m_shiftAuditSent = false;
     PatchCacheCoordinator *m_patchCache = nullptr;
     int m_pendingLinkFlaps = 0;
     QJsonObject m_lastLinkFlapPayload;

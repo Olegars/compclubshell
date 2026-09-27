@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QHash>
 #include <QStringList>
+#include <atomic>
 
 class NetworkManager;
 class ProcessManager;
@@ -25,6 +26,10 @@ public:
 
 private:
     void loadConfig();
+    void startSnapshotAsync(bool loadTemplate);
+    void applySnapshot(const QHash<QString, QString> &hashes,
+                       const QHash<QString, QString> &templateHashes,
+                       bool loadedTemplate);
     QStringList criticalPaths() const;
     QHash<QString, QString> hashFiles(const QStringList &paths) const;
     QString aggregateHash(const QHash<QString, QString> &hashes) const;
@@ -49,6 +54,7 @@ private:
     QHash<QString, QString> m_templateHashes;
     bool m_templateLoaded = false;
     bool m_resyncBusy = false;
+    std::atomic<bool> m_snapshotBusy { false };
     qint64 m_pendingResyncId = 0;
 };
 

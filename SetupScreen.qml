@@ -725,6 +725,66 @@ Rectangle {
                 }
             }
 
+            Rectangle {
+                width: parent.width
+                visible: setupRoot.pcRegistered && NetworkManager.openRgbEnabled
+                radius: 8
+                color: "#0a0f0b"
+                border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
+                border.width: 1
+                implicitHeight: argbInner.implicitHeight + 32
+
+                Column {
+                    id: argbInner
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 16
+                    spacing: 10
+
+                    Text {
+                        text: "ARGB · OPENRGB"
+                        color: Theme.accent
+                        font.pixelSize: 13
+                        font.bold: true
+                        font.letterSpacing: 1.4
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Кулеры повторяют цвет комнаты. Если после обесточивания хаб ушёл в радугу — на пульте режим M/B. Тест на 4 секунды зажигает сплошной пурпурный."
+                        color: Theme.textMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: NetworkManager.openRgbStatus
+                        color: NetworkManager.openRgbConnected ? Theme.success : Theme.textSecondary
+                        font.pixelSize: 11
+                        font.family: "Monospace"
+                    }
+                    Button {
+                        text: "ТЕСТ M/B"
+                        height: 34
+                        enabled: NetworkManager.openRgbEnabled
+                        onClicked: NetworkManager.testOpenRgbSync()
+                        contentItem: Text {
+                            text: parent.text
+                            color: parent.enabled ? "#111" : Theme.textMuted
+                            font.pixelSize: 11
+                            font.bold: true
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            color: parent.enabled ? Theme.accent : "#222"
+                            radius: 4
+                        }
+                    }
+                }
+            }
+
             Button {
                 width: parent.width
                 height: 52

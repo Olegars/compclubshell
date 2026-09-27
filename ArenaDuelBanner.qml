@@ -11,7 +11,9 @@ Rectangle {
             return NetworkManager.arena.ticker
         return null
     }
-    visible: ticker && ticker.line
+    visible: !!(ticker && ticker.line)
+             && !(typeof NetworkManager !== "undefined" && NetworkManager.clanWar && NetworkManager.clanWar.id)
+             && !(typeof NetworkManager !== "undefined" && NetworkManager.faceitMatch && NetworkManager.faceitMatch.id)
     color: "#cc120800"
     border.color: "#fb923c"
     border.width: 1

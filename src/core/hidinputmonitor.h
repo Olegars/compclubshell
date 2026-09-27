@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QString>
+#include <QStringList>
 
 class NetworkManager;
 
@@ -24,6 +25,9 @@ public:
 
     /** Enumerate current mouse+keyboard set and POST /api/shell/hid/snapshot */
     Q_INVOKABLE void captureAndBind(int computerId, int bookingId = 0);
+
+    /** mouse / keyboard / headset currently present. Used by the shift-audit heartbeat. */
+    QStringList auditPresentKinds() const;
 
     /** Start polling for device set changes (session lifetime). */
     Q_INVOKABLE void startWatch(int computerId, int bookingId = 0);

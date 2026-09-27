@@ -60,7 +60,11 @@ private:
 
     QString m_steamId;
     QString m_map;
+    QString m_mapMode;
+    QString m_mapPhase;
+    QString m_customGame;
     QString m_matchId;
+    bool m_hasBots = false;
     QString m_team;
     QString m_weapon;
     QString m_phase;

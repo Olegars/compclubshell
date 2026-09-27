@@ -13,29 +13,24 @@ Popup {
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     property int modeIndex: 0
-    property int presetIndex: 0
     property string scope: "hall"
     property string kind: "duel"
     property int targetId: 0
     property int battleMax: 8
-    property double customFee: 250
-    property double raiseTo: 0
     readonly property var arena: (typeof NetworkManager !== "undefined") ? NetworkManager.arena : ({})
     readonly property var modes: (arena && arena.modes) ? arena.modes : [
         { id: "cs2:1v1_aim", game: "cs2", mode: "1v1_aim", label: "CS2 1v1 AIM" },
         { id: "cs2:2v2_wingman", game: "cs2", mode: "2v2_wingman", label: "CS2 2v2 Wingman" },
         { id: "dota:1v1_mid", game: "dota", mode: "1v1_mid", label: "Dota 2 1v1 Mid Only" }
     ]
-    readonly property var presets: (arena && arena.presets) ? arena.presets : [100, 250, 500]
     readonly property var targets: (typeof NetworkManager !== "undefined") ? NetworkManager.bountyTargets : []
     readonly property var currentMode: modes[Math.min(modeIndex, Math.max(0, modes.length - 1))] || modes[0]
     readonly property var mine: (arena && arena.mine) ? arena.mine : null
     readonly property var board: (arena && arena.board) ? arena.board : ((arena && arena.open) ? arena.open : [])
-    readonly property double fee: {
-        if (presetIndex >= 0 && presetIndex < presets.length)
-            return Number(presets[presetIndex] || 250)
-        return Number(customFee || 250)
-    }
+    readonly property var ladder: (arena && arena.ladder) ? arena.ladder : []
+    readonly property var boss: (arena && arena.boss) ? arena.boss : null
+    readonly property var koth: (arena && arena.koth) ? arena.koth : null
+    readonly property var me: (arena && arena.me) ? arena.me : null
 
     onOpened: {
         if (typeof NetworkManager !== "undefined")
@@ -88,9 +83,109 @@ Popup {
             wrapMode: Text.WordWrap
             text: (arena && arena.legal && arena.legal.notice)
                   ? String(arena.legal.notice)
-                  : "Взнос за участие в соревновании мастерства. Приз на депозит клуба, без вывода на карту."
+                  : "Дуэль без ставок: кто лучше на этом ПК. Рейтинг клуба, серия побед, царь горы."
             color: "#9ca3af"
             font.pixelSize: 12
+        }
+
+        Text {
+            visible: !!(arenaPopup.me)
+            Layout.fillWidth: true
+            text: arenaPopup.me
+                  ? ("Ты · Elo " + Number(arenaPopup.me.rating || 1000)
+                     + " · серия " + Number(arenaPopup.me.streak || 0)
+                     + (arenaPopup.me.title ? (" · " + arenaPopup.me.title) : ""))
+                  : ""
+            color: "#fdba74"
+            font.pixelSize: 12
+            font.bold: true
+        }
+
+        Rectangle {
+            visible: !!(arenaPopup.koth && arenaPopup.koth.name)
+            Layout.fillWidth: true
+            implicitHeight: 44
+            radius: 8
+            color: "#1a1408"
+            border.color: "#fbbf24"
+            Text {
+                anchors.fill: parent
+                anchors.margins: 10
+                text: arenaPopup.koth
+                      ? ("Царь горы: " + String(arenaPopup.koth.name || "")
+                         + " · серия " + Number(arenaPopup.koth.streak || 0)
+                         + (arenaPopup.koth.perk ? (" · " + arenaPopup.koth.perk) : ""))
+                      : ""
+                color: "#fde68a"
+                font.pixelSize: 12
+                font.bold: true
+                elide: Text.ElideRight
+            }
+        }
+
+        Rectangle {
+            visible: !!(arenaPopup.boss && arenaPopup.boss.name)
+            Layout.fillWidth: true
+            implicitHeight: 48
+            radius: 8
+            color: "#1a1208"
+            border.color: "#fb923c"
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 10
+                Text {
+                    Layout.fillWidth: true
+                    text: arenaPopup.boss
+                          ? ("Босс клуба: " + String(arenaPopup.boss.name || "")
+                             + " · Elo " + Number(arenaPopup.boss.rating || 1000)
+                             + (arenaPopup.boss.in_club ? (" · " + String(arenaPopup.boss.pc || "в зале")) : " · не в клубе"))
+                          : ""
+                    color: "#fdba74"
+                    font.pixelSize: 12
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
+                Text {
+                    visible: !!(arenaPopup.boss && arenaPopup.boss.in_club && arenaPopup.boss.computer_id)
+                    text: "ВЫЗВАТЬ"
+                    color: "#fb923c"
+                    font.bold: true
+                    font.pixelSize: 12
+                    MouseArea {
+                        anchors.fill: parent
+                        anchors.margins: -6
+                        onClicked: {
+                            var m = arenaPopup.currentMode || {}
+                            if (typeof NetworkManager !== "undefined") {
+                                NetworkManager.createArenaChallenge(
+                                    String(m.game || "cs2"),
+                                    String(m.mode || "1v1_aim"),
+                                    0,
+                                    "computer",
+                                    Number(arenaPopup.boss.computer_id || 0),
+                                    "duel",
+                                    0
+                                )
+                            }
+                            arenaPopup.close()
+                        }
+                    }
+                }
+            }
+        }
+
+        Repeater {
+            model: arenaPopup.ladder
+            delegate: Text {
+                visible: index < 5
+                Layout.fillWidth: true
+                text: Number(modelData.rank || (index + 1)) + ". " + String(modelData.name || "Игрок")
+                      + (modelData.title ? (" · " + modelData.title) : "")
+                      + " · " + Number(modelData.rating || 0)
+                color: "#9ca3af"
+                font.pixelSize: 11
+                font.family: "Monospace"
+            }
         }
 
         RowLayout {
@@ -125,30 +220,6 @@ Popup {
             model: arenaPopup.modes
             textRole: "label"
             onActivated: arenaPopup.modeIndex = currentIndex
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Repeater {
-                model: arenaPopup.presets
-                delegate: Rectangle {
-                    Layout.fillWidth: true
-                    height: 40
-                    radius: 8
-                    color: arenaPopup.presetIndex === index ? "#fb923c" : "#111"
-                    border.color: "#fb923c"
-                    Text {
-                        anchors.centerIn: parent
-                        text: Number(modelData) + " ₽"
-                        color: arenaPopup.presetIndex === index ? "#111" : "#fdba74"
-                        font.bold: true
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: arenaPopup.presetIndex = index
-                    }
-                }
-            }
         }
 
         RowLayout {
@@ -227,50 +298,13 @@ Popup {
                 spacing: 6
                 Text {
                     text: (arenaPopup.mine && arenaPopup.mine.kind_label ? arenaPopup.mine.kind_label : "Лобби")
-                          + " · " + Number((arenaPopup.mine && arenaPopup.mine.entry_fee) ? arenaPopup.mine.entry_fee : 0) + " ₽"
+                          + " · " + Number((arenaPopup.mine && arenaPopup.mine.players_count) ? arenaPopup.mine.players_count : 1)
+                          + "/" + Number((arenaPopup.mine && arenaPopup.mine.max_players) ? arenaPopup.mine.max_players : 2)
                     color: "#fdba74"
                     font.bold: true
                     font.pixelSize: 13
                 }
-                Text {
-                    visible: !!(arenaPopup.mine && arenaPopup.mine.raise_to)
-                    text: "Повысить до " + Number(arenaPopup.mine.raise_to || 0) + " ₽"
-                    color: "#fde68a"
-                    font.pixelSize: 12
-                }
                 RowLayout {
-                    TextField {
-                        Layout.fillWidth: true
-                        placeholderText: "Новая ставка"
-                        color: "white"
-                        onTextChanged: arenaPopup.raiseTo = Number(text || 0)
-                    }
-                    Text {
-                        visible: !!(arenaPopup.mine && arenaPopup.mine.can_raise)
-                        text: "Повысить"
-                        color: "#fb923c"
-                        font.bold: true
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: {
-                                if (typeof NetworkManager !== "undefined")
-                                    NetworkManager.proposeArenaRaise(String(arenaPopup.mine.uuid || ""), arenaPopup.raiseTo)
-                            }
-                        }
-                    }
-                    Text {
-                        visible: !!(arenaPopup.mine && arenaPopup.mine.can_vote_raise)
-                        text: "Согласен"
-                        color: "#4ade80"
-                        font.bold: true
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: {
-                                if (typeof NetworkManager !== "undefined")
-                                    NetworkManager.voteArenaRaise(String(arenaPopup.mine.uuid || ""), true)
-                            }
-                        }
-                    }
                     Text {
                         visible: !!(arenaPopup.mine && arenaPopup.mine.can_start)
                         text: "Старт"
@@ -281,6 +315,19 @@ Popup {
                             onClicked: {
                                 if (typeof NetworkManager !== "undefined")
                                     NetworkManager.startArena(String(arenaPopup.mine.uuid || ""))
+                            }
+                        }
+                    }
+                    Text {
+                        visible: !!(arenaPopup.mine && arenaPopup.mine.can_cancel)
+                        text: "Снять"
+                        color: "#f87171"
+                        font.bold: true
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                if (typeof NetworkManager !== "undefined")
+                                    NetworkManager.cancelArena(String(arenaPopup.mine.uuid || ""))
                             }
                         }
                     }
@@ -315,7 +362,7 @@ Popup {
                             font.bold: true
                         }
                         Text {
-                            text: Number(modelData.entry_fee || 0) + " ₽ · "
+                            text: "Elo " + Number(modelData.creator_rating || 1000) + " · "
                                   + Number(modelData.players_count || 1) + "/" + Number(modelData.max_players || 2)
                                   + (modelData.scheduled_at ? " · " + Qt.formatDateTime(new Date(modelData.scheduled_at), "dd.MM HH:mm") : "")
                             color: "#9ca3af"
@@ -354,14 +401,14 @@ Popup {
 
         Button {
             Layout.fillWidth: true
-            text: "БРОСИТЬ ВЫЗОВ · " + arenaPopup.fee + " ₽"
+            text: "БРОСИТЬ ВЫЗОВ"
             onClicked: {
                 var m = arenaPopup.currentMode || {}
                 if (typeof NetworkManager !== "undefined") {
                     NetworkManager.createArenaChallenge(
                         String(m.game || "cs2"),
                         String(m.mode || "1v1_aim"),
-                        arenaPopup.fee,
+                        0,
                         arenaPopup.scope,
                         arenaPopup.scope === "computer" ? arenaPopup.targetId : 0,
                         arenaPopup.kind,
