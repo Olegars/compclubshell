@@ -25,6 +25,7 @@ qt_add_executable(appsector0451
     src/core/stationhealth.h src/core/stationhealth.cpp
     src/core/fanrelaycontroller.h src/core/fanrelaycontroller.cpp
     src/core/dmxcontroller.h src/core/dmxcontroller.cpp
+    src/core/wledcorridor.h src/core/wledcorridor.cpp
     src/core/openrgbclient.h src/core/openrgbclient.cpp
     src/core/faceitsession.h src/core/faceitsession.cpp
     src/core/localhttpserver.h src/core/localhttpserver.cpp

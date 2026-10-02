@@ -7,6 +7,7 @@
 #include "thermalmonitor.h"
 #include "fanrelaycontroller.h"
 #include "dmxcontroller.h"
+#include "wledcorridor.h"
 #include "openrgbclient.h"
 #include "reactivelighting.h"
 #include "valvegsi.h"
@@ -61,6 +62,7 @@ NetworkManager::NetworkManager(GameModel* gamesModel, StoreModel* storeModel, QO
     , m_rootQml(nullptr)
 {
     m_networkManager = new QNetworkAccessManager(this);
+    m_wled = new WledCorridor(m_networkManager, this);
     m_dmx = new DmxController(this);
     m_gsi = new ReactiveLighting(m_dmx, this);
     connect(m_gsi, &ReactiveLighting::lastEventChanged, this, [this]() {
@@ -366,6 +368,27 @@ void NetworkManager::applyPartyFromJson(const QJsonObject &root)
         return;
     m_partySeatNames = names;
     emit partyChanged();
+}
+
+void NetworkManager::applyGuestCard(const QJsonObject &root)
+{
+    const QJsonObject profile = root.value(QStringLiteral("profile")).toObject();
+    const QJsonObject pass = root.value(QStringLiteral("battle_pass")).toObject();
+    QString status = profile.value(QStringLiteral("status_label")).toString();
+    if (profile.value(QStringLiteral("frame_id")).toInt() > 0 && !status.isEmpty())
+        status = QStringLiteral("▣ ") + status;
+    const int level = pass.value(QStringLiteral("level")).toInt();
+    const QString label = level > 0 ? QStringLiteral("BP ") + QString::number(level) : QString();
+    if (status == m_guestStatus && label == m_battlePassLabel)
+        return;
+    m_guestStatus = status;
+    m_battlePassLabel = label;
+    emit guestProfileChanged();
+    const QJsonArray granted = root.value(QStringLiteral("granted")).toArray();
+    if (!granted.isEmpty()) {
+        m_lanLiveToast = granted.first().toString();
+        emit lanLiveChanged();
+    }
 }
 
 void NetworkManager::applyLanLiveFromJson(const QJsonObject &root)
@@ -1706,7 +1729,8 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
                     receiptUrl,
                     jsonToDouble(receipt.value(QStringLiteral("amount")), 0.0),
                     receipt.value(QStringLiteral("is_stub")).toBool(false),
-                    receipt.value(QStringLiteral("description")).toString());
+                    receipt.value(QStringLiteral("description")).toString(),
+                    receipt.value(QStringLiteral("transaction_id")).toInt(0));
             } else {
                 clearPendingReceipt();
             }
@@ -1764,7 +1788,8 @@ void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
             receiptUrl,
             jsonToDouble(receipt.value(QStringLiteral("amount")), 0.0),
             receipt.value(QStringLiteral("is_stub")).toBool(false),
-            receipt.value(QStringLiteral("description")).toString());
+            receipt.value(QStringLiteral("description")).toString(),
+            receipt.value(QStringLiteral("transaction_id")).toInt(0));
     } else {
         clearPendingReceipt();
     }
@@ -1948,6 +1973,8 @@ void NetworkManager::refreshBalance()
 
         applyPartyFromJson(response);
         applyLanLiveFromJson(response);
+        applyGuestCard(response);
+        publishBalanceFiscalReceipts(response);
 
         if (balance < 0.0)
             return;
@@ -2012,18 +2039,42 @@ void NetworkManager::syncTopUpPayment(const QString &paymentId)
             QStringLiteral("Пополнение через ЮKassa"));
 
         if (!receiptUrl.isEmpty()) {
-            publishFiscalReceipt(receiptUrl, amount, stub, description);
+            publishFiscalReceipt(receiptUrl, amount, stub, description,
+                                 response.value(QStringLiteral("transaction_id")).toInt(0));
         } else {
-            // Фискализация может идти очередью — дотягиваем URL.
+            // Шлюз проводит чек после оплаты — дотягиваем URL.
             pollTopUpReceipt(paymentId, amount, 0);
         }
     });
 }
 
-void NetworkManager::publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description)
+void NetworkManager::publishBalanceFiscalReceipts(const QJsonObject &response)
+{
+    const QJsonArray rows = response.value(QStringLiteral("fiscal_receipts")).toArray();
+    for (const QJsonValue &value : rows) {
+        const QJsonObject row = value.toObject();
+        const QString url = row.value(QStringLiteral("fiscal_receipt_url")).toString();
+        if (url.isEmpty())
+            continue;
+        publishFiscalReceipt(
+            url,
+            jsonToDouble(row.value(QStringLiteral("amount")), 0.0),
+            row.value(QStringLiteral("is_stub")).toBool(false),
+            row.value(QStringLiteral("description")).toString(),
+            row.value(QStringLiteral("transaction_id")).toInt(0));
+    }
+}
+
+void NetworkManager::publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description, int transactionId)
 {
     if (url.isEmpty())
         return;
+
+    if (transactionId > 0) {
+        if (m_shownFiscalTx.contains(transactionId))
+            return;
+        m_shownFiscalTx.insert(transactionId);
+    }
 
     m_pendingReceiptUrl = url;
     m_pendingReceiptAmount = amount;
@@ -2035,7 +2086,7 @@ void NetworkManager::publishFiscalReceipt(const QString &url, double amount, boo
 
 void NetworkManager::pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt)
 {
-    if (m_serverUrl.isEmpty() || paymentId.isEmpty() || attempt > 8)
+    if (m_serverUrl.isEmpty() || paymentId.isEmpty() || attempt > 30)
         return;
 
     QUrl url(m_serverUrl + QStringLiteral("/api/billing/yookassa/receipt/") + paymentId);
@@ -2066,14 +2117,16 @@ void NetworkManager::pollTopUpReceipt(const QString &paymentId, double fallbackA
             QStringLiteral("Пополнение через ЮKassa"));
 
         if (!receiptUrl.isEmpty()) {
-            publishFiscalReceipt(receiptUrl, amount, stub, description);
+            publishFiscalReceipt(receiptUrl, amount, stub, description,
+                                 response.value(QStringLiteral("transaction_id")).toInt(0));
             return;
         }
 
-        if (status == QLatin1String("error") || status == QLatin1String("void"))
+        if (status == QLatin1String("error") || status == QLatin1String("void")
+            || status == QLatin1String("uncertain"))
             return;
 
-        QTimer::singleShot(700, this, [this, paymentId, fallbackAmount, attempt]() {
+        QTimer::singleShot(1500, this, [this, paymentId, fallbackAmount, attempt]() {
             pollTopUpReceipt(paymentId, fallbackAmount, attempt + 1);
         });
     });
@@ -2319,12 +2372,16 @@ void NetworkManager::startPowerHeartbeat()
                    << "production" << m_production;
     }
     sendPowerHeartbeat();
+    if (m_wled)
+        m_wled->start(m_serverUrl, m_computerId);
 }
 
 void NetworkManager::stopPowerHeartbeat()
 {
     if (m_powerHeartbeatTimer)
         m_powerHeartbeatTimer->stop();
+    if (m_wled)
+        m_wled->stop();
 }
 
 QString NetworkManager::primaryMacAddress() const
@@ -4921,6 +4978,15 @@ void NetworkManager::postGsiEvent(const QJsonObject &payload)
         const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
         if (reply->error() == QNetworkReply::NoError)
             applyLanLiveFromJson(root);
+        applyGuestCard(root);
+        const QJsonObject ach = root.value(QStringLiteral("achievement")).toObject();
+        if (ach.value(QStringLiteral("granted")).toBool()) {
+            const QString title = ach.value(QStringLiteral("title")).toString();
+            if (!title.isEmpty()) {
+                m_lanLiveToast = title;
+                emit lanLiveChanged();
+            }
+        }
 
         if (root.contains(QStringLiteral("time_remaining"))) {
             emit sessionTimeUpdated(

@@ -247,6 +247,19 @@ void ValveGsi::updateCs2Ambient(const QJsonObject &player, const QString &mapNam
     playLight(want, ReactiveLighting::Ambient, hint);
 }
 
+void ValveGsi::awardOnce(const QString &code, ReactiveLighting::Priority pri)
+{
+    if (code.isEmpty() || m_roundAwards.contains(code))
+        return;
+    m_roundAwards.insert(code);
+    playLight(QStringLiteral("gsi.") + code, pri, code);
+    QJsonObject extra;
+    extra.insert(QStringLiteral("achievement_code"), code);
+    extra.insert(QStringLiteral("match_round_key"),
+                 m_game + QLatin1Char(':') + m_matchId + QLatin1Char(':') + QString::number(qMax(0, m_round)));
+    emitSnapshot(QStringLiteral("achievement"), extra);
+}
+
 void ValveGsi::emitSnapshot(const QString &event, const QJsonObject &extra)
 {
     QJsonObject payload = extra;
@@ -353,9 +366,13 @@ void ValveGsi::handleCs2(const QJsonObject &root)
     m_weapon = activeWeapon(player);
     m_phase = round.value(QStringLiteral("phase")).toString();
     m_bomb = round.value(QStringLiteral("bomb")).toString();
-    m_round = map.value(QStringLiteral("round")).toInt(-1);
+    const int nextRound = map.value(QStringLiteral("round")).toInt(-1);
+    if (nextRound >= 0 && m_round >= 0 && nextRound != m_round)
+        m_roundAwards.clear();
+    m_round = nextRound;
     m_money = state.value(QStringLiteral("money")).toInt(-1);
     const int health = state.value(QStringLiteral("health")).toInt(-1);
+    m_health = health;
     const int prevHealth = prevState.value(QStringLiteral("health")).toInt(-1);
     const int flashed = state.value(QStringLiteral("flashed")).toInt(0);
     const int prevFlashed = prevState.value(QStringLiteral("flashed")).toInt(0);
@@ -394,6 +411,8 @@ void ValveGsi::handleCs2(const QJsonObject &root)
         releaseLight(QStringLiteral("cs2.bomb"));
         playLight(QStringLiteral("cs2.win"), ReactiveLighting::Round, QStringLiteral("раунд"));
         const bool won = !m_team.isEmpty() && winTeam.compare(m_team, Qt::CaseInsensitive) == 0;
+        if (won && health <= 5 && roundKills >= 3)
+            awardOnce(QStringLiteral("clutch_1v3_1hp"), ReactiveLighting::Alert);
         emitSnapshot(won ? QStringLiteral("round_win") : QStringLiteral("round_loss"), {});
         return;
     }
@@ -402,6 +421,11 @@ void ValveGsi::handleCs2(const QJsonObject &root)
         || (kills >= 0 && m_cs2Kills >= 0 && kills > m_cs2Kills);
     if (gotKill && inRound) {
         emitSnapshot(QStringLiteral("kill"), {});
+        if (roundKills >= 5)
+            awardOnce(QStringLiteral("ace"), ReactiveLighting::Round);
+        const QString weapon = m_weapon.toLower();
+        if (weapon.contains(QLatin1String("knife")) || weapon.contains(QLatin1String("taser")))
+            awardOnce(QStringLiteral("knife_or_zeus"), ReactiveLighting::Alert);
     }
     if (roundKills >= 0)
         m_cs2RoundKills = roundKills;
@@ -423,6 +447,8 @@ void ValveGsi::handleCs2(const QJsonObject &root)
         m_cs2Bomb = false;
         m_cs2Dead = false;
         m_cs2RoundKills = 0;
+        m_roundHs = 0;
+        m_roundAwards.clear();
         releaseLight(QStringLiteral("cs2.bomb"));
         releaseLight(QStringLiteral("cs2.win"));
         releaseLight(QStringLiteral("cs2.death"));
@@ -507,6 +533,12 @@ void ValveGsi::handleDota(const QJsonObject &root)
 
     if (kills >= 0 && prevKills >= 0 && kills > prevKills) {
         emitSnapshot(QStringLiteral("kill"), {});
+        if (player.contains(QStringLiteral("kill_streak"))
+            && player.value(QStringLiteral("kill_streak")).toInt() >= 5)
+            awardOnce(QStringLiteral("rampage"), ReactiveLighting::Round);
+        if (player.contains(QStringLiteral("firstblood"))
+            && player.value(QStringLiteral("firstblood")).toBool())
+            awardOnce(QStringLiteral("first_blood"), ReactiveLighting::Alert);
     }
 
     if (!alive && prevAlive) {

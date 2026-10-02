@@ -15,11 +15,13 @@
 #include <QTimer>
 #include <QVector>
 #include <QStringList>
+#include <QSet>
 
 class GameModel;
 class StoreModel;
 class DmxController;
 class ReactiveLighting;
+class WledCorridor;
 class OpenRgbClient;
 class QThread;
 class CcbootSuperClient;
@@ -101,6 +103,8 @@ class NetworkManager : public QObject
     Q_PROPERTY(QVariantMap lfg READ lfg NOTIFY lanLiveChanged)
     Q_PROPERTY(QVariantMap lootbox READ lootbox NOTIFY lootboxChanged)
     Q_PROPERTY(QVariantMap clanWar READ clanWar NOTIFY clanWarChanged)
+    Q_PROPERTY(QString guestStatus READ guestStatus NOTIFY guestProfileChanged)
+    Q_PROPERTY(QString battlePassLabel READ battlePassLabel NOTIFY guestProfileChanged)
     Q_PROPERTY(QVariantMap faceit READ faceit NOTIFY faceitChanged)
     Q_PROPERTY(QVariantMap faceitMatch READ faceitMatch NOTIFY faceitMatchChanged)
     Q_PROPERTY(QVariantMap arena READ arena NOTIFY arenaChanged)
@@ -173,6 +177,8 @@ public:
     QVariantList bountyTargets() const { return m_bountyTargets; }
     QVariantList bountyProducts() const { return m_bountyProducts; }
     QString lanLiveToast() const { return m_lanLiveToast; }
+    QString guestStatus() const { return m_guestStatus; }
+    QString battlePassLabel() const { return m_battlePassLabel; }
     QString playerName() const { return m_playerName; }
     QVariantMap throne() const { return m_throne; }
     QVariantMap lfg() const { return m_lfg; }
@@ -395,6 +401,7 @@ signals:
     void partyChanged();
     void inMatchChanged();
     void lanLiveChanged();
+    void guestProfileChanged();
     void clanWarChanged();
     void faceitChanged();
     void faceitMatchChanged();
@@ -450,7 +457,8 @@ private:
     void handleResyncCommand(const QJsonObject &obj);
     void handleRollbackCommand(const QJsonObject &obj);
     void handlePatchCommands(const QJsonObject &root);
-    void publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description);
+    void publishFiscalReceipt(const QString &url, double amount, bool isStub, const QString &description, int transactionId = 0);
+    void publishBalanceFiscalReceipts(const QJsonObject &response);
     void pollTopUpReceipt(const QString &paymentId, double fallbackAmount, int attempt);
     void applyQrLoginSuccess(const QJsonObject &response);
     void pollQrStatusOnce();
@@ -458,6 +466,7 @@ private:
     void applyPlayerTtsVoice(const QString &voice);
     void applyPartyFromJson(const QJsonObject &root);
     void applyLanLiveFromJson(const QJsonObject &root);
+    void applyGuestCard(const QJsonObject &root);
     void applyThroneFromJson(const QJsonObject &root);
     void applyLootboxFromJson(const QJsonObject &root);
     void applyClanWarFromJson(const QJsonObject &root);
@@ -471,6 +480,7 @@ private:
     void syncGsiListen();
 
     QNetworkAccessManager *m_networkManager;
+    WledCorridor *m_wled = nullptr;
     QTimer *m_climateTimer = nullptr;
     QTimer *m_fanLockTimer = nullptr;
     QTimer *m_powerHeartbeatTimer = nullptr;
@@ -490,6 +500,7 @@ private:
     double m_pendingReceiptAmount = 0.0;
     bool m_pendingReceiptStub = false;
     QString m_pendingReceiptDescription;
+    QSet<int> m_shownFiscalTx;
     double m_lastKnownBalance = -1.0;
     bool m_balanceRefreshInFlight = false;
     bool m_powerHeartbeatInFlight = false;
@@ -580,6 +591,8 @@ private:
     QVariantList m_bountyTargets;
     QVariantList m_bountyProducts;
     QString m_lanLiveToast;
+    QString m_guestStatus;
+    QString m_battlePassLabel;
     QString m_playerName;
     QVariantMap m_throne;
     QVariantMap m_lfg;

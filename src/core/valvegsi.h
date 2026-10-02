@@ -3,6 +3,7 @@
 
 #include <QJsonObject>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 #include "localhttpserver.h"
@@ -37,6 +38,7 @@ private:
     void playLight(const QString &id, ReactiveLighting::Priority pri, const QString &hint);
     void releaseLight(const QString &id);
     void emitSnapshot(const QString &event, const QJsonObject &extra);
+    void awardOnce(const QString &code, ReactiveLighting::Priority pri);
     static QString activeWeapon(const QJsonObject &player);
     static QJsonObject dotaUlt(const QJsonObject &root);
     void updateCs2Ambient(const QJsonObject &player, const QString &mapName, int burning,
@@ -56,6 +58,9 @@ private:
     QString m_cs2Ambient;
     int m_cs2Kills = -1;
     int m_cs2RoundKills = -1;
+    int m_health = -1;
+    int m_roundHs = 0;
+    QSet<QString> m_roundAwards;
     qint64 m_lastHeartbeatMs = 0;
 
     QString m_steamId;

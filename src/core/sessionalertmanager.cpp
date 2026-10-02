@@ -223,6 +223,8 @@ void SessionAlertManager::startSession(const QString &timeRemaining)
     m_warned15 = false;
     m_warned10 = false;
     m_warned5 = false;
+    m_warnedMarathon = false;
+    m_elapsedSeconds = 0;
     m_graceTicks = 0;
     setTimeRemaining(formatSeconds(m_remainingSeconds));
     setSessionActive(m_remainingSeconds > 0);
@@ -281,6 +283,8 @@ void SessionAlertManager::reset()
     m_warned15 = false;
     m_warned10 = false;
     m_warned5 = false;
+    m_warnedMarathon = false;
+    m_elapsedSeconds = 0;
     m_speechBlocked = false;
     m_holdLogout = false;
     m_graceTicks = 0;
@@ -326,6 +330,14 @@ void SessionAlertManager::onTick()
     const int previous = m_remainingSeconds;
     if (m_remainingSeconds > 0)
         --m_remainingSeconds;
+    if (!m_warnedMarathon) {
+        ++m_elapsedSeconds;
+        if (m_elapsedSeconds >= 7 * 3600 + 30 * 60) {
+            m_warnedMarathon = true;
+            announce(QStringLiteral("Перерыв на разминку"));
+            showToast(QStringLiteral("Перерыв на разминку"));
+        }
+    }
 
     setTimeRemaining(formatSeconds(m_remainingSeconds));
     checkThresholdCrossings(previous);

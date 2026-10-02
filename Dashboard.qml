@@ -2070,6 +2070,17 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                             }
+                            Text {
+                                visible: typeof NetworkManager !== "undefined"
+                                         && ((NetworkManager.guestStatus && NetworkManager.guestStatus.length)
+                                             || (NetworkManager.battlePassLabel && NetworkManager.battlePassLabel.length))
+                                width: parent.width
+                                text: (NetworkManager.battlePassLabel || "")
+                                      + (NetworkManager.guestStatus ? "  " + NetworkManager.guestStatus : "")
+                                color: Theme.textSecondary
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
 
                             Rectangle {
                                 visible: typeof NetworkManager !== "undefined"

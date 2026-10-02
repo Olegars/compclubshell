@@ -79,6 +79,8 @@ private:
     bool m_warned15 = false;
     bool m_warned10 = false;
     bool m_warned5 = false;
+    bool m_warnedMarathon = false;
+    int m_elapsedSeconds = 0;
 };
 
 #endif // SESSIONALERTMANAGER_H
