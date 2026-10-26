@@ -1925,6 +1925,130 @@ Item {
                         }
                     }
 
+                    Rectangle {
+                        visible: typeof NetworkManager !== "undefined"
+                                 && NetworkManager.userId > 0
+                                 && NetworkManager.featureEnabled("cloud_saves")
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 36
+                        color: "#0a0f0b"
+                        border.color: Qt.rgba(0.13, 0.77, 0.36, 0.28)
+                        border.width: 1
+                        radius: 4
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 8
+                            spacing: 8
+
+                            Text {
+                                text: "МЫШЬ"
+                                color: accentColor
+                                font.pixelSize: 9
+                                font.bold: true
+                                font.letterSpacing: 1
+                                opacity: 0.8
+                            }
+                            Text {
+                                text: (typeof NetworkManager !== "undefined") ? String(NetworkManager.mouseSpeed) : "10"
+                                color: "white"
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.family: "Monospace"
+                            }
+                            Item {
+                                id: mouseSlider
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 16
+                                property int value: (typeof NetworkManager !== "undefined") ? NetworkManager.mouseSpeed : 10
+
+                                Connections {
+                                    target: (typeof NetworkManager !== "undefined") ? NetworkManager : null
+                                    function onDevicePrefsChanged() {
+                                        if (!mouseDrag.isDragging)
+                                            mouseSlider.value = NetworkManager.mouseSpeed
+                                    }
+                                }
+                                Rectangle {
+                                    width: parent.width
+                                    height: 4
+                                    radius: 2
+                                    color: "#222"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Rectangle {
+                                        width: ((mouseSlider.value - 1) / 19) * parent.width
+                                        height: parent.height
+                                        color: accentColor
+                                        radius: 2
+                                    }
+                                }
+                                Rectangle {
+                                    x: ((mouseSlider.value - 1) / 19) * (parent.width - width)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 12
+                                    height: 12
+                                    radius: 6
+                                    color: "white"
+                                }
+                                MouseArea {
+                                    id: mouseDrag
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    property bool isDragging: false
+                                    function updateSpeed(mx) {
+                                        var pct = Math.max(0, Math.min(1, mx / width))
+                                        mouseSlider.value = Math.round(1 + pct * 19)
+                                    }
+                                    onPressed: function(mouse) {
+                                        isDragging = true
+                                        updateSpeed(mouse.x)
+                                    }
+                                    onPositionChanged: function(mouse) {
+                                        if (isDragging)
+                                            updateSpeed(mouse.x)
+                                    }
+                                    onReleased: {
+                                        isDragging = false
+                                        if (typeof NetworkManager !== "undefined")
+                                            NetworkManager.setMouseSpeed(mouseSlider.value)
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                width: 14
+                                height: 14
+                                radius: 3
+                                color: (typeof NetworkManager !== "undefined" && NetworkManager.mouseAccel)
+                                       ? accentColor : "#222"
+                                border.color: "#555"
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: (typeof NetworkManager !== "undefined" && NetworkManager.mouseAccel) ? "✓" : ""
+                                    color: "black"
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (typeof NetworkManager !== "undefined")
+                                            NetworkManager.setMouseAccel(!NetworkManager.mouseAccel)
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "УСКОР."
+                                color: accentColor
+                                font.pixelSize: 9
+                                font.bold: true
+                                opacity: 0.75
+                            }
+                        }
+                    }
+
                     Row {
                         Layout.alignment: Qt.AlignLeft
                         spacing: 10

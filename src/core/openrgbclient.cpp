@@ -467,6 +467,7 @@ void OpenRgbClient::handlePacket(quint32 id, quint32 dev, const QByteArray &payl
 
 void OpenRgbClient::beginScan()
 {
+    m_keyboards.clear();
     m_phase = kPhaseWaitCount;
     m_ready = false;
     m_resizePending = false;
@@ -522,6 +523,13 @@ int OpenRgbClient::selectZone(const QVector<ZoneInfo> &zones) const
 
 void OpenRgbClient::considerDevice(const DevInfo &dev, int index)
 {
+    if (dev.type == 3 || dev.type == 5) {
+        for (int i = 0; i < dev.zones.size(); ++i) {
+            const int leds = dev.zones.at(i).leds;
+            if (leds > 0)
+                m_keyboards.append(KbZone{index, i, leds});
+        }
+    }
     const int score = scoreDevice(dev);
     if (score < 0)
         return;
@@ -592,6 +600,18 @@ void OpenRgbClient::commitSelection()
     flushSend();
 }
 
+void OpenRgbClient::paintKeyboards(const QColor &color)
+{
+    if (!m_ready || m_keyboards.isEmpty() || !color.isValid())
+        return;
+    for (const KbZone &zone : m_keyboards) {
+        if (!sendPacket(quint32(zone.dev), kPktCustom, {}))
+            return;
+        if (!writeLeds(zone.dev, zone.zone, zone.leds, color))
+            return;
+    }
+}
+
 void OpenRgbClient::submitColor(const QColor &color)
 {
     if (m_stopped)
@@ -641,6 +661,7 @@ void OpenRgbClient::flushSend()
         drop(QStringLiteral("запись цвета не ушла"));
         return;
     }
+    paintKeyboards(want);
     m_hasSent = true;
     m_sentR = want.red();
     m_sentG = want.green();
@@ -650,18 +671,25 @@ void OpenRgbClient::flushSend()
 
 bool OpenRgbClient::writeZone(const QColor &color)
 {
+    return writeLeds(m_dev, m_zone, m_leds, color);
+}
+
+bool OpenRgbClient::writeLeds(int dev, int zone, int leds, const QColor &color)
+{
+    if (dev < 0 || zone < 0 || leds <= 0)
+        return false;
     QByteArray body;
-    body.resize(6 + m_leds * 4);
-    const qint32 zone = m_zone;
-    const quint16 count = quint16(m_leds);
-    std::memcpy(body.data(), &zone, 4);
+    body.resize(6 + leds * 4);
+    const qint32 zoneId = zone;
+    const quint16 count = quint16(leds);
+    std::memcpy(body.data(), &zoneId, 4);
     std::memcpy(body.data() + 4, &count, 2);
     const quint32 packed = quint32(color.red() & 255)
         | (quint32(color.green() & 255) << 8)
         | (quint32(color.blue() & 255) << 16);
-    for (int i = 0; i < m_leds; ++i)
+    for (int i = 0; i < leds; ++i)
         std::memcpy(body.data() + 6 + i * 4, &packed, 4);
-    return sendPacket(quint32(m_dev), kPktUpdateZone, body);
+    return sendPacket(quint32(dev), kPktUpdateZone, body);
 }
 
 bool OpenRgbClient::sendPacket(quint32 dev, quint32 id, const QByteArray &payload)
@@ -683,6 +711,8 @@ bool OpenRgbClient::sendPacket(quint32 dev, quint32 id, const QByteArray &payloa
 
 void OpenRgbClient::blackout()
 {
+    if (m_ready && !m_keyboards.isEmpty())
+        paintKeyboards(QColor(0, 0, 0));
     m_stopped = true;
     m_testActive = false;
     if (m_retry)

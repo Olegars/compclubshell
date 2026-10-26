@@ -47,6 +47,72 @@
 #include "src/models/gamemodel.h"
 #include "src/models/storemodel.h"
 
+// Временный замер загрузки CPU для экрана входа.
+class CpuLoadMeter : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(int percent READ percent NOTIFY percentChanged)
+public:
+    explicit CpuLoadMeter(QObject *parent = nullptr) : QObject(parent)
+    {
+        sample();
+        auto *timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, &CpuLoadMeter::sample);
+        timer->start(1000);
+    }
+
+    int percent() const { return m_percent; }
+
+signals:
+    void percentChanged();
+
+private:
+    void sample()
+    {
+#ifdef Q_OS_WIN
+        FILETIME idleFt, kernelFt, userFt;
+        if (!GetSystemTimes(&idleFt, &kernelFt, &userFt))
+            return;
+        auto ticks = [](const FILETIME &ft) -> ULONGLONG {
+            ULARGE_INTEGER v;
+            v.LowPart = ft.dwLowDateTime;
+            v.HighPart = ft.dwHighDateTime;
+            return v.QuadPart;
+        };
+        const ULONGLONG idle = ticks(idleFt);
+        const ULONGLONG kernel = ticks(kernelFt);
+        const ULONGLONG user = ticks(userFt);
+        if (!m_hasPrev) {
+            m_prevIdle = idle;
+            m_prevKernel = kernel;
+            m_prevUser = user;
+            m_hasPrev = true;
+            return;
+        }
+        const ULONGLONG idleDiff = idle - m_prevIdle;
+        const ULONGLONG total = (kernel - m_prevKernel) + (user - m_prevUser);
+        m_prevIdle = idle;
+        m_prevKernel = kernel;
+        m_prevUser = user;
+        if (total == 0)
+            return;
+        const int pct = qBound(0, int((total - idleDiff) * 100 / total), 100);
+        if (pct == m_percent)
+            return;
+        m_percent = pct;
+        emit percentChanged();
+#endif
+    }
+
+    int m_percent = -1;
+#ifdef Q_OS_WIN
+    ULONGLONG m_prevIdle = 0;
+    ULONGLONG m_prevKernel = 0;
+    ULONGLONG m_prevUser = 0;
+    bool m_hasPrev = false;
+#endif
+};
+
 namespace {
 
 QString g_debugLogPath = QStringLiteral("C:/ShellVideo/logs/shell-debug.log");
@@ -357,6 +423,8 @@ int main(int argc, char *argv[])
 
     QObject::connect(&app, &QCoreApplication::aboutToQuit, networkManager, [networkManager, rollbackMarkers]() {
         rollbackMarkers->markCleanShutdown();
+        if (networkManager->debugQuit())
+            return;
         networkManager->notifyPowerOffline();
     });
 
@@ -376,6 +444,7 @@ int main(int argc, char *argv[])
     rootContext->setContextProperty("SecurityManager", securityManager);
     rootContext->setContextProperty("Ccboot", ccbootSuper);
     rootContext->setContextProperty("PathResolver", pathResolver);
+    rootContext->setContextProperty("CpuLoad", new CpuLoadMeter(&app));
 
     qDebug() << "[REACTOR-MAIN] Рабочая директория приложения:" << QDir::currentPath();
     qDebug() << "[REACTOR-MAIN] Поиск корневого интерфейса в QRC ресурсах...";
@@ -407,3 +476,5 @@ int main(int argc, char *argv[])
 
     return app.exec();
 }
+
+#include "main.moc"

@@ -37,6 +37,8 @@ struct FanRelayEndpoint {
     int channel = 0;
     int channel2 = 0;
     int fanId = 0;
+    int desiredPower = 0;
+    QString manualMode;
 };
 
 class NetworkManager : public QObject
@@ -73,6 +75,8 @@ class NetworkManager : public QObject
     Q_PROPERTY(int lightManualLockSec READ lightManualLockSec NOTIFY lightStateChanged)
     Q_PROPERTY(bool lightInteractive READ lightInteractive NOTIFY lightStateChanged)
     Q_PROPERTY(QString lightInteractiveHint READ lightInteractiveHint NOTIFY lightStateChanged)
+    Q_PROPERTY(int mouseSpeed READ mouseSpeed NOTIFY devicePrefsChanged)
+    Q_PROPERTY(bool mouseAccel READ mouseAccel NOTIFY devicePrefsChanged)
     Q_PROPERTY(bool openRgbEnabled READ openRgbEnabled NOTIFY openRgbChanged)
     Q_PROPERTY(bool openRgbConnected READ openRgbConnected NOTIFY openRgbChanged)
     Q_PROPERTY(QString openRgbStatus READ openRgbStatus NOTIFY openRgbChanged)
@@ -152,6 +156,8 @@ public:
     QString lightEffect() const { return m_lightEffect; }
     int lightManualLockSec() const { return m_lightManualLockSec; }
     bool lightInteractive() const { return m_lightInteractive; }
+    int mouseSpeed() const { return m_mouseSpeed; }
+    bool mouseAccel() const { return m_mouseAccel; }
     QString lightInteractiveHint() const { return m_lightInteractiveHint; }
     bool openRgbEnabled() const { return m_openRgbEnabled; }
     bool openRgbConnected() const { return m_openRgbConnected; }
@@ -308,6 +314,8 @@ public:
     Q_INVOKABLE void setLightColor(const QString &color);
     Q_INVOKABLE void setLightBrightness(int brightness);
     Q_INVOKABLE void setLightInteractive(bool on);
+    Q_INVOKABLE void setMouseSpeed(int speed);
+    Q_INVOKABLE void setMouseAccel(bool on);
     /** Static magenta for ~4s so a tech can see the ARGB hub is in M/B sync. */
     Q_INVOKABLE void testOpenRgbSync();
     /** Heartbeat питания: last_seen + MAC → power_desired / session_active. */
@@ -318,6 +326,9 @@ public:
     bool isProduction() const { return m_production; }
     /** aboutToQuit: fan OFF+/99 ack, затем power_state=off. */
     Q_INVOKABLE void notifyPowerOffline();
+    /** Закрыть процесс шелла, не помечая ПК выключенным и не вызывая shutdown. */
+    Q_INVOKABLE void quitForDebug();
+    bool debugQuit() const { return m_debugQuit; }
     /** Синхронно погасить вентилятор и заактить состояние (logout / shutdown). */
     Q_INVOKABLE void ensureFanOffBeforeExit();
     /** Погасить свет комнаты, если это последняя сессия. */
@@ -372,6 +383,7 @@ signals:
     void fanBindFinished(bool ok, const QString &message);
     void fanTestFinished(bool ok, const QString &message);
     void lightStateChanged();
+    void devicePrefsChanged();
     void openRgbChanged();
     void cpuTempChanged();
     void ssdTempChanged();
@@ -442,7 +454,8 @@ private:
     void postLightScene(const QJsonObject &body);
     void setLightManualLockSec(int sec);
     void postThermal(double cpuC, double ssdC);
-    void acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source);
+    void acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source,
+                               const QJsonArray &relays = {});
     int computeLocalDesiredPower(const QJsonObject &fanObj) const;
     void applyDesiredToRelay(int desiredPower, const QString &source);
     bool hasRelayConfig() const;
@@ -475,6 +488,10 @@ private:
     void applyArenaFromJson(const QJsonObject &root);
     void postArenaAction(const QString &path, const QJsonObject &extra = QJsonObject());
     void applyClubFeaturesFromJson(const QJsonObject &root);
+    void applyDevicePrefsFromJson(const QJsonObject &response);
+    void pushDevicePrefs();
+    void resetSessionDevices();
+    QJsonObject currentDevicePrefs() const;
     void postGsiEvent(const QJsonObject &payload);
     void setInMatch(bool on);
     void syncGsiListen();
@@ -538,6 +555,8 @@ private:
     bool m_skipLightApply = false;
     bool m_lightInteractive = false;
     QString m_lightInteractiveHint;
+    int m_mouseSpeed = 10;
+    bool m_mouseAccel = false;
     qint64 m_lastPlayEventAt = 0;
     ReactiveLighting *m_gsi = nullptr;
     QTimer *m_lightLockTimer = nullptr;
@@ -621,6 +640,7 @@ private:
     int m_cachedSteamCount = 0;
     int m_cachedEpicCount = 0;
     bool m_fanProbeLock = false;
+    bool m_debugQuit = false;
     QString m_lastPowerDesired;
     bool m_lastSessionActiveFromHeartbeat = false;
     QString m_integrityStatus;

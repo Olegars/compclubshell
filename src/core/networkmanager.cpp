@@ -9,6 +9,7 @@
 #include "dmxcontroller.h"
 #include "wledcorridor.h"
 #include "openrgbclient.h"
+#include "deviceprefs.h"
 #include "reactivelighting.h"
 #include "valvegsi.h"
 #include "linkflapwatchdog.h"
@@ -589,6 +590,78 @@ bool NetworkManager::featureEnabled(const QString &key) const
     return true;
 }
 
+void NetworkManager::applyDevicePrefsFromJson(const QJsonObject &response)
+{
+    const QJsonValue raw = response.value(QStringLiteral("device_prefs"));
+    const QJsonObject prefs = raw.isObject() ? raw.toObject() : QJsonObject();
+    if (!prefs.contains(QStringLiteral("mouse_speed"))) {
+        m_mouseSpeed = DevicePrefs::mouseSpeed();
+        m_mouseAccel = DevicePrefs::mouseAccel();
+        emit devicePrefsChanged();
+        if (prefs.isEmpty())
+            return;
+    } else {
+        m_mouseSpeed = qBound(1, prefs.value(QStringLiteral("mouse_speed")).toInt(DevicePrefs::kDefaultSpeed), 20);
+        m_mouseAccel = prefs.value(QStringLiteral("mouse_accel")).toBool(false);
+        DevicePrefs::applyMouse(m_mouseSpeed, m_mouseAccel);
+    }
+    emit devicePrefsChanged();
+}
+
+QJsonObject NetworkManager::currentDevicePrefs() const
+{
+    QJsonObject prefs;
+    prefs.insert(QStringLiteral("mouse_speed"), DevicePrefs::mouseSpeed());
+    prefs.insert(QStringLiteral("mouse_accel"), DevicePrefs::mouseAccel());
+    return prefs;
+}
+
+void NetworkManager::pushDevicePrefs()
+{
+    if (m_serverUrl.isEmpty() || m_computerId <= 0 || m_userId <= 0)
+        return;
+    QUrl url(m_serverUrl + QStringLiteral("/api/shell/device-prefs"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    QJsonObject json;
+    json.insert(QStringLiteral("terminal_id"), m_computerId);
+    json.insert(QStringLiteral("user_id"), m_userId);
+    json.insert(QStringLiteral("device_prefs"), currentDevicePrefs());
+    QNetworkReply *reply = m_networkManager->post(
+        request, QJsonDocument(json).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+}
+
+void NetworkManager::resetSessionDevices()
+{
+    DevicePrefs::resetMouse();
+    m_mouseSpeed = DevicePrefs::kDefaultSpeed;
+    m_mouseAccel = false;
+    emit devicePrefsChanged();
+}
+
+void NetworkManager::setMouseSpeed(int speed)
+{
+    const int next = qBound(1, speed, 20);
+    if (m_mouseSpeed == next && DevicePrefs::mouseSpeed() == next)
+        return;
+    m_mouseSpeed = next;
+    DevicePrefs::applyMouse(m_mouseSpeed, m_mouseAccel);
+    emit devicePrefsChanged();
+    pushDevicePrefs();
+}
+
+void NetworkManager::setMouseAccel(bool on)
+{
+    if (m_mouseAccel == on && DevicePrefs::mouseAccel() == on)
+        return;
+    m_mouseAccel = on;
+    DevicePrefs::applyMouse(m_mouseSpeed, m_mouseAccel);
+    emit devicePrefsChanged();
+    pushDevicePrefs();
+}
+
 void NetworkManager::applyClubFeaturesFromJson(const QJsonObject &root)
 {
     if (!root.contains(QStringLiteral("features")))
@@ -691,6 +764,8 @@ void NetworkManager::logoutTerminal(int terminalId) {
 
     QJsonObject json;
     json["terminal_id"] = terminalId;
+    json.insert(QStringLiteral("device_prefs"), currentDevicePrefs());
+    resetSessionDevices();
 
     QJsonDocument doc(json);
     QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
@@ -1718,6 +1793,7 @@ void NetworkManager::login(const QString &phone, const QString &pin, int termina
             const QJsonObject fanObj = response.value(QStringLiteral("fan")).toObject();
             startSessionFans(fanObj);
             startSessionLights(response.value(QStringLiteral("light")).toObject());
+            applyDevicePrefsFromJson(response);
             applyPartyFromJson(response);
             applyLanLiveFromJson(response);
             syncGsiListen();
@@ -1777,6 +1853,7 @@ void NetworkManager::applyQrLoginSuccess(const QJsonObject &response)
 
     startSessionFans(response.value(QStringLiteral("fan")).toObject());
     startSessionLights(response.value(QStringLiteral("light")).toObject());
+    applyDevicePrefsFromJson(response);
     applyPartyFromJson(response);
     applyLanLiveFromJson(response);
     syncGsiListen();
@@ -2987,8 +3064,19 @@ void NetworkManager::handlePatchCommands(const QJsonObject &root)
         m_patchCache->applyPullCommand(pull);
 }
 
+void NetworkManager::quitForDebug()
+{
+    m_debugQuit = true;
+    stopPowerHeartbeat();
+    qWarning() << "[POWER] debug quit — закрываем шелл, ПК не выключаем";
+    QCoreApplication::quit();
+}
+
 void NetworkManager::handlePowerPolicy(const QString &desired, const QString &action, bool sessionActive)
 {
+    if (m_debugQuit)
+        return;
+
     if (m_maintenance || isSetupScreenOpen()) {
         m_idleShutdownRequested = false;
         return;
@@ -3017,19 +3105,10 @@ void NetworkManager::handlePowerPolicy(const QString &desired, const QString &ac
         return;
     }
 
-    // Гостевой экран: гасим только если облако сказало desired=off
-    // (нет брони в warmup и нет мягкого ожидания PIN). Не гасим из‑за
-    // «PIN не ввели N минут» — это late_start_grace на сервере.
+    // Гостевой экран не выключаем. desired=off без брони приходит на первый
+    // heartbeat, и шелл гасил ПК сразу после открытия, до PIN.
     if (!isLocalSessionActive() && desired == QLatin1String("off")) {
-        if (!m_production) {
-            qWarning() << "[POWER] idle + desired=off — пропуск (Security/production=false)";
-            return;
-        }
-        if (!m_idleShutdownRequested) {
-            m_idleShutdownRequested = true;
-            qWarning() << "[POWER] idle + desired=off → shutdown";
-            emit powerActionRequested(QStringLiteral("shutdown"));
-        }
+        qWarning() << "[POWER] idle + desired=off — логин остаётся, ПК не выключаем";
         return;
     }
 
@@ -3226,6 +3305,20 @@ void fillFanEndpoint(FanRelayEndpoint &ep, const QJsonObject &o)
     ep.driver = fanJsonDriver(o);
     ep.channel = o.value(QStringLiteral("channel")).toInt(0);
     ep.channel2 = o.value(QStringLiteral("channel2")).toInt(0);
+    ep.desiredPower = o.value(QStringLiteral("desired_power")).toInt(0);
+    ep.manualMode = o.value(QStringLiteral("manual_mode")).toString();
+}
+
+bool fanPayloadHasService(const QJsonObject &fanObj)
+{
+    if (fanObj.value(QStringLiteral("manual_mode")).toString() == QLatin1String("service"))
+        return true;
+    const QJsonArray relays = fanObj.value(QStringLiteral("relays")).toArray();
+    for (const QJsonValue &rv : relays) {
+        if (rv.toObject().value(QStringLiteral("manual_mode")).toString() == QLatin1String("service"))
+            return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -3297,7 +3390,7 @@ int NetworkManager::computeLocalDesiredPower(const QJsonObject &fanObj) const
 
     if (mode == QLatin1String("force_off"))
         return 1; // night / duty 120V ≈ 50%
-    if (mode == QLatin1String("force_on")) {
+    if (mode == QLatin1String("force_on") || mode == QLatin1String("service")) {
         int s = fanObj.value(QStringLiteral("desired_power")).toInt(0);
         if (s <= 0)
             s = fanObj.value(QStringLiteral("default_on_power")).toInt(3);
@@ -3368,9 +3461,15 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
     QString error;
     int applied = m_fanAppliedPower;
     bool anyOk = false;
+    QJsonArray appliedRelays;
 
     for (int i = 0; i < targets.size(); ++i) {
         const FanRelayEndpoint &t = targets.at(i);
+        int wantOne = t.desiredPower > 0 ? t.desiredPower : want;
+        if (wantOne <= 0)
+            wantOne = 1;
+        if (wantOne > 3)
+            wantOne = 3;
         const QString statusUrl = FanRelayController::commandUrl(
             t.host, t.port, QStringLiteral("99"), t.driver);
         setFanDebug(QStringLiteral("relay[%1/%2] %3 K%4+K%5 want=%6")
@@ -3379,13 +3478,13 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
                         .arg(statusUrl)
                         .arg(t.channel)
                         .arg(t.channel2)
-                        .arg(want));
+                        .arg(wantOne));
 
         auto status = FanRelayController::readStatus(t.host, t.port, 2000, t.driver);
         int current = -1;
         if (status.ok) {
             current = FanRelayController::speedFromStatus(status.body, t.channel, t.channel2);
-            setFanDebug(QStringLiteral("status ok speed=%1 want=%2").arg(current).arg(want));
+            setFanDebug(QStringLiteral("status ok speed=%1 want=%2").arg(current).arg(wantOne));
         } else {
             m_fanRelayUnreachableUntilMs = now + 45000;
             error = status.error;
@@ -3394,21 +3493,33 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
             continue;
         }
 
-        if (current == want) {
-            applied = want;
+        if (current == wantOne) {
+            applied = wantOne;
             anyOk = true;
+            if (t.fanId > 0) {
+                QJsonObject row;
+                row.insert(QStringLiteral("fan_id"), t.fanId);
+                row.insert(QStringLiteral("applied_power"), wantOne);
+                appliedRelays.append(row);
+            }
             continue;
         }
 
         QString localErr;
         const int got = FanRelayController::setSpeed(
-            t.host, t.port, t.channel, t.channel2, want, &localErr, 2000,
+            t.host, t.port, t.channel, t.channel2, wantOne, &localErr, 2000,
             FanRelayController::SoftStepMs, t.driver);
         if (got > 0) {
             applied = got;
             anyOk = true;
             m_fanRelayUnreachableUntilMs = 0;
             setFanDebug(QStringLiteral("setSpeed OK → speed %1").arg(got));
+            if (t.fanId > 0) {
+                QJsonObject row;
+                row.insert(QStringLiteral("fan_id"), t.fanId);
+                row.insert(QStringLiteral("applied_power"), got);
+                appliedRelays.append(row);
+            }
         } else {
             error = localErr;
             m_fanRelayUnreachableUntilMs = now + 45000;
@@ -3417,7 +3528,7 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
     }
 
     if (!anyOk && !error.isEmpty()) {
-        acknowledgeFanApplied(applied, error, source);
+        acknowledgeFanApplied(applied, error, source, appliedRelays);
         m_fanApplyInFlight = false;
         return;
     }
@@ -3427,7 +3538,7 @@ void NetworkManager::applyDesiredToRelay(int desiredPower, const QString &source
     m_fanOn = on;
     emit fanStateChanged();
 
-    acknowledgeFanApplied(applied, error, source);
+    acknowledgeFanApplied(applied, error, source, appliedRelays);
     m_fanApplyInFlight = false;
 }
 
@@ -3450,9 +3561,13 @@ void NetworkManager::ensureFanOffBeforeExit()
     QString error;
     int applied = 1;
     for (const FanRelayEndpoint &t : targets) {
+        int level = 1;
+        if (t.manualMode == QLatin1String("service")
+            && t.desiredPower >= 1 && t.desiredPower <= 3)
+            level = t.desiredPower;
         QString localErr;
         const int got = FanRelayController::setSpeed(
-            t.host, t.port, t.channel, t.channel2, 1, &localErr, 2000, 0, t.driver);
+            t.host, t.port, t.channel, t.channel2, level, &localErr, 2000, 0, t.driver);
         if (got > 0)
             applied = got;
         else if (!localErr.isEmpty())
@@ -3467,7 +3582,8 @@ void NetworkManager::ensureFanOffBeforeExit()
     acknowledgeFanApplied(applied, error, QStringLiteral("status_read"));
 }
 
-void NetworkManager::acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source)
+void NetworkManager::acknowledgeFanApplied(int appliedPower, const QString &error, const QString &source,
+                                         const QJsonArray &relays)
 {
     const int termId = resolveTerminalId(0);
     if (m_serverUrl.isEmpty() || termId <= 0)
@@ -3485,6 +3601,8 @@ void NetworkManager::acknowledgeFanApplied(int appliedPower, const QString &erro
     json.insert(QStringLiteral("source"), source);
     if (!error.isEmpty())
         json.insert(QStringLiteral("last_error"), error);
+    if (!relays.isEmpty())
+        json.insert(QStringLiteral("relays"), relays);
 
     // Sync on exit paths; async otherwise.
     const bool sync = source == QLatin1String("status_read") && !m_climateActive;
@@ -3541,6 +3659,13 @@ void NetworkManager::startSessionFans(const QJsonObject &fanObj)
     }
     setFanManualLockSec(0);
     emit fanStateChanged();
+    // Service hold is per relay. Do not blast every pair to 100% on login.
+    if (fanPayloadHasService(fanObj)) {
+        if (hasRelayConfig())
+            applyDesiredToRelay(computeLocalDesiredPower(fanObj), QStringLiteral("service"));
+        setFan(QStringLiteral("100"));
+        return;
+    }
     if (hasRelayConfig())
         applyDesiredToRelay(3, QStringLiteral("login"));
     setFan(QStringLiteral("100"));
@@ -3644,10 +3769,15 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
     const bool thermal = facts.value(QStringLiteral("thermal")).toBool(false);
 
     // Lobby / before auth: report thermal only; actuate relays solely when hot.
+    // Service hold from the admin tab applies even on the login screen.
     // Do not apply stale cloud force_on (e.g. previous session left at 100%).
     if (!m_userSessionActive) {
         if (!hasRelayConfig()) {
             setFanDebug(QStringLiteral("pre-login: no relay yet"));
+            return;
+        }
+        if (fanPayloadHasService(fanObj)) {
+            applyDesiredToRelay(desired, QStringLiteral("service"));
             return;
         }
         if (!thermal) {
@@ -3664,8 +3794,8 @@ void NetworkManager::applyFanStateFromJson(const QJsonObject &fanObj)
         return;
     }
 
-    // auto_lock — только для фонового poll; ручной setFan всегда жмёт реле сразу.
-    if (hasRelayConfig() && (!autoLocked || m_forceRelayApply)) {
+    // auto_lock — только для фонового poll; ручной setFan и сервис жмут реле сразу.
+    if (hasRelayConfig() && (!autoLocked || m_forceRelayApply || fanPayloadHasService(fanObj))) {
         applyDesiredToRelay(desired, QStringLiteral("command"));
     } else if (!hasRelayConfig()) {
         setFanDebug(QStringLiteral("no relay yet mode=%1 desired=%2 avail=%3 host='%4'")

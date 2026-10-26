@@ -12,8 +12,8 @@ class QTimer;
 
 /**
  * Local OpenRGB SDK client (127.0.0.1:6742).
- * Runs on its own thread. Mirrors one RGB into the motherboard ADDR_LED zone
- * in Direct mode. Socket stalls stay off the shell GUI thread.
+ * Runs on its own thread. Mirrors the room scene into the motherboard ADDR_LED
+ * zone and into keyboard/cooler devices, one color. Socket stalls stay off the GUI thread.
  *
  * Binary layout follows OpenRGB RGBController::SetDeviceDescription, protocol 1–6.
  */
@@ -54,6 +54,11 @@ private:
         QString vendor;
         QVector<ZoneInfo> zones;
     };
+    struct KbZone {
+        int dev = -1;
+        int zone = 0;
+        int leds = 0;
+    };
 
     void connectNow();
     void drop(const QString &why);
@@ -66,10 +71,12 @@ private:
     void considerDevice(const DevInfo &dev, int index);
     void finishScan();
     void commitSelection();
+    void paintKeyboards(const QColor &color);
     void scheduleSend();
     void flushSend();
     bool sendPacket(quint32 dev, quint32 id, const QByteArray &payload);
     bool writeZone(const QColor &color);
+    bool writeLeds(int dev, int zone, int leds, const QColor &color);
     int scoreDevice(const DevInfo &dev) const;
     int selectZone(const QVector<ZoneInfo> &zones) const;
     static DevInfo parseDevice(const QByteArray &payload, quint32 protocol);
@@ -113,6 +120,7 @@ private:
     int m_dev = -1;
     int m_zone = -1;
     int m_leds = 0;
+    QVector<KbZone> m_keyboards;
 };
 
 #endif

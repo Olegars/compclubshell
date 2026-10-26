@@ -114,6 +114,9 @@ Rectangle {
                 anchors.fill: parent
                 property string resolvedPath: ""
                 property bool triedHttp: false
+                property bool httpFailed: false
+                property bool localFailed: false
+                property bool usingFallback: false
 
                 function httpUrl() {
                     if (overlayBlockRoot.videoSourceUrl === "")
@@ -132,35 +135,86 @@ Rectangle {
                                 overlayBlockRoot.blockUniqueId)
                 }
 
+                function fileReady(url) {
+                    if (url === "")
+                        return false
+                    if (typeof NetworkManager === "undefined"
+                            || typeof NetworkManager.isLocalMediaLight !== "function")
+                        return true
+                    return NetworkManager.isLocalMediaLight(url, 512 * 1024 * 1024)
+                }
+
                 function setSourceAndPlay(src) {
                     if (src === "")
                         return false
+                    usingFallback = (src === overlayBlockRoot.fallbackVideo)
                     if (player.source.toString() === src) {
-                        if (player.playbackState !== MediaPlayer.PlayingState)
+                        if (player.playbackState !== MediaPlayer.PlayingState
+                                && overlayBlockRoot.wantPlayer)
                             player.play()
                         return true
                     }
-                    console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "open:", src)
+                    console.log("[PLAYER]", overlayBlockRoot.blockUniqueId,
+                                usingFallback ? "fallback:" : "open:", src)
                     player.stop()
                     player.source = src
                     return true
                 }
 
+                // Пока ролик качается или кодек его отверг — крутим fallback_bg.mp4.
+                function playFallback() {
+                    var fb = overlayBlockRoot.fallbackVideo
+                    if (!fileReady(fb)) {
+                        console.log("[PLAYER]", overlayBlockRoot.blockUniqueId,
+                                    "fallback missing:", fb)
+                        return false
+                    }
+                    return setSourceAndPlay(fb)
+                }
+
                 function openWhenReady() {
                     var path = resolvedPath !== "" ? resolvedPath : resolvePath()
                     resolvedPath = path
-                    if (path !== "") {
+                    if (path !== "" && !localFailed) {
                         setSourceAndPlay(path)
                         return
                     }
                     // Не ждём 100+ МБ кэша: стримим с облака, кэш докачается в фоне.
                     var remote = httpUrl()
-                    if (remote !== "") {
+                    if (remote !== "" && !httpFailed) {
                         triedHttp = true
                         setSourceAndPlay(remote)
                         return
                     }
                     console.log("[PLAYER]", overlayBlockRoot.blockUniqueId, "wait download")
+                    playFallback()
+                }
+
+                function onMediaRejected() {
+                    var current = player.source.toString()
+                    console.log("[PLAYER-ERROR]", overlayBlockRoot.blockUniqueId,
+                                "invalid", current)
+                    if (usingFallback || current === overlayBlockRoot.fallbackVideo) {
+                        player.stop()
+                        return
+                    }
+                    if (resolvedPath !== "" && current === resolvedPath)
+                        localFailed = true
+                    if (triedHttp && current !== resolvedPath)
+                        httpFailed = true
+
+                    if (resolvedPath !== "" && !localFailed) {
+                        setSourceAndPlay(resolvedPath)
+                        return
+                    }
+                    var remote = httpUrl()
+                    if (remote !== "" && !httpFailed && current !== remote) {
+                        triedHttp = true
+                        setSourceAndPlay(remote)
+                        return
+                    }
+                    // HTTP без moov в начале или битый кэш — запасной ролик, пока нет файла.
+                    playFallback()
                 }
 
                 Component.onCompleted: {
@@ -174,6 +228,9 @@ Rectangle {
                     function onVideoSourceUrlChanged() {
                         videoInner.resolvedPath = ""
                         videoInner.triedHttp = false
+                        videoInner.httpFailed = false
+                        videoInner.localFailed = false
+                        videoInner.usingFallback = false
                         Qt.callLater(videoInner.openWhenReady)
                     }
                 }
@@ -186,6 +243,7 @@ Rectangle {
                         if (overlayBlockRoot.videoSourceUrl !== remoteUrl)
                             return
                         resolvedPath = localPath
+                        localFailed = false
                         Qt.callLater(openWhenReady)
                     }
                 }
@@ -203,13 +261,17 @@ Rectangle {
                             if (overlayBlockRoot.wantPlayer)
                                 play()
                         } else if (mediaStatus === MediaPlayer.InvalidMedia) {
-                            console.log("[PLAYER-ERROR]", overlayBlockRoot.blockUniqueId,
-                                        "invalid", source)
-                            stop()
-                            // HTTP без moov в начале — ждём локальный файл.
-                            if (videoInner.triedHttp && videoInner.resolvedPath === "")
-                                return
+                            videoInner.onMediaRejected()
                         }
+                    }
+
+                    onErrorOccurred: function(error, errorString) {
+                        if (error === MediaPlayer.NoError)
+                            return
+                        console.log("[PLAYER-ERROR]", overlayBlockRoot.blockUniqueId,
+                                    errorString)
+                        if (mediaStatus !== MediaPlayer.InvalidMedia)
+                            videoInner.onMediaRejected()
                     }
                 }
 

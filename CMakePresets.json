@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "qt6.12-msvc-release",
+      "displayName": "Qt 6.12.0 MSVC 2022 Release",
+      "description": "Official Qt kit at C:/Qt_new/6.12.0/msvc2022_64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "binaryDir": "${sourceDir}/build/qt6.12-msvc",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "C:/Qt_new/6.12.0/msvc2022_64",
+        "QT_QMAKE_EXECUTABLE": "C:/Qt_new/6.12.0/msvc2022_64/bin/qmake.exe"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "qt6.12-msvc-release",
+      "configurePreset": "qt6.12-msvc-release",
+      "configuration": "Release"
+    }
+  ]
+}

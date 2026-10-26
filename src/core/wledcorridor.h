@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <functional>
@@ -24,6 +25,8 @@ public:
 private:
     void poll();
     void playCue(const QJsonObject &cue);
+    void syncEffects(const QJsonObject &job);
+    void postEffects(int controllerId, bool ok, const QJsonArray &effects, const QString &error);
     void postWled(const QString &host, int port, const QJsonObject &state,
                   const std::function<void(bool, const QString &)> &done);
     void ack(int cueId, bool ok, const QString &error);

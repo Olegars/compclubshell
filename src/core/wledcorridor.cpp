@@ -73,7 +73,71 @@ void WledCorridor::poll()
             if (value.isObject())
                 playCue(value.toObject());
         }
+        const QJsonArray sync = obj.value(QStringLiteral("sync")).toArray();
+        for (const QJsonValue &value : sync) {
+            if (value.isObject())
+                syncEffects(value.toObject());
+        }
     });
+}
+
+void WledCorridor::syncEffects(const QJsonObject &job)
+{
+    const int controllerId = job.value(QStringLiteral("id")).toInt();
+    const QString host = job.value(QStringLiteral("host")).toString().trimmed();
+    const int port = job.value(QStringLiteral("port")).toInt(80);
+    if (controllerId <= 0 || host.isEmpty() || host.contains(QLatin1Char('/'))
+        || port < 1 || port > 65535 || !m_nam) {
+        return;
+    }
+
+    const QUrl url(QStringLiteral("http://%1:%2/json/effects").arg(host).arg(port));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(2500);
+    QNetworkReply *reply = m_nam->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, controllerId, host]() {
+        reply->deleteLater();
+        const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool httpOk = reply->error() == QNetworkReply::NoError && code >= 200 && code < 300;
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (!httpOk || !doc.isArray() || doc.array().isEmpty()) {
+            const QString err = httpOk ? QStringLiteral("effects json") : reply->errorString();
+            qWarning() << "[WLED] эффекты" << host << err;
+            postEffects(controllerId, false, QJsonArray(), err);
+            return;
+        }
+        qWarning() << "[WLED] эффекты" << host << doc.array().size();
+        postEffects(controllerId, true, doc.array(), QString());
+    });
+}
+
+void WledCorridor::postEffects(int controllerId, bool ok, const QJsonArray &effects, const QString &error)
+{
+    if (controllerId <= 0 || m_computerId <= 0 || m_serverUrl.isEmpty() || !m_nam)
+        return;
+
+    QJsonArray names;
+    const int limit = qMin(effects.size(), 300);
+    for (int i = 0; i < limit; ++i) {
+        names.append(effects.at(i).toString().left(80));
+    }
+
+    QJsonObject body;
+    body.insert(QStringLiteral("terminal_id"), m_computerId);
+    body.insert(QStringLiteral("ok"), ok && !names.isEmpty());
+    if (!names.isEmpty())
+        body.insert(QStringLiteral("effects"), names);
+    if (!ok || names.isEmpty())
+        body.insert(QStringLiteral("error"), (error.isEmpty() ? QStringLiteral("effects") : error).left(400));
+
+    QNetworkRequest request(QUrl(m_serverUrl + QStringLiteral("/api/shell/wled/")
+                                 + QString::number(controllerId) + QStringLiteral("/effects")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("ReactorShell/1.0"));
+    request.setTransferTimeout(4000);
+    QNetworkReply *reply = m_nam->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
 }
 
 void WledCorridor::playCue(const QJsonObject &cue)

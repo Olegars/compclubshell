@@ -5,6 +5,11 @@ project(sector0451 VERSION 0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+    # windows.h defines min/max macros that break std::min, std::max and std::clamp.
+    add_compile_definitions(NOMINMAX)
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Gui Qml Network Multimedia WebView)
 
 qt_standard_project_setup(REQUIRES 6.10)
@@ -27,6 +32,7 @@ qt_add_executable(appsector0451
     src/core/dmxcontroller.h src/core/dmxcontroller.cpp
     src/core/wledcorridor.h src/core/wledcorridor.cpp
     src/core/openrgbclient.h src/core/openrgbclient.cpp
+    src/core/deviceprefs.h src/core/deviceprefs.cpp
     src/core/faceitsession.h src/core/faceitsession.cpp
     src/core/localhttpserver.h src/core/localhttpserver.cpp
     src/core/reactivelighting.h src/core/reactivelighting.cpp
@@ -71,6 +77,7 @@ qt_add_qml_module(appsector0451
         LoadingOverlay.qml
         LootboxOverlay.qml
         RageCalmOverlay.qml
+        FireLockOverlay.qml
         QuickMenu.qml
         VoiceIndicator.qml
         AvatarWatermarkBg.qml
@@ -139,12 +146,10 @@ install(TARGETS appsector0451
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# WebView2 runtime deps (MinGW build of qtwebview plugin)
-if(WIN32)
-    set(_webview2_loader "$ENV{MSYSTEM_PREFIX}/bin/WebView2Loader.dll")
-    if(NOT EXISTS "${_webview2_loader}")
-        set(_webview2_loader "C:/msys64/mingw64/bin/WebView2Loader.dll")
-    endif()
+# MSVC Qt WebView looks for WebView2Loader.dll next to the executable.
+if(WIN32 AND Qt6_DIR)
+    get_filename_component(_qt_bin "${Qt6_DIR}/../../../bin" ABSOLUTE)
+    set(_webview2_loader "${_qt_bin}/WebView2Loader.dll")
     if(EXISTS "${_webview2_loader}")
         add_custom_command(TARGET appsector0451 POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

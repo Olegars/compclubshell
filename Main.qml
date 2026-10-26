@@ -158,6 +158,64 @@ Window {
         onTriggered: root.requestOverlays(root.terminalId > 0 ? root.terminalId : 1)
     }
 
+    property bool fireLocked: false
+    property bool fireCoveredGame: false
+
+    Timer {
+        id: firePoll
+        interval: 2000
+        repeat: true
+        running: true
+        triggeredOnStart: true
+        onTriggered: root.pollFire()
+    }
+
+    function pollFire() {
+        var baseUrl = (typeof NetworkManager !== "undefined") ? String(NetworkManager.serverUrl || "") : ""
+        var termId = root.terminalId
+        if (termId < 1 && typeof NetworkManager !== "undefined")
+            termId = Number(NetworkManager.computerId || 0)
+        if (!baseUrl || termId < 1)
+            return
+        var xhr = new XMLHttpRequest()
+        xhr.open("GET", baseUrl + "/api/shell/fire?terminal_id=" + termId)
+        xhr.setRequestHeader("Accept", "application/json")
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== XMLHttpRequest.DONE)
+                return
+            if (xhr.status < 200 || xhr.status >= 300)
+                return
+            var res = {}
+            try { res = xhr.responseText ? JSON.parse(xhr.responseText) : {} } catch (e) { return }
+            root.applyFire(!!res.active)
+        }
+        xhr.send()
+    }
+
+    function applyFire(active) {
+        if (active) {
+            if (!root.fireLocked && typeof Launcher !== "undefined" && Launcher.shellHiddenForGame) {
+                root.fireCoveredGame = true
+                Launcher.showShellKeepGame()
+            }
+            if (typeof Launcher !== "undefined")
+                Launcher.setShellTopmost(true)
+            root.fireLocked = true
+            root.raise()
+            root.requestActivate()
+            return
+        }
+        if (!root.fireLocked)
+            return
+        root.fireLocked = false
+        if (typeof Launcher !== "undefined") {
+            Launcher.setShellTopmost(false)
+            if (root.fireCoveredGame && Launcher.hasActiveGame)
+                Launcher.switchToGame()
+        }
+        root.fireCoveredGame = false
+    }
+
     function clearGameSearchField() {
         if (typeof Launcher !== "undefined" && typeof Launcher.requestClearGameSearch === "function")
             Launcher.requestClearGameSearch()
@@ -660,7 +718,14 @@ Window {
                 "file:///" + String(lobbyDir).replace(/\\/g, "/") + "/lobby-ambient.wav"
             ]
             for (var i = 0; i < candidates.length; i++) {
-                mediaWarmup.source = candidates[i]
+                var src = candidates[i]
+                var present = (typeof NetworkManager !== "undefined"
+                               && typeof NetworkManager.isLocalMediaLight === "function")
+                        ? NetworkManager.isLocalMediaLight(src, 32 * 1024 * 1024)
+                        : true
+                if (!present)
+                    continue
+                mediaWarmup.source = src
                 mediaWarmup.play()
                 break
             }
@@ -962,6 +1027,85 @@ Window {
                     gradient: Gradient {
                         GradientStop { position: 0.0; color: "transparent" }
                         GradientStop { position: 1.0; color: "#cc000000" }
+                    }
+                }
+            }
+
+            // Временная отладка: закрывает только процесс шелла, ПК не гасит.
+            Rectangle {
+                id: tempCloseShellBtn
+                visible: root.sessionUser !== "PAUSE"
+                z: 40
+                width: 180
+                height: 36
+                radius: 4
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 18
+                color: tempCloseMouse.pressed ? "#7f1d1d"
+                       : (tempCloseMouse.containsMouse ? Theme.dangerStrong : "#1a0a0a")
+                border.color: Theme.danger
+                border.width: tempCloseMouse.containsMouse ? 2 : 1
+                Text {
+                    anchors.centerIn: parent
+                    text: "ЗАКРЫТЬ"
+                    color: tempCloseMouse.containsMouse ? "white" : Theme.danger
+                    font.pixelSize: 13
+                    font.bold: true
+                    font.letterSpacing: 2
+                }
+                MouseArea {
+                    id: tempCloseMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        if (typeof SecurityManager !== "undefined"
+                                && typeof SecurityManager.unlockSystem === "function")
+                            SecurityManager.unlockSystem()
+                        if (typeof NetworkManager !== "undefined"
+                                && typeof NetworkManager.quitForDebug === "function")
+                            NetworkManager.quitForDebug()
+                    }
+                }
+            }
+
+            // Временный замер: загрузка CPU над кнопкой закрытия.
+            Row {
+                z: 41
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: tempCloseShellBtn.top
+                anchors.bottomMargin: 8
+                spacing: 10
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: (typeof CpuLoad !== "undefined" && CpuLoad.percent >= 0)
+                          ? ("CPU  " + CpuLoad.percent + "%")
+                          : "CPU  —"
+                    color: Theme.textBody
+                    font.pixelSize: 14
+                    font.bold: true
+                    font.letterSpacing: 1
+                }
+                Rectangle {
+                    width: 140
+                    height: 8
+                    radius: 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#141414"
+                    border.color: "#333333"
+                    border.width: 1
+                    Rectangle {
+                        width: parent.width * Math.max(0, (typeof CpuLoad !== "undefined" ? CpuLoad.percent : 0)) / 100
+                        height: parent.height
+                        radius: 2
+                        color: {
+                            var pct = (typeof CpuLoad !== "undefined") ? CpuLoad.percent : 0
+                            if (pct >= 85) return Theme.danger
+                            if (pct >= 60) return Theme.warning
+                            return Theme.accent
+                        }
                     }
                 }
             }
@@ -1953,6 +2097,10 @@ Window {
                 map[key].isActive = true
             }
         }
+    }
+
+    FireLockOverlay {
+        locked: root.fireLocked
     }
 
 }
