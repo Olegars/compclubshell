@@ -365,6 +365,7 @@ int main(int argc, char *argv[])
     const bool isProduction = (prodRaw == QLatin1String("1")
                                || prodRaw == QLatin1String("true")
                                || prodRaw == QLatin1String("yes"));
+    securityManager->setProduction(isProduction);
 
     if (ccbootSuper->superClientActive()) {
         qDebug() << "[REACTOR-MAIN] Super Client активен — киоск не включаем, explorer для правки образа.";

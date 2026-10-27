@@ -1883,6 +1883,7 @@ void NetworkManager::stopQrLoginPoll()
     if (m_qrPollTimer)
         m_qrPollTimer->stop();
     m_qrToken.clear();
+    m_qrPollSecret.clear();
 }
 
 void NetworkManager::pollQrStatusOnce()
@@ -1893,6 +1894,8 @@ void NetworkManager::pollQrStatusOnce()
     QUrl url(m_serverUrl + QStringLiteral("/api/shell/qr/status"));
     QUrlQuery q;
     q.addQueryItem(QStringLiteral("token"), m_qrToken);
+    if (!m_qrPollSecret.isEmpty())
+        q.addQueryItem(QStringLiteral("poll_secret"), m_qrPollSecret);
     url.setQuery(q);
 
     QNetworkRequest request(url);
@@ -1939,6 +1942,8 @@ void NetworkManager::requestQrChallenge(int terminalId)
 
     QJsonObject json;
     json.insert(QStringLiteral("terminal_id"), tid);
+    if (!m_hwid.isEmpty())
+        json.insert(QStringLiteral("hwid"), m_hwid);
     QNetworkReply *reply = m_networkManager->post(
         request, QJsonDocument(json).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -1960,6 +1965,7 @@ void NetworkManager::requestQrChallenge(int terminalId)
             return;
         }
         m_qrToken = response.value(QStringLiteral("token")).toString();
+        m_qrPollSecret = response.value(QStringLiteral("poll_secret")).toString();
         emit qrChallengeReady(
             m_qrToken,
             response.value(QStringLiteral("qr_payload")).toString(),
@@ -5090,6 +5096,8 @@ void NetworkManager::postGsiEvent(const QJsonObject &payload)
 
     QJsonObject json = payload;
     json.insert(QStringLiteral("terminal_id"), termId);
+    if (!m_hwid.isEmpty())
+        json.insert(QStringLiteral("hwid"), m_hwid);
     if (m_lastBookingId > 0)
         json.insert(QStringLiteral("booking_id"), m_lastBookingId);
 

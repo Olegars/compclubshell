@@ -7,17 +7,20 @@ class SecurityManager : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool locked READ locked NOTIFY lockedChanged)
+    Q_PROPERTY(bool production READ production CONSTANT)
 public:
     explicit SecurityManager(QObject *parent = nullptr);
     ~SecurityManager();
 
     bool locked() const { return m_locked; }
+    bool production() const { return m_production; }
+    void setProduction(bool on) { m_production = on; }
 
     // Главный метод, запускающий весь комплекс защитных процедур Windows
     Q_INVOKABLE void lockDownSystem();
 
-    // Откат для обслуживания образа / Super Client
-    Q_INVOKABLE void unlockSystem();
+    // Только из C++: Super Client и режим разработки. Из QML не вызывается.
+    void unlockSystem();
 
 signals:
     void lockedChanged();
@@ -35,6 +38,7 @@ private:
     void startExplorer();
 
     bool m_locked = false;
+    bool m_production = false;
 };
 
 #endif // SECURITYMANAGER_H

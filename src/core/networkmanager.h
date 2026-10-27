@@ -503,6 +503,7 @@ private:
     QTimer *m_powerHeartbeatTimer = nullptr;
     QTimer *m_qrPollTimer = nullptr;
     QString m_qrToken;
+    QString m_qrPollSecret;
     bool m_isPcRegistered;
     QString m_serverUrl;
     QString m_configFilePath;

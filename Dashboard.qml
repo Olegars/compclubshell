@@ -6207,8 +6207,6 @@ Item {
 
         function enterMaintenance() {
             close()
-            if (typeof SecurityManager !== "undefined")
-                SecurityManager.unlockSystem()
             if (typeof NetworkManager !== "undefined")
                 NetworkManager.setMaintenance(true)
         }
@@ -6283,7 +6281,7 @@ Item {
                 lineHeight: 1.35
                 text: maintenanceConfirmPopup.maintPin.length === 4
                       ? ("PIN паузы для гостя: " + maintenanceConfirmPopup.maintPin)
-                      : "Снять киоск и открыть explorer. Booking не погасит это место."
+                      : "Режим обслуживания. Киоск остаётся. Снять его можно в setup паролем CCBoot."
             }
             Item { Layout.fillHeight: true }
             RowLayout {
@@ -6297,7 +6295,7 @@ Item {
                     color: "#b45309"
                     Text {
                         anchors.centerIn: parent
-                        text: maintenanceConfirmPopup.pinLoading ? "Пауза…" : "Снять киоск"
+                        text: maintenanceConfirmPopup.pinLoading ? "Пауза…" : "Обслуживание"
                         color: "white"
                         font.bold: true
                         font.pixelSize: 14

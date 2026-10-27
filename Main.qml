@@ -1035,6 +1035,7 @@ Window {
             Rectangle {
                 id: tempCloseShellBtn
                 visible: root.sessionUser !== "PAUSE"
+                        && (typeof SecurityManager === "undefined" || !SecurityManager.production)
                 z: 40
                 width: 180
                 height: 36
@@ -1060,9 +1061,6 @@ Window {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                        if (typeof SecurityManager !== "undefined"
-                                && typeof SecurityManager.unlockSystem === "function")
-                            SecurityManager.unlockSystem()
                         if (typeof NetworkManager !== "undefined"
                                 && typeof NetworkManager.quitForDebug === "function")
                             NetworkManager.quitForDebug()
